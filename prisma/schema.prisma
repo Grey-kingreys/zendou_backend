@@ -1,0 +1,134 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserStatus {
+  ACTIVE
+  SUSPENDED
+}
+
+enum UserRole {
+  CUSTOMER
+  ADMIN
+}
+
+enum DomainStatus {
+  PENDING
+  VERIFIED
+  FAILED
+  TEMPORARY_FAILURE
+}
+
+enum EmailStatus {
+  QUEUED
+  SENT
+  DELIVERED
+  BOUNCED
+  COMPLAINED
+  REJECTED
+  FAILED
+  SUPPRESSED
+}
+
+enum SuppressionReason {
+  HARD_BOUNCE
+  COMPLAINT
+  MANUAL
+}
+
+model User {
+  id             String        @id @default(cuid())
+  email          String        @unique
+  passwordHash   String
+  name           String
+  company        String?
+  declaredUsage  String?
+  status         UserStatus    @default(ACTIVE)
+  role           UserRole      @default(CUSTOMER)
+  dailySendLimit Int           @default(200)
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+  apiKeys        ApiKey[]
+  domains        Domain[]
+  emails         Email[]
+  creditEntries  CreditEntry[]
+}
+
+model ApiKey {
+  id         String    @id @default(cuid())
+  userId     String
+  user       User      @relation(fields: [userId], references: [id])
+  name       String
+  prefix     String
+  keyHash    String    @unique
+  lastUsedAt DateTime?
+  revokedAt  DateTime?
+  createdAt  DateTime  @default(now())
+
+  @@index([userId])
+}
+
+model Domain {
+  id         String       @id @default(cuid())
+  userId     String
+  user       User         @relation(fields: [userId], references: [id])
+  name       String       @unique
+  status     DomainStatus @default(PENDING)
+  dkimTokens String[]
+  verifiedAt DateTime?
+  createdAt  DateTime     @default(now())
+
+  @@index([userId])
+}
+
+model Email {
+  id           String      @id @default(cuid())
+  publicId     String      @unique
+  userId       String
+  user         User        @relation(fields: [userId], references: [id])
+  domainId     String?
+  fromAddress  String
+  toAddress    String
+  subject      String
+  status       EmailStatus @default(QUEUED)
+  sesMessageId String?     @unique
+  errorMessage String?
+  queuedAt     DateTime    @default(now())
+  sentAt       DateTime?
+  deliveredAt  DateTime?
+  lastEventAt  DateTime?
+
+  @@index([userId, queuedAt])
+  @@index([status])
+}
+
+model Suppression {
+  id        String            @id @default(cuid())
+  address   String
+  reason    SuppressionReason
+  userId    String?
+  createdAt DateTime          @default(now())
+
+  @@unique([address, userId])
+  @@index([address])
+}
+
+model CreditEntry {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
+  delta     Int
+  reason    String
+  reference String?
+  createdAt DateTime @default(now())
+
+  @@index([userId, createdAt])
+}
