@@ -4,6 +4,7 @@ import { BullModule } from '@nestjs/bullmq';
 import { validateEnv } from './config/env.schema';
 import { PrismaModule } from './prisma/prisma.module';
 import { HealthModule } from './health/health.module';
+import { AuthModule } from './auth/auth.module';
 import { EMAIL_SEND_QUEUE } from './queues/queues';
 
 @Module({
@@ -23,6 +24,7 @@ import { EMAIL_SEND_QUEUE } from './queues/queues';
     BullModule.registerQueue({ name: EMAIL_SEND_QUEUE }),
     PrismaModule,
     HealthModule,
+    AuthModule,
   ],
 })
 export class AppModule {}

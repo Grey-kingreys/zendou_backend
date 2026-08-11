@@ -1,0 +1,34 @@
+import {
+  IsEmail,
+  IsOptional,
+  IsString,
+  MaxLength,
+  MinLength,
+} from 'class-validator';
+
+export class RegisterDto {
+  @IsEmail({}, { message: "L'adresse email est invalide" })
+  email!: string;
+
+  @IsString()
+  @MinLength(8, {
+    message: 'Le mot de passe doit contenir au moins 8 caractères',
+  })
+  @MaxLength(200)
+  password!: string;
+
+  @IsString()
+  @MinLength(2, { message: 'Le nom doit contenir au moins 2 caractères' })
+  @MaxLength(200)
+  name!: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  company?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  declaredUsage?: string;
+}

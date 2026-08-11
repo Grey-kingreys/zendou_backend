@@ -1,0 +1,126 @@
+import { Test, TestingModule } from '@nestjs/testing';
+import {
+  ExecutionContext,
+  ForbiddenException,
+  UnauthorizedException,
+} from '@nestjs/common';
+import { UserRole, UserStatus } from '@prisma/client';
+import { PrismaService } from '../prisma/prisma.service';
+import { SESSION_COOKIE_NAME } from './auth.constants';
+import { AuthenticatedRequest, AuthUser } from './auth.types';
+import { SessionAuthGuard } from './session-auth.guard';
+import { SessionService } from './session.service';
+
+const activeUser: AuthUser = {
+  id: 'user_1',
+  email: 'aissatou@example.com',
+  name: 'Aïssatou Diallo',
+  company: null,
+  declaredUsage: null,
+  role: UserRole.CUSTOMER,
+  status: UserStatus.ACTIVE,
+  createdAt: new Date('2026-01-01T00:00:00.000Z'),
+};
+
+function contextFor(request: Partial<AuthenticatedRequest>): ExecutionContext {
+  return {
+    switchToHttp: () => ({ getRequest: () => request }),
+  } as unknown as ExecutionContext;
+}
+
+describe('SessionAuthGuard', () => {
+  let guard: SessionAuthGuard;
+
+  const findUnique = jest.fn();
+  const sessionService = {
+    create: jest.fn(),
+    resolve: jest.fn(),
+    destroy: jest.fn(),
+  };
+
+  beforeEach(async () => {
+    jest.clearAllMocks();
+
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [
+        SessionAuthGuard,
+        { provide: SessionService, useValue: sessionService },
+        { provide: PrismaService, useValue: { user: { findUnique } } },
+      ],
+    }).compile();
+
+    guard = module.get<SessionAuthGuard>(SessionAuthGuard);
+  });
+
+  it('throws 401 when no session cookie is present', async () => {
+    await expect(
+      guard.canActivate(contextFor({ cookies: {} })),
+    ).rejects.toBeInstanceOf(UnauthorizedException);
+
+    expect(sessionService.resolve).not.toHaveBeenCalled();
+  });
+
+  it('throws 401 when the cookie jar itself is missing', async () => {
+    await expect(guard.canActivate(contextFor({}))).rejects.toBeInstanceOf(
+      UnauthorizedException,
+    );
+  });
+
+  it('throws 401 when the session is unknown or expired', async () => {
+    sessionService.resolve.mockResolvedValue(null);
+
+    await expect(
+      guard.canActivate(
+        contextFor({ cookies: { [SESSION_COOKIE_NAME]: 'tok' } }),
+      ),
+    ).rejects.toBeInstanceOf(UnauthorizedException);
+
+    expect(findUnique).not.toHaveBeenCalled();
+  });
+
+  it('injects the current user on the request for a valid session', async () => {
+    sessionService.resolve.mockResolvedValue('user_1');
+    findUnique.mockResolvedValue(activeUser);
+
+    const request: Partial<AuthenticatedRequest> = {
+      cookies: { [SESSION_COOKIE_NAME]: 'tok' },
+    };
+
+    await expect(guard.canActivate(contextFor(request))).resolves.toBe(true);
+
+    expect(sessionService.resolve).toHaveBeenCalledWith('tok');
+    expect(request.user).toEqual(activeUser);
+    expect(request.sessionToken).toBe('tok');
+  });
+
+  it('throws 403 when the account is suspended', async () => {
+    sessionService.resolve.mockResolvedValue('user_1');
+    findUnique.mockResolvedValue({
+      ...activeUser,
+      status: UserStatus.SUSPENDED,
+    });
+
+    const request: Partial<AuthenticatedRequest> = {
+      cookies: { [SESSION_COOKIE_NAME]: 'tok' },
+    };
+
+    await expect(guard.canActivate(contextFor(request))).rejects.toBeInstanceOf(
+      ForbiddenException,
+    );
+
+    expect(request.user).toBeUndefined();
+  });
+
+  it('drops an orphan session when the user no longer exists', async () => {
+    sessionService.resolve.mockResolvedValue('user_ghost');
+    findUnique.mockResolvedValue(null);
+
+    await expect(
+      guard.canActivate(
+        contextFor({ cookies: { [SESSION_COOKIE_NAME]: 'tok' } }),
+      ),
+    ).rejects.toBeInstanceOf(UnauthorizedException);
+
+    expect(sessionService.destroy).toHaveBeenCalledWith('tok');
+  });
+});
