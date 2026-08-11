@@ -45,22 +45,35 @@ enum SuppressionReason {
 }
 
 model User {
-  id             String         @id @default(cuid())
-  email          String         @unique
+  id             String     @id @default(cuid())
+  email          String     @unique
   passwordHash   String
   name           String
   company        String?
   declaredUsage  String?
-  status         UserStatus     @default(ACTIVE)
-  role           UserRole       @default(CUSTOMER)
-  dailySendLimit Int            @default(200)
-  createdAt      DateTime       @default(now())
-  updatedAt      DateTime       @updatedAt
-  apiKeys        ApiKey[]
-  domains        Domain[]
-  emails         Email[]
-  creditEntries  CreditEntry[]
-  topUpRequests  TopUpRequest[]
+  status         UserStatus @default(ACTIVE)
+  role           UserRole   @default(CUSTOMER)
+  dailySendLimit Int        @default(200)
+
+  /// Borne basse de la fenêtre de réputation, posée à chaque réactivation
+  /// administrative : les événements antérieurs ne comptent plus. Sans elle,
+  /// un compte réactivé traînerait ses 30 jours de mauvaises statistiques et
+  /// serait re-suspendu au premier rebond suivant.
+  reputationResetAt DateTime?
+  suspendedAt       DateTime?
+  suspensionReason  String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  apiKeys       ApiKey[]
+  domains       Domain[]
+  emails        Email[]
+  creditEntries CreditEntry[]
+  topUpRequests TopUpRequest[]
+
+  adminActionsPerformed AdminAction[] @relation("AdminActionsPerformed")
+  adminActionsReceived  AdminAction[] @relation("AdminActionsReceived")
 }
 
 model ApiKey {
@@ -163,4 +176,32 @@ model TopUpRequest {
 
   @@index([userId, createdAt])
   @@index([status])
+}
+
+enum AdminActionType {
+  SUSPEND_USER
+  REACTIVATE_USER
+  ADJUST_QUOTA
+  GRANT_CREDITS
+  PROMOTE_ADMIN
+  DEMOTE_ADMIN
+  APPROVE_TOPUP
+  REJECT_TOPUP
+}
+
+/// Journal d'audit des actions administratives : qui a fait quoi, sur qui,
+/// pourquoi. Append-only — jamais mis à jour ni supprimé.
+model AdminAction {
+  id           String          @id @default(cuid())
+  adminId      String
+  admin        User            @relation("AdminActionsPerformed", fields: [adminId], references: [id])
+  targetUserId String?
+  targetUser   User?           @relation("AdminActionsReceived", fields: [targetUserId], references: [id])
+  type         AdminActionType
+  reason       String?
+  details      Json?
+  createdAt    DateTime        @default(now())
+
+  @@index([createdAt])
+  @@index([targetUserId, createdAt])
 }

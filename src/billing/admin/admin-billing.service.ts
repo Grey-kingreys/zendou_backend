@@ -4,7 +4,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { TopUpStatus } from '@prisma/client';
+import { AdminActionType, TopUpStatus } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import {
   CREDIT_REASON_TOPUP,
@@ -90,6 +90,21 @@ export class AdminBillingService {
         },
       });
 
+      // Même transaction que l'approbation et le crédit : le journal d'audit
+      // ne peut pas diverger de l'argent réellement accordé.
+      await tx.adminAction.create({
+        data: {
+          adminId,
+          targetUserId: updated.userId,
+          type: AdminActionType.APPROVE_TOPUP,
+          details: {
+            topUpRequestId: updated.id,
+            credits: updated.credits,
+            amountGnf: request.amountGnf,
+          },
+        },
+      });
+
       return { id: updated.id, status: updated.status };
     });
   }
@@ -100,30 +115,46 @@ export class AdminBillingService {
     adminId: string,
     dto: RejectTopUpRequestDto,
   ): Promise<AdminTopUpRequestReviewResult> {
-    const request = await this.prisma.topUpRequest.findUnique({
-      where: { id },
+    return this.prisma.$transaction(async (tx) => {
+      const request = await tx.topUpRequest.findUnique({
+        where: { id },
+      });
+
+      if (!request) {
+        throw new NotFoundException(TOPUP_REQUEST_NOT_FOUND_MESSAGE);
+      }
+
+      if (request.status !== TopUpStatus.PENDING) {
+        throw new ConflictException(TOPUP_REQUEST_ALREADY_REVIEWED_MESSAGE);
+      }
+
+      const updated = await tx.topUpRequest.update({
+        where: { id },
+        data: {
+          status: TopUpStatus.REJECTED,
+          reviewedAt: new Date(),
+          reviewedBy: adminId,
+          rejectionReason: dto.reason,
+        },
+        select: { id: true, status: true },
+      });
+
+      await tx.adminAction.create({
+        data: {
+          adminId,
+          targetUserId: request.userId,
+          type: AdminActionType.REJECT_TOPUP,
+          reason: dto.reason,
+          details: {
+            topUpRequestId: request.id,
+            credits: request.credits,
+            amountGnf: request.amountGnf,
+          },
+        },
+      });
+
+      return updated;
     });
-
-    if (!request) {
-      throw new NotFoundException(TOPUP_REQUEST_NOT_FOUND_MESSAGE);
-    }
-
-    if (request.status !== TopUpStatus.PENDING) {
-      throw new ConflictException(TOPUP_REQUEST_ALREADY_REVIEWED_MESSAGE);
-    }
-
-    const updated = await this.prisma.topUpRequest.update({
-      where: { id },
-      data: {
-        status: TopUpStatus.REJECTED,
-        reviewedAt: new Date(),
-        reviewedBy: adminId,
-        rejectionReason: dto.reason,
-      },
-      select: { id: true, status: true },
-    });
-
-    return updated;
   }
 
   private parseStatus(raw: string | undefined): TopUpStatus | undefined {

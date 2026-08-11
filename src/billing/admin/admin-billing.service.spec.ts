@@ -1,6 +1,6 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { ConflictException, NotFoundException } from '@nestjs/common';
-import { TopUpMethod, TopUpStatus } from '@prisma/client';
+import { AdminActionType, TopUpMethod, TopUpStatus } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import {
   CREDIT_REASON_TOPUP,
@@ -45,6 +45,7 @@ describe('AdminBillingService', () => {
   const findUniqueTopUp = jest.fn();
   const updateTopUp = jest.fn();
   const createCreditEntry = jest.fn();
+  const createAdminAction = jest.fn();
   const $transaction = jest.fn();
 
   const prisma = {
@@ -54,6 +55,7 @@ describe('AdminBillingService', () => {
       update: updateTopUp,
     },
     creditEntry: { create: createCreditEntry },
+    adminAction: { create: createAdminAction },
     $transaction,
   };
 
@@ -134,6 +136,45 @@ describe('AdminBillingService', () => {
       expect(result).toEqual({ id: 'topup_1', status: TopUpStatus.APPROVED });
     });
 
+    it('writes the audit trail inside the same transaction as the credit', async () => {
+      findUniqueTopUp.mockResolvedValue(PENDING_REQUEST);
+      updateTopUp.mockResolvedValue({
+        id: 'topup_1',
+        status: TopUpStatus.APPROVED,
+        userId: 'user_1',
+        credits: 10_000,
+      });
+
+      await service.approve('topup_1', 'admin_1');
+
+      expect($transaction).toHaveBeenCalledTimes(1);
+      expect(createAdminAction).toHaveBeenCalledWith({
+        data: {
+          adminId: 'admin_1',
+          targetUserId: 'user_1',
+          type: AdminActionType.APPROVE_TOPUP,
+          details: {
+            topUpRequestId: 'topup_1',
+            credits: 10_000,
+            amountGnf: 25_000,
+          },
+        },
+      });
+    });
+
+    it('writes no audit line when the request is already reviewed', async () => {
+      findUniqueTopUp.mockResolvedValue({
+        ...PENDING_REQUEST,
+        status: TopUpStatus.APPROVED,
+      });
+
+      await expect(
+        service.approve('topup_1', 'admin_1'),
+      ).rejects.toBeInstanceOf(ConflictException);
+
+      expect(createAdminAction).not.toHaveBeenCalled();
+    });
+
     it('throws 404 for an unknown request', async () => {
       findUniqueTopUp.mockResolvedValue(null);
 
@@ -198,6 +239,31 @@ describe('AdminBillingService', () => {
       expect(update.select).toEqual({ id: true, status: true });
       expect(createCreditEntry).not.toHaveBeenCalled();
       expect(result).toEqual({ id: 'topup_1', status: TopUpStatus.REJECTED });
+    });
+
+    it('writes the audit trail inside the same transaction as the rejection', async () => {
+      findUniqueTopUp.mockResolvedValue(PENDING_REQUEST);
+      updateTopUp.mockResolvedValue({
+        id: 'topup_1',
+        status: TopUpStatus.REJECTED,
+      });
+
+      await service.reject('topup_1', 'admin_1', rejectDto);
+
+      expect($transaction).toHaveBeenCalledTimes(1);
+      expect(createAdminAction).toHaveBeenCalledWith({
+        data: {
+          adminId: 'admin_1',
+          targetUserId: 'user_1',
+          type: AdminActionType.REJECT_TOPUP,
+          reason: rejectDto.reason,
+          details: {
+            topUpRequestId: 'topup_1',
+            credits: 10_000,
+            amountGnf: 25_000,
+          },
+        },
+      });
     });
 
     it('throws 404 for an unknown request', async () => {

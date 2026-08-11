@@ -31,6 +31,7 @@ const USER_SELECT = {
   email: true,
   status: true,
   dailySendLimit: true,
+  reputationResetAt: true,
   createdAt: true,
 } satisfies Record<keyof ReputationUser, true>;
 
@@ -127,7 +128,7 @@ export class ReputationService {
   }
 
   private async evaluateUser(user: ReputationUser): Promise<ReputationMetrics> {
-    const since = new Date(Date.now() - REPUTATION_WINDOW_DAYS * DAY_MS);
+    const since = windowStart(user);
 
     const rows = await this.prisma.email.groupBy({
       by: ['status'],
@@ -212,9 +213,16 @@ export class ReputationService {
       return;
     }
 
+    // `suspendedAt`/`suspensionReason` sont posés ici comme ils le sont par
+    // une suspension administrative : l'écran admin affiche la même chose,
+    // quelle que soit l'origine de la suspension.
     await this.prisma.user.update({
       where: { id: user.id },
-      data: { status: UserStatus.SUSPENDED },
+      data: {
+        status: UserStatus.SUSPENDED,
+        suspendedAt: new Date(),
+        suspensionReason: buildSuspensionReason(metrics),
+      },
     });
 
     // La ligne en mémoire doit refléter l'écriture : `overview` renvoie
@@ -297,6 +305,52 @@ export function resolveDailyLimit(
   return tier?.dailyLimit ?? DEFAULT_DAILY_SEND_LIMIT;
 }
 
+/**
+ * Borne basse de la fenêtre d'observation : la plus **récente** entre les 30
+ * jours glissants et la remise à zéro de réputation posée par la dernière
+ * réactivation administrative.
+ *
+ * Sans cette borne, réactiver un compte ne servirait à rien : il traînerait
+ * jusqu'à 30 jours de rebonds et de plaintes déjà sanctionnés, et le premier
+ * rebond suivant la réactivation le re-suspendrait immédiatement. La remise à
+ * zéro solde le passé — elle ne relâche aucun seuil, elle repart de zéro
+ * (et le volume minimum protège de nouveau le compte le temps qu'il se
+ * reconstitue un historique significatif).
+ */
+export function windowStart(user: { reputationResetAt: Date | null }): Date {
+  const slidingWindow = new Date(Date.now() - REPUTATION_WINDOW_DAYS * DAY_MS);
+
+  if (user.reputationResetAt && user.reputationResetAt > slidingWindow) {
+    return user.reputationResetAt;
+  }
+
+  return slidingWindow;
+}
+
+/**
+ * Raison lisible inscrite dans `User.suspensionReason` : le taux constaté et
+ * le seuil franchi, pour que l'admin sache pourquoi sans relire les logs.
+ */
+export function buildSuspensionReason(metrics: ReputationMetrics): string {
+  const crossed: string[] = [];
+
+  if (metrics.bounceRate > MAX_BOUNCE_RATE) {
+    crossed.push(
+      `taux de rebonds durs ${formatRate(metrics.bounceRate)} ` +
+        `(${metrics.hardBounces}/${metrics.sent}, seuil ${formatRate(MAX_BOUNCE_RATE)})`,
+    );
+  }
+
+  if (metrics.complaintRate > MAX_COMPLAINT_RATE) {
+    crossed.push(
+      `taux de plaintes ${formatRate(metrics.complaintRate)} ` +
+        `(${metrics.complaints}/${metrics.sent}, seuil ${formatRate(MAX_COMPLAINT_RATE)})`,
+    );
+  }
+
+  return `Suspension automatique — ${crossed.join(' ; ')}`;
+}
+
 function ageInDays(createdAt: Date): number {
   return (Date.now() - createdAt.getTime()) / DAY_MS;
 }
@@ -305,7 +359,8 @@ function describeMetrics(metrics: ReputationMetrics): string {
   return (
     `${metrics.sent} envois, ${metrics.hardBounces} rebonds durs (${formatRate(metrics.bounceRate)}), ` +
     `${metrics.transientBounces} transitoires ignorés, ` +
-    `${metrics.complaints} plaintes (${formatRate(metrics.complaintRate)}) sur ${REPUTATION_WINDOW_DAYS} jours`
+    `${metrics.complaints} plaintes (${formatRate(metrics.complaintRate)}) ` +
+    `sur la fenêtre d'observation (${REPUTATION_WINDOW_DAYS} jours au maximum)`
   );
 }
 

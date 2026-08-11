@@ -42,6 +42,20 @@ function sesPayload(message: SnsMessage): SesEventPayload {
   return JSON.parse(message.Message) as SesEventPayload;
 }
 
+/**
+ * Écriture attendue d'une suspension automatique. `suspendedAt` est un
+ * `new Date()` réel — l'horloge figée porte sur `Date.now`, que `new Date()`
+ * ne consulte pas — et le motif est vérifié dans son propre test.
+ */
+const SUSPENSION_WRITE = {
+  where: { id: 'user_1' },
+  data: {
+    status: UserStatus.SUSPENDED,
+    suspendedAt: expect.any(Date) as unknown as Date,
+    suspensionReason: expect.any(String) as unknown as string,
+  },
+};
+
 describe('ReputationService', () => {
   let service: ReputationService;
 
@@ -72,6 +86,7 @@ describe('ReputationService', () => {
       email: 'contact@boutique-awa.gn',
       status: UserStatus.ACTIVE,
       dailySendLimit: 200,
+      reputationResetAt: null,
       createdAt: agedDays(1),
       ...overrides,
     });
@@ -198,10 +213,7 @@ describe('ReputationService', () => {
         bounceRate: 0.06,
         verdict: 'SUSPEND',
       });
-      expect(userUpdate).toHaveBeenCalledWith({
-        where: { id: 'user_1' },
-        data: { status: UserStatus.SUSPENDED },
-      });
+      expect(userUpdate).toHaveBeenCalledWith(SUSPENSION_WRITE);
     });
 
     it('suspends the account at 0,2 % complaints over 1 000 sends', async () => {
@@ -217,10 +229,7 @@ describe('ReputationService', () => {
         complaintRate: 0.002,
         verdict: 'SUSPEND',
       });
-      expect(userUpdate).toHaveBeenCalledWith({
-        where: { id: 'user_1' },
-        data: { status: UserStatus.SUSPENDED },
-      });
+      expect(userUpdate).toHaveBeenCalledWith(SUSPENSION_WRITE);
     });
 
     it('logs the account, the rates and the counters when it suspends', async () => {
@@ -347,10 +356,7 @@ describe('ReputationService', () => {
         verdict: 'SUSPEND',
       });
       expect(metrics.bounceRate).toBeCloseTo(4 / 60, 10);
-      expect(userUpdate).toHaveBeenCalledWith({
-        where: { id: 'user_1' },
-        data: { status: UserStatus.SUSPENDED },
-      });
+      expect(userUpdate).toHaveBeenCalledWith(SUSPENSION_WRITE);
     });
 
     it('suspends on the hard bounces only, transient ones just reported', async () => {
@@ -403,6 +409,168 @@ describe('ReputationService', () => {
 
       expect(written.startsWith(readPrefix)).toBe(true);
       expect(transient.startsWith(readPrefix)).toBe(false);
+    });
+  });
+
+  describe('suspension bookkeeping', () => {
+    it('records suspendedAt and a reason naming the rate and the threshold', async () => {
+      groupBy.mockResolvedValue(
+        statusRows({ [EmailStatus.SENT]: 56, [EmailStatus.BOUNCED]: 4 }),
+      );
+      givenHardBounces(4);
+
+      await service.evaluate('user_1');
+
+      const [write] = userUpdate.mock.calls[0] as [
+        { data: { suspendedAt: Date; suspensionReason: string } },
+      ];
+      expect(write.data.suspendedAt).toBeInstanceOf(Date);
+      // 4 rebonds durs sur 60 envois = 6,67 %, au-dessus des 5 % tolérés.
+      expect(write.data.suspensionReason).toBe(
+        'Suspension automatique — taux de rebonds durs 6.67 % (4/60, seuil 5.00 %)',
+      );
+    });
+
+    it('names the complaint threshold when it is the one crossed', async () => {
+      groupBy.mockResolvedValue(
+        statusRows({ [EmailStatus.SENT]: 998, [EmailStatus.COMPLAINED]: 2 }),
+      );
+
+      await service.evaluate('user_1');
+
+      const [write] = userUpdate.mock.calls[0] as [
+        { data: { suspensionReason: string } },
+      ];
+      expect(write.data.suspensionReason).toBe(
+        'Suspension automatique — taux de plaintes 0.20 % (2/1000, seuil 0.10 %)',
+      );
+    });
+  });
+
+  /**
+   * Réactivation administrative : `reputationResetAt` borne la fenêtre par le
+   * bas. Sans cela, un compte rouvert traînerait les rebonds qui l'ont fait
+   * suspendre et serait re-suspendu au premier événement suivant — la
+   * réactivation ne serait que décorative.
+   */
+  describe('reputation reset window', () => {
+    const RESET_AT = new Date(NOW.getTime() - 1 * DAY_MS);
+    /** Les 10 rebonds durs qui ont motivé la suspension, il y a 5 jours. */
+    const BEFORE_RESET = new Date(NOW.getTime() - 5 * DAY_MS);
+    /** Les 60 envois propres postérieurs à la réactivation. */
+    const AFTER_RESET = new Date(NOW.getTime() - 2 * 60 * 60 * 1000);
+
+    interface FakeEmail {
+      status: EmailStatus;
+      queuedAt: Date;
+      hard: boolean;
+    }
+
+    /**
+     * Base simulée : ce que la fenêtre demandée sélectionne décide de tout.
+     * Le même jeu de données donne SUSPEND sans remise à zéro et OK avec —
+     * c'est exactement la propriété qu'on veut prouver.
+     */
+    function givenHistory(): void {
+      const emails: FakeEmail[] = [
+        ...Array.from({ length: 10 }, () => ({
+          status: EmailStatus.BOUNCED,
+          queuedAt: BEFORE_RESET,
+          hard: true,
+        })),
+        ...Array.from({ length: 60 }, () => ({
+          status: EmailStatus.SENT,
+          queuedAt: AFTER_RESET,
+          hard: false,
+        })),
+      ];
+
+      const inWindow = (since: Date): FakeEmail[] =>
+        emails.filter((email) => email.queuedAt >= since);
+
+      groupBy.mockImplementation(
+        (args: { where: { queuedAt: { gte: Date } } }) =>
+          Promise.resolve(
+            statusRows(
+              inWindow(args.where.queuedAt.gte).reduce<
+                Partial<Record<EmailStatus, number>>
+              >((counts, email) => {
+                counts[email.status] = (counts[email.status] ?? 0) + 1;
+                return counts;
+              }, {}),
+            ),
+          ),
+      );
+
+      count.mockImplementation((args: { where: { queuedAt: { gte: Date } } }) =>
+        Promise.resolve(
+          inWindow(args.where.queuedAt.gte).filter((email) => email.hard)
+            .length,
+        ),
+      );
+    }
+
+    it('lowers the window bound to reputationResetAt when it is more recent', async () => {
+      givenUser({ reputationResetAt: RESET_AT });
+      givenHistory();
+
+      await service.evaluate('user_1');
+
+      expect(groupBy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            queuedAt: { gte: RESET_AT },
+          }) as unknown,
+        }),
+      );
+    });
+
+    it('keeps the 30-day window when the reset is older than it', async () => {
+      givenUser({ reputationResetAt: new Date(NOW.getTime() - 90 * DAY_MS) });
+      givenHistory();
+
+      await service.evaluate('user_1');
+
+      expect(groupBy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            queuedAt: { gte: new Date(NOW.getTime() - 30 * DAY_MS) },
+          }) as unknown,
+        }),
+      );
+    });
+
+    it('re-suspends the very same history when no reset was ever posted', async () => {
+      givenUser({ reputationResetAt: null });
+      givenHistory();
+
+      const metrics = await service.evaluate('user_1');
+
+      expect(metrics).toMatchObject({
+        sent: 70,
+        hardBounces: 10,
+        verdict: 'SUSPEND',
+      });
+      expect(userUpdate).toHaveBeenCalledWith(SUSPENSION_WRITE);
+    });
+
+    it('verdicts OK on a reactivated account whose 10 hard bounces predate the reset', async () => {
+      givenUser({ reputationResetAt: RESET_AT });
+      givenHistory();
+
+      const metrics = await service.evaluate('user_1');
+
+      expect(metrics).toEqual({
+        sent: 60,
+        bounces: 0,
+        hardBounces: 0,
+        transientBounces: 0,
+        complaints: 0,
+        bounceRate: 0,
+        complaintRate: 0,
+        verdict: 'OK',
+      });
+      expect(userUpdate).not.toHaveBeenCalled();
     });
   });
 
@@ -551,10 +719,7 @@ describe('ReputationService', () => {
       await expect(service.recomputeDailyLimit('user_1')).resolves.toBe(200);
 
       expect(userUpdate).toHaveBeenCalledTimes(1);
-      expect(userUpdate).toHaveBeenCalledWith({
-        where: { id: 'user_1' },
-        data: { status: UserStatus.SUSPENDED },
-      });
+      expect(userUpdate).toHaveBeenCalledWith(SUSPENSION_WRITE);
     });
 
     it('takes the hourly Redis slot before doing any work', async () => {

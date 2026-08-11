@@ -37,5 +37,11 @@ export interface ReputationUser {
   email: string;
   status: UserStatus;
   dailySendLimit: number;
+  /**
+   * Remise à zéro de réputation posée par une réactivation administrative :
+   * borne basse de la fenêtre d'observation quand elle est plus récente que
+   * les 30 jours glissants. `null` sur un compte jamais réactivé.
+   */
+  reputationResetAt: Date | null;
   createdAt: Date;
 }
