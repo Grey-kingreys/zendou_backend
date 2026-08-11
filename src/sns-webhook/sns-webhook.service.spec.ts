@@ -1,6 +1,8 @@
 import { Test, TestingModule } from '@nestjs/testing';
+import { Logger } from '@nestjs/common';
 import { EmailStatus, SuppressionReason } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import { ReputationService } from '../reputation';
 import {
   complaintFixture,
   deliveryFixture,
@@ -23,6 +25,7 @@ describe('SnsWebhookService', () => {
   const email = { findUnique: jest.fn(), update: jest.fn() };
   const suppression = { upsert: jest.fn() };
   const httpClient = { get: jest.fn() };
+  const reputation = { evaluate: jest.fn() };
 
   beforeEach(async () => {
     jest.clearAllMocks();
@@ -30,12 +33,14 @@ describe('SnsWebhookService', () => {
     email.update.mockResolvedValue(EMAIL_ROW);
     suppression.upsert.mockResolvedValue({ id: 'sup_1' });
     httpClient.get.mockResolvedValue('<ConfirmSubscriptionResponse/>');
+    reputation.evaluate.mockResolvedValue({ verdict: 'OK' });
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         SnsWebhookService,
         { provide: PrismaService, useValue: { email, suppression } },
         { provide: SnsHttpClient, useValue: httpClient },
+        { provide: ReputationService, useValue: reputation },
       ],
     }).compile();
 
@@ -175,6 +180,49 @@ describe('SnsWebhookService', () => {
           lastEventAt: new Date('2026-08-11T11:15:44.678Z'),
         },
       });
+    });
+  });
+
+  describe('reputation hook', () => {
+    it('re-evaluates the sender after a permanent bounce', async () => {
+      await service.handle(permanentBounceFixture());
+
+      expect(reputation.evaluate).toHaveBeenCalledWith('user_1');
+    });
+
+    it('re-evaluates the sender after a transient bounce', async () => {
+      await service.handle(transientBounceFixture());
+
+      expect(reputation.evaluate).toHaveBeenCalledWith('user_1');
+    });
+
+    it('re-evaluates the sender after a complaint', async () => {
+      await service.handle(complaintFixture());
+
+      expect(reputation.evaluate).toHaveBeenCalledWith('user_1');
+    });
+
+    it('never re-evaluates on a delivery', async () => {
+      await service.handle(deliveryFixture());
+
+      expect(reputation.evaluate).not.toHaveBeenCalled();
+    });
+
+    // SNS rejoue puis désabonne un endpoint qui n'acquitte pas : une
+    // évaluation en échec ne doit jamais faire échouer le webhook.
+    it('swallows an evaluation failure so SNS still gets its 200', async () => {
+      const logged = jest
+        .spyOn(Logger.prototype, 'error')
+        .mockImplementation(() => undefined);
+      reputation.evaluate.mockRejectedValue(new Error('base indisponible'));
+
+      await expect(
+        service.handle(permanentBounceFixture()),
+      ).resolves.toBeUndefined();
+
+      expect(email.update).toHaveBeenCalled();
+      expect(logged).toHaveBeenCalled();
+      logged.mockRestore();
     });
   });
 

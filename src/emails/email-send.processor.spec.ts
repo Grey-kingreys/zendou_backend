@@ -3,6 +3,7 @@ import { Logger } from '@nestjs/common';
 import { EmailStatus } from '@prisma/client';
 import type { Job } from 'bullmq';
 import { PrismaService } from '../prisma/prisma.service';
+import { ReputationService } from '../reputation';
 import { EmailSendProcessor } from './email-send.processor';
 import { SEND_JOB_ATTEMPTS } from './emails.constants';
 import type { EmailSendJobData } from './emails.types';
@@ -45,6 +46,7 @@ describe('EmailSendProcessor', () => {
   const suppression = { findFirst: jest.fn() };
   const prisma = { email, suppression };
   const driver = { send: jest.fn() };
+  const reputation = { recomputeDailyLimit: jest.fn() };
 
   beforeAll(() => {
     jest.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined);
@@ -67,12 +69,14 @@ describe('EmailSendProcessor', () => {
     });
     suppression.findFirst.mockResolvedValue(null);
     driver.send.mockResolvedValue({ messageId: 'stub-a1b2c3d4' });
+    reputation.recomputeDailyLimit.mockResolvedValue(200);
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         EmailSendProcessor,
         { provide: PrismaService, useValue: prisma },
         { provide: SES_SEND_DRIVER, useValue: driver },
+        { provide: ReputationService, useValue: reputation },
       ],
     }).compile();
 
@@ -101,6 +105,37 @@ describe('EmailSendProcessor', () => {
       sesMessageId: 'stub-a1b2c3d4',
     });
     expect(update.data.sentAt).toBeInstanceOf(Date);
+  });
+
+  it('asks for a daily-limit recompute after a successful send', async () => {
+    await processor.process(jobFor());
+
+    expect(reputation.recomputeDailyLimit).toHaveBeenCalledWith(
+      storedEmail.userId,
+    );
+  });
+
+  it('never recomputes the daily limit when the send failed', async () => {
+    driver.send.mockRejectedValue(new Error('SES indisponible'));
+
+    await expect(processor.process(jobFor())).rejects.toThrow(
+      'SES indisponible',
+    );
+
+    expect(reputation.recomputeDailyLimit).not.toHaveBeenCalled();
+  });
+
+  // Le recalcul est un à-côté : son échec ne doit jamais faire rejouer un
+  // email déjà parti chez SES.
+  it('keeps the send successful when the recompute fails', async () => {
+    reputation.recomputeDailyLimit.mockRejectedValue(new Error('redis down'));
+
+    await expect(processor.process(jobFor())).resolves.toBeUndefined();
+
+    // Laisse la microtâche du `catch` s'exécuter.
+    await Promise.resolve();
+
+    expect(lastUpdate().data).toMatchObject({ status: EmailStatus.SENT });
   });
 
   it('does nothing when the email row is gone', async () => {

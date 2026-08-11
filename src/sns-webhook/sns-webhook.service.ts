@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { EmailStatus, SuppressionReason } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import { ReputationService } from '../reputation';
 import { SnsHttpClient } from './sns-http.client';
 import { isTrustedSnsUrl } from './sns-signature.validator';
 import {
@@ -29,6 +30,7 @@ export class SnsWebhookService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly httpClient: SnsHttpClient,
+    private readonly reputation: ReputationService,
   ) {}
 
   async handle(message: SnsMessage): Promise<void> {
@@ -153,6 +155,9 @@ export class SnsWebhookService {
         lastEventAt: occurredAt,
       },
     });
+
+    // Les rebonds temporaires comptent aussi : AWS les mesure tous.
+    await this.evaluateReputation(email.userId);
   }
 
   private async applyComplaint(
@@ -177,6 +182,24 @@ export class SnsWebhookService {
         lastEventAt: occurredAt,
       },
     });
+
+    await this.evaluateReputation(email.userId);
+  }
+
+  /**
+   * Réévalue la réputation du propriétaire de l'email. SNS doit toujours
+   * recevoir un 200 : un échec d'évaluation est tracé, jamais propagé —
+   * sinon SNS rejouerait l'événement et finirait par désabonner l'endpoint.
+   */
+  private async evaluateReputation(userId: string): Promise<void> {
+    try {
+      await this.reputation.evaluate(userId);
+    } catch (error) {
+      this.logger.error(
+        `Évaluation de réputation en échec pour l'utilisateur ${userId}`,
+        error instanceof Error ? error.stack : String(error),
+      );
+    }
   }
 
   /** Idempotent : rejoue le même événement sans créer de doublon. */
