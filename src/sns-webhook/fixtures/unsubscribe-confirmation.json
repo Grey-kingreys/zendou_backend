@@ -1,0 +1,12 @@
+{
+  "Type": "UnsubscribeConfirmation",
+  "MessageId": "c8f1a6d3-4b52-4e19-9a7c-3f0b8d2e5c14",
+  "Token": "2336412f37fb687f5d51e6e2425dacbba60ff1a19eb1a1cbeb46e1f0d0d1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f70",
+  "TopicArn": "arn:aws:sns:eu-west-3:123456789012:zendou-ses-events",
+  "Message": "You have chosen to deactivate subscription arn:aws:sns:eu-west-3:123456789012:zendou-ses-events:2bcfbf39-05c3-41de-beaa-fcfcc21c8f55.\nTo cancel this operation and restore the subscription, visit the SubscribeURL included in this message.",
+  "SubscribeURL": "https://sns.eu-west-3.amazonaws.com/?Action=ConfirmSubscription&TopicArn=arn:aws:sns:eu-west-3:123456789012:zendou-ses-events&Token=2336412f37fb687f5d51e6e2425dacbba60ff1a19eb1a1cbeb46e1f0d0d1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f70",
+  "Timestamp": "2026-08-11T12:00:00.000Z",
+  "SignatureVersion": "1",
+  "Signature": "ONkntOzIlcFoRyyjxPkl0f4Ss5mFVUgYtolnWLEoLNATh8pdgs0VMVGYL1bi/7l9X6dU8lCubgz8JKl21S+hDdarKW7EdaIkhLbK4NnU8B7QI03iL/hcw99+f5D3ynk6WLe6u+Zq3vrzcRM3spKxmCBV+n/gt+8Y0MUcFAb/2t+ozkuS3MFRmSwU1ltnqvDObALWMtieeCiBjUBtCAC6vmr9Q6UqIMwxly2uEqz2B5ZaT69a+4Q27DqWAK0EsaSxUf0/RWVd+6Sr2NDGmjTWQHOkhGKUJgp4OFRj3unzFxGs3u31B99wamr///qDqjAfL0CeO18CqOcOfVHpm8VPLg==",
+  "SigningCertURL": "https://sns.eu-west-3.amazonaws.com/SimpleNotificationService-7ff5318490ec183fbaddaa2a969abfda.pem"
+}

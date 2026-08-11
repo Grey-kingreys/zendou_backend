@@ -8,6 +8,7 @@ import { AuthModule } from './auth/auth.module';
 import { ApiKeysModule } from './api-keys/api-keys.module';
 import { EmailsLogModule } from './emails-log/emails-log.module';
 import { DomainsModule } from './domains/domains.module';
+import { SnsWebhookModule } from './sns-webhook/sns-webhook.module';
 import { EMAIL_SEND_QUEUE } from './queues/queues';
 
 @Module({
@@ -31,6 +32,7 @@ import { EMAIL_SEND_QUEUE } from './queues/queues';
     ApiKeysModule,
     EmailsLogModule,
     DomainsModule,
+    SnsWebhookModule,
   ],
 })
 export class AppModule {}

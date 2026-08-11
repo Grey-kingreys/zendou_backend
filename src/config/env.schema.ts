@@ -1,6 +1,18 @@
 import { z } from 'zod';
 
-export const envSchema = z.object({
+/** `true`, `1`, `yes`, `on` (insensible à la casse) valent vrai ; tout le reste faux. */
+const TRUTHY_VALUES = ['1', 'true', 'yes', 'on'];
+
+const booleanFromEnv = z
+  .union([z.boolean(), z.string()])
+  .default(false)
+  .transform((value) =>
+    typeof value === 'boolean'
+      ? value
+      : TRUTHY_VALUES.includes(value.trim().toLowerCase()),
+  );
+
+const baseEnvSchema = z.object({
   NODE_ENV: z
     .enum(['development', 'test', 'production'])
     .default('development'),
@@ -21,7 +33,22 @@ export const envSchema = z.object({
   SES_SMTP_USER: z.string().optional(),
   SES_SMTP_PASSWORD: z.string().optional(),
   SES_SNS_TOPIC_ARN: z.string().optional(),
+
+  // Contournement de la vérification de signature SNS (tests locaux / démo).
+  // Interdit en production : sans signature, n'importe qui peut forger un
+  // bounce et faire suppressor des adresses arbitraires.
+  SNS_SKIP_SIGNATURE_VALIDATION: booleanFromEnv,
 });
+
+export const envSchema = baseEnvSchema.refine(
+  (env) =>
+    !(env.NODE_ENV === 'production' && env.SNS_SKIP_SIGNATURE_VALIDATION),
+  {
+    path: ['SNS_SKIP_SIGNATURE_VALIDATION'],
+    message:
+      'ne peut pas être activé quand NODE_ENV=production (signature SNS obligatoire)',
+  },
+);
 
 export type EnvConfig = z.infer<typeof envSchema>;
 
