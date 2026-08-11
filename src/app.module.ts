@@ -9,6 +9,7 @@ import { ApiKeysModule } from './api-keys/api-keys.module';
 import { EmailsLogModule } from './emails-log/emails-log.module';
 import { EmailsModule } from './emails/emails.module';
 import { DomainsModule } from './domains/domains.module';
+import { ReputationModule } from './reputation';
 import { SnsWebhookModule } from './sns-webhook/sns-webhook.module';
 import { EMAIL_SEND_QUEUE } from './queues/queues';
 
@@ -34,6 +35,7 @@ import { EMAIL_SEND_QUEUE } from './queues/queues';
     EmailsLogModule,
     EmailsModule,
     DomainsModule,
+    ReputationModule,
     SnsWebhookModule,
   ],
 })

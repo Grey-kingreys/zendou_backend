@@ -4,6 +4,7 @@ import { EmailStatus } from '@prisma/client';
 import type { Job } from 'bullmq';
 import { PrismaService } from '../prisma/prisma.service';
 import { EMAIL_SEND_QUEUE } from '../queues/queues';
+import { ReputationService } from '../reputation';
 import { ERROR_MESSAGE_MAX_LENGTH } from './emails.constants';
 import type { EmailSendJobData } from './emails.types';
 import {
@@ -37,6 +38,7 @@ export class EmailSendProcessor extends WorkerHost {
     private readonly prisma: PrismaService,
     @Inject(SES_SEND_DRIVER)
     private readonly driver: SesSendDriver,
+    private readonly reputation: ReputationService,
   ) {
     super();
   }
@@ -94,6 +96,20 @@ export class EmailSendProcessor extends WorkerHost {
           sesMessageId: messageId,
         },
       });
+
+      // Montée en charge progressive : recalcul opportuniste du quota, au
+      // plus une fois par heure et par client. Fire-and-forget — un envoi
+      // réussi ne doit jamais être remis en cause par ce calcul annexe.
+      void this.reputation
+        .recomputeDailyLimit(email.userId)
+        .catch((recomputeError: unknown) => {
+          this.logger.warn(
+            `Recalcul du quota journalier en échec pour l'utilisateur ${email.userId}`,
+            recomputeError instanceof Error
+              ? recomputeError.stack
+              : String(recomputeError),
+          );
+        });
     } catch (error) {
       if (isPermanentSendError(error)) {
         // Rien à retenter : on clôt l'email immédiatement, sans relancer.
