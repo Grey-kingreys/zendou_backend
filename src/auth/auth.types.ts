@@ -13,6 +13,16 @@ export interface AuthUser {
   declaredUsage: string | null;
   role: UserRole;
   status: UserStatus;
+  /**
+   * Optionnel au niveau du type (et non `number` strict) uniquement pour ne
+   * pas casser la compilation des fixtures `AuthUser` déjà écrites dans les
+   * specs d'autres modules (domains, reputation, api-keys, billing,
+   * emails-log…) qui construisent un utilisateur authentifié minimal sans
+   * ce champ. En pratique il est toujours présent : `AUTH_USER_SELECT` le
+   * sélectionne systématiquement, donc `GET`/`PATCH /v1/auth/me` le
+   * renvoient toujours dans le JSON réel.
+   */
+  dailySendLimit?: number;
   createdAt: Date;
 }
 
@@ -28,6 +38,7 @@ export const AUTH_USER_SELECT = {
   declaredUsage: true,
   role: true,
   status: true,
+  dailySendLimit: true,
   createdAt: true,
 } satisfies Record<keyof AuthUser, true>;
 

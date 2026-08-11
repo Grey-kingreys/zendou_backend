@@ -19,3 +19,28 @@ export const INVALID_CREDENTIALS_MESSAGE = 'Email ou mot de passe incorrect';
 /** Message renvoyé lorsqu'une adresse email est déjà enregistrée. */
 export const EMAIL_ALREADY_USED_MESSAGE =
   'Cette adresse email est déjà utilisée';
+
+/** Message renvoyé quand `PATCH /v1/auth/me` reçoit un body sans aucun champ. */
+export const NO_CHANGES_MESSAGE = 'Aucune modification fournie';
+
+/**
+ * Message renvoyé quand `currentPassword` fourni à
+ * `POST /v1/auth/change-password` est incorrect.
+ * Volontairement distinct de `INVALID_CREDENTIALS_MESSAGE` (login) :
+ * ici l'utilisateur est déjà authentifié, son email est déjà connu de lui
+ * comme du serveur, donc préciser que c'est le mot de passe qui est faux
+ * ne permet aucune énumération de comptes.
+ */
+export const WRONG_CURRENT_PASSWORD_MESSAGE = 'Mot de passe actuel incorrect';
+
+/** Message renvoyé quand le nouveau mot de passe est identique à l'actuel. */
+export const SAME_PASSWORD_MESSAGE =
+  "Le nouveau mot de passe doit être différent de l'actuel";
+
+/**
+ * Préfixe des clés Redis indexant, par utilisateur, l'ensemble des tokens de
+ * session actifs : `usersess:<userId>` -> Set<token>. Permet de révoquer
+ * toutes les sessions d'un utilisateur (ex. changement de mot de passe)
+ * sans SCAN sur tout Redis.
+ */
+export const SESSION_USER_SET_PREFIX = 'usersess:';

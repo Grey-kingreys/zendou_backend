@@ -48,7 +48,12 @@ function requestMock(cookies?: Record<string, string>): Request {
 describe('AuthController', () => {
   let controller: AuthController;
 
-  const authService = { register: jest.fn(), login: jest.fn() };
+  const authService = {
+    register: jest.fn(),
+    login: jest.fn(),
+    updateProfile: jest.fn(),
+    changePassword: jest.fn(),
+  };
   const sessionService = {
     create: jest.fn(),
     resolve: jest.fn(),
@@ -155,6 +160,56 @@ describe('AuthController', () => {
 
   it('returns the injected current user on /me', () => {
     expect(controller.me(authUser)).toEqual(authUser);
+  });
+
+  it('delegates PATCH /me to the service with the current user id', async () => {
+    const updated = { ...authUser, name: 'Nouveau Nom' };
+    authService.updateProfile.mockResolvedValue(updated);
+
+    await expect(
+      controller.updateMe(authUser, { name: 'Nouveau Nom' }),
+    ).resolves.toEqual(updated);
+
+    expect(authService.updateProfile).toHaveBeenCalledWith('user_1', {
+      name: 'Nouveau Nom',
+    });
+  });
+
+  it('revokes every session and clears the cookie on change-password', async () => {
+    authService.changePassword.mockResolvedValue(undefined);
+    const { response, clearCookie } = responseMock();
+
+    await controller.changePassword(
+      authUser,
+      { currentPassword: 'ancien', newPassword: 'nouveau-mot-de-passe' },
+      response,
+    );
+
+    expect(authService.changePassword).toHaveBeenCalledWith('user_1', {
+      currentPassword: 'ancien',
+      newPassword: 'nouveau-mot-de-passe',
+    });
+    expect(clearCookie).toHaveBeenCalledWith(SESSION_COOKIE_NAME, {
+      httpOnly: true,
+      sameSite: 'lax',
+      path: '/',
+      secure: false,
+    });
+  });
+
+  it('does not clear the cookie if change-password rejects', async () => {
+    authService.changePassword.mockRejectedValue(new Error('nope'));
+    const { response, clearCookie } = responseMock();
+
+    await expect(
+      controller.changePassword(
+        authUser,
+        { currentPassword: 'mauvais', newPassword: 'nouveau-mot-de-passe' },
+        response,
+      ),
+    ).rejects.toThrow('nope');
+
+    expect(clearCookie).not.toHaveBeenCalled();
   });
 });
 
