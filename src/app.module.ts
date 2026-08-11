@@ -5,6 +5,7 @@ import { validateEnv } from './config/env.schema';
 import { PrismaModule } from './prisma/prisma.module';
 import { HealthModule } from './health/health.module';
 import { AuthModule } from './auth/auth.module';
+import { EmailsLogModule } from './emails-log/emails-log.module';
 import { EMAIL_SEND_QUEUE } from './queues/queues';
 
 @Module({
@@ -25,6 +26,7 @@ import { EMAIL_SEND_QUEUE } from './queues/queues';
     PrismaModule,
     HealthModule,
     AuthModule,
+    EmailsLogModule,
   ],
 })
 export class AppModule {}
