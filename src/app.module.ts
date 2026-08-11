@@ -12,6 +12,7 @@ import { DomainsModule } from './domains/domains.module';
 import { ReputationModule } from './reputation';
 import { SnsWebhookModule } from './sns-webhook/sns-webhook.module';
 import { BillingModule } from './billing/billing.module';
+import { SeedModule } from './seed/seed.module';
 import { EMAIL_SEND_QUEUE } from './queues/queues';
 
 @Module({
@@ -39,6 +40,7 @@ import { EMAIL_SEND_QUEUE } from './queues/queues';
     ReputationModule,
     SnsWebhookModule,
     BillingModule,
+    SeedModule,
   ],
 })
 export class AppModule {}

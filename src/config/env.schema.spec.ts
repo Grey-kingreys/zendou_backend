@@ -47,3 +47,79 @@ describe('validateEnv — SNS_SKIP_SIGNATURE_VALIDATION', () => {
     expect(env.SNS_SKIP_SIGNATURE_VALIDATION).toBe(false);
   });
 });
+
+describe('validateEnv — ADMIN_EMAIL / ADMIN_PASSWORD / ADMIN_NAME', () => {
+  it('boots without any admin variable configured', () => {
+    const env = validateEnv({ ...BASE_ENV });
+
+    expect(env.ADMIN_EMAIL).toBeUndefined();
+    expect(env.ADMIN_PASSWORD).toBeUndefined();
+    expect(env.ADMIN_NAME).toBe('Administrateur Zendou');
+  });
+
+  it('boots when both ADMIN_EMAIL and ADMIN_PASSWORD are empty strings', () => {
+    const env = validateEnv({
+      ...BASE_ENV,
+      ADMIN_EMAIL: '',
+      ADMIN_PASSWORD: '',
+    });
+
+    expect(env.ADMIN_EMAIL).toBeUndefined();
+    expect(env.ADMIN_PASSWORD).toBeUndefined();
+  });
+
+  it('accepts a valid, fully configured admin account', () => {
+    const env = validateEnv({
+      ...BASE_ENV,
+      ADMIN_EMAIL: 'admin@zendou.gn',
+      ADMIN_PASSWORD: 'motdepasse-solide',
+      ADMIN_NAME: 'Souleymane',
+    });
+
+    expect(env.ADMIN_EMAIL).toBe('admin@zendou.gn');
+    expect(env.ADMIN_PASSWORD).toBe('motdepasse-solide');
+    expect(env.ADMIN_NAME).toBe('Souleymane');
+  });
+
+  it('defaults ADMIN_NAME when not provided', () => {
+    const env = validateEnv({
+      ...BASE_ENV,
+      ADMIN_EMAIL: 'admin@zendou.gn',
+      ADMIN_PASSWORD: 'motdepasse-solide',
+    });
+
+    expect(env.ADMIN_NAME).toBe('Administrateur Zendou');
+  });
+
+  it('rejects ADMIN_EMAIL without ADMIN_PASSWORD (incoherent config)', () => {
+    expect(() =>
+      validateEnv({ ...BASE_ENV, ADMIN_EMAIL: 'admin@zendou.gn' }),
+    ).toThrow(/ADMIN_EMAIL/);
+  });
+
+  it('rejects ADMIN_PASSWORD without ADMIN_EMAIL (incoherent config)', () => {
+    expect(() =>
+      validateEnv({ ...BASE_ENV, ADMIN_PASSWORD: 'motdepasse-solide' }),
+    ).toThrow(/ADMIN_EMAIL/);
+  });
+
+  it('rejects an invalid ADMIN_EMAIL', () => {
+    expect(() =>
+      validateEnv({
+        ...BASE_ENV,
+        ADMIN_EMAIL: 'not-an-email',
+        ADMIN_PASSWORD: 'motdepasse-solide',
+      }),
+    ).toThrow(/ADMIN_EMAIL/);
+  });
+
+  it('rejects an ADMIN_PASSWORD shorter than 12 characters', () => {
+    expect(() =>
+      validateEnv({
+        ...BASE_ENV,
+        ADMIN_EMAIL: 'admin@zendou.gn',
+        ADMIN_PASSWORD: 'court',
+      }),
+    ).toThrow(/ADMIN_PASSWORD/);
+  });
+});
