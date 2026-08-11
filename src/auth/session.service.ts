@@ -61,6 +61,18 @@ export class SessionService {
     return userId;
   }
 
+  /**
+   * Comme `resolve`, mais **sans** rafraîchir le TTL : lecture seule.
+   *
+   * Utilisée par la limitation de débit, qui s'exécute avant toute
+   * authentification et doit savoir *à qui* imputer la requête. Prolonger la
+   * session depuis là reviendrait à maintenir une session vivante à coups de
+   * requêtes refusées en 429.
+   */
+  async peek(token: string): Promise<string | null> {
+    return this.redis.get(this.key(token));
+  }
+
   /** Supprime la session. Sans effet si elle n'existe pas. */
   async destroy(token: string): Promise<void> {
     const key = this.key(token);

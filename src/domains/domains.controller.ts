@@ -11,6 +11,8 @@ import {
 } from '@nestjs/common';
 import { CurrentUser, SessionAuthGuard } from '../auth';
 import type { AuthUser } from '../auth';
+import { RATE_LIMIT_POLICY } from '../rate-limit/rate-limit.constants';
+import { RateLimit } from '../rate-limit/rate-limit.decorator';
 import { DomainsService } from './domains.service';
 import type {
   DomainCheckResult,
@@ -48,7 +50,10 @@ export class DomainsController {
     return this.domainsService.findOne(user.id, id);
   }
 
+  // Chaque appel tape l'API AWS : plafond serré, et compté par utilisateur
+  // pour ne pas pénaliser les autres clients derrière la même IP.
   @Post(':id/check')
+  @RateLimit(RATE_LIMIT_POLICY.DOMAIN_CHECK)
   @HttpCode(HttpStatus.OK)
   check(
     @CurrentUser() user: AuthUser,

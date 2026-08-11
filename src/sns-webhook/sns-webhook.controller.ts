@@ -9,6 +9,8 @@ import {
   Req,
 } from '@nestjs/common';
 import type { Request } from 'express';
+import { RATE_LIMIT_POLICY } from '../rate-limit/rate-limit.constants';
+import { RateLimit } from '../rate-limit/rate-limit.decorator';
 import { SnsSignatureValidator } from './sns-signature.validator';
 import { SnsWebhookService } from './sns-webhook.service';
 import type { SnsMessage } from './sns-webhook.types';
@@ -33,7 +35,12 @@ export class SnsWebhookController {
     private readonly snsWebhookService: SnsWebhookService,
   ) {}
 
+  // Plafond volontairement large : SNS livre par rafales et retente sur toute
+  // réponse non-2xx. La vraie barrière reste la signature — bloquer AWS trop
+  // tôt nous ferait perdre des bounces et des plaintes, donc de la
+  // réputation d'expéditeur.
   @Post()
+  @RateLimit(RATE_LIMIT_POLICY.SNS_WEBHOOK)
   @HttpCode(HttpStatus.OK)
   async receive(@Req() request: Request): Promise<SnsWebhookAck> {
     const message = parseSnsMessage(request.body);
