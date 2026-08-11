@@ -7,6 +7,7 @@ import { HealthModule } from './health/health.module';
 import { AuthModule } from './auth/auth.module';
 import { ApiKeysModule } from './api-keys/api-keys.module';
 import { EmailsLogModule } from './emails-log/emails-log.module';
+import { DomainsModule } from './domains/domains.module';
 import { EMAIL_SEND_QUEUE } from './queues/queues';
 
 @Module({
@@ -29,6 +30,7 @@ import { EMAIL_SEND_QUEUE } from './queues/queues';
     AuthModule,
     ApiKeysModule,
     EmailsLogModule,
+    DomainsModule,
   ],
 })
 export class AppModule {}
