@@ -1,0 +1,12 @@
+{
+  "Type": "Notification",
+  "MessageId": "22b80b92-fdea-4c2c-8f9d-bdfb0c7bf324",
+  "TopicArn": "arn:aws:sns:eu-west-3:123456789012:zendou-ses-events",
+  "Subject": "Amazon SES Email Event Notification",
+  "Message": "{\"eventType\":\"Delivery\",\"mail\":{\"timestamp\":\"2026-08-11T10:00:00.000Z\",\"source\":\"contact@boutique-awa.gn\",\"sourceArn\":\"arn:aws:ses:eu-west-3:123456789012:identity/boutique-awa.gn\",\"sendingAccountId\":\"123456789012\",\"messageId\":\"0100019250a0f3a8-7c1f4b6e-3a92-4a1f-9d0f-2b7c5e8a1d44-000000\",\"destination\":[\"aissatou.diallo@example.com\"],\"headersTruncated\":false,\"headers\":[{\"name\":\"From\",\"value\":\"Boutique Awa <contact@boutique-awa.gn>\"},{\"name\":\"To\",\"value\":\"aissatou.diallo@example.com\"},{\"name\":\"Subject\",\"value\":\"Votre commande #1042\"},{\"name\":\"MIME-Version\",\"value\":\"1.0\"},{\"name\":\"Content-Type\",\"value\":\"text/html; charset=UTF-8\"},{\"name\":\"Content-Transfer-Encoding\",\"value\":\"quoted-printable\"}],\"commonHeaders\":{\"from\":[\"Boutique Awa <contact@boutique-awa.gn>\"],\"to\":[\"aissatou.diallo@example.com\"],\"messageId\":\"0100019250a0f3a8-7c1f4b6e-3a92-4a1f-9d0f-2b7c5e8a1d44-000000\",\"subject\":\"Votre commande #1042\"},\"tags\":{\"ses:operation\":[\"SendEmail\"],\"ses:configuration-set\":[\"zendou-events\"],\"ses:source-ip\":[\"41.223.216.10\"],\"ses:from-domain\":[\"boutique-awa.gn\"],\"ses:caller-identity\":[\"zendou-api\"],\"ses:outgoing-ip\":[\"54.240.27.11\"]}},\"delivery\":{\"timestamp\":\"2026-08-11T10:00:02.789Z\",\"processingTimeMillis\":1893,\"recipients\":[\"aissatou.diallo@example.com\"],\"smtpResponse\":\"250 2.0.0 OK  1786533602 s12-20020a05 - gsmtp\",\"reportingMTA\":\"a8-51.smtp-out.eu-west-3.amazonses.com\"}}",
+  "Timestamp": "2026-08-11T10:00:03.456Z",
+  "SignatureVersion": "1",
+  "Signature": "5xcUZVFYvQDq1kU0iQohl+lDku8ykvcZJqN5LnV9VQs0JgfzjJJqosib4sDs+lBtWUzzOgvFPU6c6D4Zxwt4g0raGI9Lgn6PdhIjlp+BNAQ1x8dSujNGjz5rQJ3i79VxY3NstCiLFcYLUY4pJZLB5pYM4TzK/JwOtspbMGfc0PXD3p3049ob70f5L8ly7NV7Tc/OgxkSIOtKr+kxqckrTq70/gngdHxKf8HK32/3VAH62bsJlY8K0i6VHU2Zi9ZjorDXNVH+DEDFBHDnofHfGcZPJsb6pLbRPs9JhQOhk+ZYtIVV2SZnS8HiduIvnpAeiO/bZxQTfTM/J32AQfzScA==",
+  "SigningCertURL": "https://sns.eu-west-3.amazonaws.com/SimpleNotificationService-7ff5318490ec183fbaddaa2a969abfda.pem",
+  "UnsubscribeURL": "https://sns.eu-west-3.amazonaws.com/?Action=Unsubscribe&SubscriptionArn=arn:aws:sns:eu-west-3:123456789012:zendou-ses-events:2bcfbf39-05c3-41de-beaa-fcfcc21c8f55"
+}

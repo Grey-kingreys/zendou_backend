@@ -1,0 +1,12 @@
+{
+  "Type": "SubscriptionConfirmation",
+  "MessageId": "165545c9-2a5c-472c-8df2-7ff2be2b3b1b",
+  "Token": "2336412f37fb687f5d51e6e2425dacbba60ff1a19eb1a1cbeb46e1f0d0d1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f70",
+  "TopicArn": "arn:aws:sns:eu-west-3:123456789012:zendou-ses-events",
+  "Message": "You have chosen to subscribe to the topic arn:aws:sns:eu-west-3:123456789012:zendou-ses-events.\nTo confirm the subscription, visit the SubscribeURL included in this message.",
+  "SubscribeURL": "https://sns.eu-west-3.amazonaws.com/?Action=ConfirmSubscription&TopicArn=arn:aws:sns:eu-west-3:123456789012:zendou-ses-events&Token=2336412f37fb687f5d51e6e2425dacbba60ff1a19eb1a1cbeb46e1f0d0d1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f70",
+  "Timestamp": "2026-08-11T09:59:00.123Z",
+  "SignatureVersion": "1",
+  "Signature": "49QL9IeXolV1JZIuyobHjLP6r4v1jMsgd7uPRnCVc8X/OacbgIjmCBGAfjQ9wQZ7Biu26bxWhLMVN8d615LxkS1TUsjZGyQxlmUXgOH1nUSj23ECaM7pIwODZh4d7UCUA8pIci8TSQu1RGdCFvRRkg6ZAZhCqhfsbjVEBTvENU5ZRmXvcEw3ZFYuZv0kAX+bM3OrhO/OT+xKguoa4/fP+0JIdWbAsFcnlUIOvylJ0gpZWwVMuSt/L+0mtai1FNylsOMNRAUwn5C0IXgcdb7nLbMgUXis48YhiBcFTyI8gfsjsYlwC57FY567Tod9PU2im6bygpPED1YwgC6g70z2Pw==",
+  "SigningCertURL": "https://sns.eu-west-3.amazonaws.com/SimpleNotificationService-7ff5318490ec183fbaddaa2a969abfda.pem"
+}
