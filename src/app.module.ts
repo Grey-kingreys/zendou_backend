@@ -13,6 +13,7 @@ import { ReputationModule } from './reputation';
 import { SnsWebhookModule } from './sns-webhook/sns-webhook.module';
 import { BillingModule } from './billing/billing.module';
 import { SeedModule } from './seed/seed.module';
+import { RateLimitModule } from './rate-limit';
 import { EMAIL_SEND_QUEUE } from './queues/queues';
 
 @Module({
@@ -31,6 +32,7 @@ import { EMAIL_SEND_QUEUE } from './queues/queues';
     }),
     BullModule.registerQueue({ name: EMAIL_SEND_QUEUE }),
     PrismaModule,
+    RateLimitModule,
     HealthModule,
     AuthModule,
     ApiKeysModule,

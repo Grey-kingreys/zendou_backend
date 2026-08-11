@@ -12,6 +12,8 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { Request, Response } from 'express';
+import { RATE_LIMIT_POLICY } from '../rate-limit/rate-limit.constants';
+import { RateLimit } from '../rate-limit/rate-limit.decorator';
 import { SESSION_COOKIE_NAME } from './auth.constants';
 import { AuthService } from './auth.service';
 import type { AuthUser } from './auth.types';
@@ -40,7 +42,10 @@ export class AuthController {
     this.isProduction = configService.get<string>('NODE_ENV') === 'production';
   }
 
+  // Route non authentifiée : comptée par IP (et par adresse visée), jamais
+  // par utilisateur — il n'y en a pas encore.
   @Post('register')
+  @RateLimit(RATE_LIMIT_POLICY.REGISTER)
   @HttpCode(HttpStatus.CREATED)
   async register(
     @Body() dto: RegisterDto,
@@ -55,7 +60,12 @@ export class AuthController {
     return user;
   }
 
+  // Deux fenêtres cumulées (rafale + acharnement lent), comptées en parallèle
+  // sur l'IP et sur l'adresse visée : l'IP seule ne suffit pas quand des
+  // milliers d'abonnés Orange/MTN la partagent, l'email seul ne suffit pas
+  // quand l'attaquant en change à chaque essai.
   @Post('login')
+  @RateLimit(RATE_LIMIT_POLICY.LOGIN)
   @HttpCode(HttpStatus.OK)
   async login(
     @Body() dto: LoginDto,
@@ -105,8 +115,11 @@ export class AuthController {
     return this.authService.updateProfile(user.id, dto);
   }
 
+  // Route authentifiée : comptée par utilisateur, pas par IP — deux clients
+  // derrière la même IP publique ne doivent pas se pénaliser mutuellement.
   @Post('change-password')
   @UseGuards(SessionAuthGuard)
+  @RateLimit(RATE_LIMIT_POLICY.CHANGE_PASSWORD)
   @HttpCode(HttpStatus.NO_CONTENT)
   async changePassword(
     @CurrentUser() user: AuthUser,

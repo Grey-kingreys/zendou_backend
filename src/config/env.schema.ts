@@ -1,4 +1,8 @@
 import { z } from 'zod';
+import {
+  DEFAULT_TRUST_PROXY_HOPS,
+  RATE_LIMIT_DEFAULTS,
+} from '../rate-limit/rate-limit.constants';
 
 /** `true`, `1`, `yes`, `on` (insensible à la casse) valent vrai ; tout le reste faux. */
 const TRUTHY_VALUES = ['1', 'true', 'yes', 'on'];
@@ -19,6 +23,17 @@ const booleanFromEnv = z
       : TRUTHY_VALUES.includes(value.trim().toLowerCase()),
   );
 
+/**
+ * Entier positif lu depuis l'environnement, avec défaut. Une variable laissée
+ * vide dans un `.env` (`RATE_LIMIT_LOGIN_PER_MINUTE=`) doit valoir « absente »
+ * et non « zéro », sans quoi la limite tomberait silencieusement à 0 et
+ * bloquerait tout le monde.
+ */
+const positiveIntFromEnv = (defaultValue: number) =>
+  z
+    .preprocess(emptyToUndefined, z.coerce.number().int().positive().optional())
+    .default(defaultValue);
+
 const baseEnvSchema = z.object({
   NODE_ENV: z
     .enum(['development', 'test', 'production'])
@@ -27,6 +42,47 @@ const baseEnvSchema = z.object({
   DATABASE_URL: z.string().url(),
   REDIS_URL: z.string().url(),
   FRONTEND_ORIGIN: z.string().url(),
+
+  /**
+   * Nombre de proxys inverses devant l'application (Traefik sous Dokploy en
+   * pose un). Détermine `trust proxy` côté Express, donc l'IP retenue dans
+   * `X-Forwarded-For`. `0` = aucun proxy : l'en-tête est alors ignoré, car
+   * n'importe qui pourrait le forger. Mal réglée, cette valeur ferait
+   * partager un unique compteur à tous les clients — la limitation de débit
+   * se transformerait en déni de service global.
+   */
+  TRUST_PROXY_HOPS: z
+    .preprocess(
+      emptyToUndefined,
+      z.coerce.number().int().min(0).max(10).optional(),
+    )
+    .default(DEFAULT_TRUST_PROXY_HOPS),
+
+  // ─── Limitation de débit (valeurs par défaut : rate-limit.constants.ts) ───
+  RATE_LIMIT_DEFAULT_PER_MINUTE: positiveIntFromEnv(
+    RATE_LIMIT_DEFAULTS.DEFAULT_PER_MINUTE,
+  ),
+  RATE_LIMIT_LOGIN_PER_MINUTE: positiveIntFromEnv(
+    RATE_LIMIT_DEFAULTS.LOGIN_PER_MINUTE,
+  ),
+  RATE_LIMIT_LOGIN_PER_HOUR: positiveIntFromEnv(
+    RATE_LIMIT_DEFAULTS.LOGIN_PER_HOUR,
+  ),
+  RATE_LIMIT_REGISTER_PER_HOUR: positiveIntFromEnv(
+    RATE_LIMIT_DEFAULTS.REGISTER_PER_HOUR,
+  ),
+  RATE_LIMIT_CHANGE_PASSWORD_PER_HOUR: positiveIntFromEnv(
+    RATE_LIMIT_DEFAULTS.CHANGE_PASSWORD_PER_HOUR,
+  ),
+  RATE_LIMIT_EMAILS_PER_MINUTE: positiveIntFromEnv(
+    RATE_LIMIT_DEFAULTS.EMAILS_PER_MINUTE,
+  ),
+  RATE_LIMIT_DOMAIN_CHECK_PER_HOUR: positiveIntFromEnv(
+    RATE_LIMIT_DEFAULTS.DOMAIN_CHECK_PER_HOUR,
+  ),
+  RATE_LIMIT_SNS_PER_MINUTE: positiveIntFromEnv(
+    RATE_LIMIT_DEFAULTS.SNS_PER_MINUTE,
+  ),
 
   // AWS SES / SNS — optionnelles pour l'instant (pas de module d'envoi)
   AWS_REGION: z.string().optional(),
