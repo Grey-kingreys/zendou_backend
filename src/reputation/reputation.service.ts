@@ -2,6 +2,7 @@ import { Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { EmailStatus, UserStatus } from '@prisma/client';
 import type Redis from 'ioredis';
 import { PrismaService } from '../prisma/prisma.service';
+import { HARD_BOUNCE_ERROR_PREFIX } from '../sns-webhook/sns-webhook.types';
 import {
   DEFAULT_DAILY_SEND_LIMIT,
   MAX_BOUNCE_RATE,
@@ -39,6 +40,10 @@ const USER_SELECT = {
  * SES entier**, donc un seul client abusif peut faire suspendre Zendou et
  * couper tous les autres clients. On suspend le client fautif nous-mêmes,
  * avant qu'AWS ne nous suspende.
+ *
+ * Seuls les rebonds **durs** alimentent le taux sanctionné (cf.
+ * `MAX_BOUNCE_RATE`) : les transitoires sont comptés et exposés, jamais
+ * sanctionnés.
  */
 @Injectable()
 export class ReputationService {
@@ -140,12 +145,23 @@ export class ReputationService {
     const sent = rows.reduce((total, row) => total + row._count._all, 0);
     const bounces = countOf(EmailStatus.BOUNCED);
     const complaints = countOf(EmailStatus.COMPLAINED);
-    const bounceRate = sent === 0 ? 0 : bounces / sent;
+
+    const hardBounces =
+      bounces === 0 ? 0 : await this.countHardBounces(user.id, since);
+
+    // Les deux requêtes ne sont pas dans une transaction : un rebond arrivé
+    // entre les deux ne doit pas produire un compteur négatif.
+    const transientBounces = Math.max(bounces - hardBounces, 0);
+
+    // Seuls les rebonds durs sanctionnent ; les transitoires restent visibles.
+    const bounceRate = sent === 0 ? 0 : hardBounces / sent;
     const complaintRate = sent === 0 ? 0 : complaints / sent;
 
     const metrics: ReputationMetrics = {
       sent,
       bounces,
+      hardBounces,
+      transientBounces,
       complaints,
       bounceRate,
       complaintRate,
@@ -162,6 +178,26 @@ export class ReputationService {
     }
 
     return metrics;
+  }
+
+  /**
+   * Rebonds durs de la fenêtre — reconnus au préfixe que le webhook SNS
+   * écrit dans `errorMessage` (le schéma n'a pas de colonne dédiée).
+   *
+   * Un `count` ciblé de plus, jamais un chargement de lignes : la base fait
+   * l'agrégation, et l'index `(userId, queuedAt)` porte déjà la sélection de
+   * la fenêtre. La requête n'est même pas payée quand la fenêtre ne contient
+   * aucun rebond — le cas de l'immense majorité des évaluations.
+   */
+  private countHardBounces(userId: string, since: Date): Promise<number> {
+    return this.prisma.email.count({
+      where: {
+        userId,
+        queuedAt: { gte: since },
+        status: EmailStatus.BOUNCED,
+        errorMessage: { startsWith: HARD_BOUNCE_ERROR_PREFIX },
+      },
+    });
   }
 
   /** Idempotent : un compte déjà suspendu n'est pas réécrit. */
@@ -267,7 +303,8 @@ function ageInDays(createdAt: Date): number {
 
 function describeMetrics(metrics: ReputationMetrics): string {
   return (
-    `${metrics.sent} envois, ${metrics.bounces} rebonds (${formatRate(metrics.bounceRate)}), ` +
+    `${metrics.sent} envois, ${metrics.hardBounces} rebonds durs (${formatRate(metrics.bounceRate)}), ` +
+    `${metrics.transientBounces} transitoires ignorés, ` +
     `${metrics.complaints} plaintes (${formatRate(metrics.complaintRate)}) sur ${REPUTATION_WINDOW_DAYS} jours`
   );
 }

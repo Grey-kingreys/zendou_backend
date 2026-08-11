@@ -15,9 +15,22 @@ import {
   FIXTURE_SES_MESSAGE_ID,
 } from './fixtures';
 import { SnsHttpClient } from './sns-http.client';
-import { SnsWebhookService } from './sns-webhook.service';
+import {
+  buildBounceErrorMessage,
+  SnsWebhookService,
+} from './sns-webhook.service';
+import {
+  HARD_BOUNCE_ERROR_PREFIX,
+  type SesEventPayload,
+  type SnsMessage,
+} from './sns-webhook.types';
 
 const EMAIL_ROW = { id: 'email_1', userId: 'user_1' };
+
+/** Événement SES transporté par une fixture SNS. */
+function sesPayload(message: SnsMessage): SesEventPayload {
+  return JSON.parse(message.Message) as SesEventPayload;
+}
 
 describe('SnsWebhookService', () => {
   let service: SnsWebhookService;
@@ -148,6 +161,31 @@ describe('SnsWebhookService', () => {
           lastEventAt: new Date('2026-08-11T10:03:05.250Z'),
         },
       });
+    });
+
+    /**
+     * Le message écrit est la seule trace durable de la nature du rebond :
+     * `ReputationService` s'en sert pour ne sanctionner que les rebonds durs.
+     * Le préfixe est donc un contrat, pas un détail de formatage.
+     */
+    it('guarantees the hard-bounce prefix the reputation service reads', () => {
+      expect(
+        buildBounceErrorMessage(sesPayload(permanentBounceFixture())),
+      ).toMatch(new RegExp(`^${HARD_BOUNCE_ERROR_PREFIX}/`));
+      expect(
+        buildBounceErrorMessage(
+          sesPayload(transientBounceFixture()),
+        ).startsWith(HARD_BOUNCE_ERROR_PREFIX),
+      ).toBe(false);
+    });
+
+    it('never mistakes an undetermined bounce for a hard one', () => {
+      const payload = sesPayload(transientBounceFixture());
+      delete payload.bounce?.bounceType;
+
+      expect(
+        buildBounceErrorMessage(payload).startsWith(HARD_BOUNCE_ERROR_PREFIX),
+      ).toBe(false);
     });
   });
 

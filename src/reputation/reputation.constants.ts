@@ -33,7 +33,21 @@ export const SENT_EMAIL_STATUSES = [
  */
 export const MIN_VOLUME_FOR_SANCTION = 50;
 
-/** Taux de rebond maximum toléré : au-delà, suspension. */
+/**
+ * Taux de rebond maximum toléré : au-delà, suspension.
+ *
+ * Le numérateur ne compte que les rebonds **durs** (`Permanent` chez SES :
+ * adresse inexistante, domaine mort). Les rebonds transitoires — boîte
+ * pleine, MTA du destinataire temporairement indisponible — sont enregistrés
+ * et exposés, mais jamais sanctionnés, pour deux raisons :
+ *
+ * 1. AWS les exclut lui-même du « bounce rate » sur lequel il déclenche une
+ *    revue de compte : les inclure rendrait notre seuil plus sévère que le
+ *    risque réel qu'il est censé couvrir (la suspension de notre compte SES) ;
+ * 2. ils ne disent rien de la qualité de la liste de l'expéditeur — un client
+ *    parfaitement légitime dont les destinataires ont des boîtes pleines
+ *    serait suspendu à tort, alors qu'il ne peut alors plus rien envoyer.
+ */
 export const MAX_BOUNCE_RATE = 0.05;
 
 /** Taux de plainte maximum toléré : au-delà, suspension. */

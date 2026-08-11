@@ -11,9 +11,14 @@ export type ReputationVerdict = 'OK' | 'WARNING' | 'SUSPEND';
 export interface ReputationMetrics {
   /** Envois réellement partis (SENT + DELIVERED + BOUNCED + COMPLAINED). */
   sent: number;
+  /** Total des rebonds, durs + transitoires. Sanctionne : voir `hardBounces`. */
   bounces: number;
+  /** Rebonds permanents (adresse inexistante) — seuls comptés dans le taux. */
+  hardBounces: number;
+  /** Rebonds transitoires (boîte pleine, MTA indisponible) — informatifs. */
+  transientBounces: number;
   complaints: number;
-  /** `bounces / sent`, ou 0 si aucun envoi. */
+  /** `hardBounces / sent`, ou 0 si aucun envoi. */
   bounceRate: number;
   /** `complaints / sent`, ou 0 si aucun envoi. */
   complaintRate: number;

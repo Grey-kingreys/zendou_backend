@@ -92,3 +92,15 @@ export interface SesEventPayload {
 
 /** Un bounce `Permanent` est définitif : l'adresse part en suppression. */
 export const PERMANENT_BOUNCE_TYPE = 'Permanent';
+
+/**
+ * Préfixe garanti de `Email.errorMessage` pour un rebond **dur**.
+ *
+ * Le schéma ne porte pas de colonne « type de rebond » : la seule trace
+ * durable de la nature d'un rebond est le message écrit par
+ * `buildBounceErrorMessage`. Ce préfixe est donc le contrat entre l'écriture
+ * (`SnsWebhookService`) et la lecture (`ReputationService`, qui ne compte que
+ * les rebonds durs dans le taux). Les deux côtés importent cette constante —
+ * jamais la chaîne en dur — pour qu'ils ne puissent pas diverger en silence.
+ */
+export const HARD_BOUNCE_ERROR_PREFIX = `Bounce ${PERMANENT_BOUNCE_TYPE}`;

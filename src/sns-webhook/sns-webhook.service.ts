@@ -5,6 +5,7 @@ import { ReputationService } from '../reputation';
 import { SnsHttpClient } from './sns-http.client';
 import { isTrustedSnsUrl } from './sns-signature.validator';
 import {
+  HARD_BOUNCE_ERROR_PREFIX,
   PERMANENT_BOUNCE_TYPE,
   type SesEventPayload,
   type SnsMessage,
@@ -156,7 +157,9 @@ export class SnsWebhookService {
       },
     });
 
-    // Les rebonds temporaires comptent aussi : AWS les mesure tous.
+    // Les rebonds transitoires sont enregistrés et déclenchent eux aussi une
+    // réévaluation, mais `ReputationService` ne les compte pas dans le taux :
+    // il les reconnaît à l'absence du préfixe `HARD_BOUNCE_ERROR_PREFIX`.
     await this.evaluateReputation(email.userId);
   }
 
@@ -234,14 +237,27 @@ export class SnsWebhookService {
   }
 }
 
-function buildBounceErrorMessage(payload: SesEventPayload): string {
+/**
+ * `Bounce <type>/<sous-type> — <diagnostic>`, tronqué à la taille utile.
+ *
+ * Un rebond permanent est préfixé par `HARD_BOUNCE_ERROR_PREFIX` **par
+ * construction** : c'est ce préfixe que `ReputationService` relit pour
+ * distinguer un rebond dur d'un rebond transitoire (boîte pleine, MTA
+ * temporairement indisponible), faute de colonne dédiée dans le schéma.
+ */
+export function buildBounceErrorMessage(payload: SesEventPayload): string {
   const bounce = payload.bounce ?? {};
   const diagnostic = bounce.bouncedRecipients?.find(
     (recipient) => recipient.diagnosticCode,
   )?.diagnosticCode;
 
+  const head =
+    bounce.bounceType === PERMANENT_BOUNCE_TYPE
+      ? HARD_BOUNCE_ERROR_PREFIX
+      : `Bounce ${bounce.bounceType ?? 'Unknown'}`;
+
   const parts = [
-    `Bounce ${bounce.bounceType ?? 'Unknown'}/${bounce.bounceSubType ?? 'Unknown'}`,
+    `${head}/${bounce.bounceSubType ?? 'Unknown'}`,
     diagnostic,
   ].filter((part): part is string => Boolean(part));
 

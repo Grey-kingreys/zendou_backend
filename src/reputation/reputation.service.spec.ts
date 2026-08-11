@@ -3,6 +3,15 @@ import { Logger, NotFoundException } from '@nestjs/common';
 import { EmailStatus, UserStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import {
+  permanentBounceFixture,
+  transientBounceFixture,
+} from '../sns-webhook/fixtures';
+import { buildBounceErrorMessage } from '../sns-webhook/sns-webhook.service';
+import type {
+  SesEventPayload,
+  SnsMessage,
+} from '../sns-webhook/sns-webhook.types';
+import {
   RECOMPUTE_LIMIT_TTL_SECONDS,
   REPUTATION_REDIS,
   SENT_EMAIL_STATUSES,
@@ -28,6 +37,11 @@ function statusRows(
   }));
 }
 
+/** Événement SES transporté par une fixture SNS. */
+function sesPayload(message: SnsMessage): SesEventPayload {
+  return JSON.parse(message.Message) as SesEventPayload;
+}
+
 describe('ReputationService', () => {
   let service: ReputationService;
 
@@ -39,6 +53,17 @@ describe('ReputationService', () => {
 
   let errorLog: jest.SpyInstance;
   let warnLog: jest.SpyInstance;
+
+  /**
+   * `email.count` sert deux comptages ciblés : les rebonds durs de la fenêtre
+   * (évaluation) et le volume cumulé (paliers de quota). Une évaluation ne
+   * compte les rebonds durs que si la fenêtre contient au moins un rebond, et
+   * un recalcul de quota ne compte le volume cumulé que sur un verdict `OK` —
+   * les deux usages ne se croisent donc jamais dans un même test.
+   */
+  function givenHardBounces(total: number): void {
+    count.mockResolvedValue(total);
+  }
 
   /** Fait répondre `findUnique` avec un client par défaut surchargeable. */
   function givenUser(overrides: Record<string, unknown> = {}): void {
@@ -104,6 +129,7 @@ describe('ReputationService', () => {
           [EmailStatus.COMPLAINED]: 2,
         }),
       );
+      givenHardBounces(8);
 
       const metrics = await service.evaluate('user_1');
 
@@ -119,6 +145,8 @@ describe('ReputationService', () => {
       expect(metrics).toMatchObject({
         sent: 100,
         bounces: 8,
+        hardBounces: 8,
+        transientBounces: 0,
         complaints: 2,
         bounceRate: 0.08,
         complaintRate: 0.02,
@@ -131,17 +159,22 @@ describe('ReputationService', () => {
       expect(metrics).toEqual({
         sent: 0,
         bounces: 0,
+        hardBounces: 0,
+        transientBounces: 0,
         complaints: 0,
         bounceRate: 0,
         complaintRate: 0,
         verdict: 'OK',
       });
       expect(userUpdate).not.toHaveBeenCalled();
+      // Aucun rebond dans la fenêtre : le comptage ciblé n'est pas payé.
+      expect(count).not.toHaveBeenCalled();
     });
 
     // Le garde-fou qui évite de suspendre un client tout neuf sur un accident.
     it('never sanctions under the minimum volume, even at 100 % bounces', async () => {
       groupBy.mockResolvedValue(statusRows({ [EmailStatus.BOUNCED]: 49 }));
+      givenHardBounces(49);
 
       const metrics = await service.evaluate('user_1');
 
@@ -150,16 +183,18 @@ describe('ReputationService', () => {
       expect(userUpdate).not.toHaveBeenCalled();
     });
 
-    it('suspends the account at 6 % bounces over 100 sends', async () => {
+    it('suspends the account at 6 % hard bounces over 100 sends', async () => {
       groupBy.mockResolvedValue(
         statusRows({ [EmailStatus.SENT]: 94, [EmailStatus.BOUNCED]: 6 }),
       );
+      givenHardBounces(6);
 
       const metrics = await service.evaluate('user_1');
 
       expect(metrics).toMatchObject({
         sent: 100,
         bounces: 6,
+        hardBounces: 6,
         bounceRate: 0.06,
         verdict: 'SUSPEND',
       });
@@ -192,6 +227,7 @@ describe('ReputationService', () => {
       groupBy.mockResolvedValue(
         statusRows({ [EmailStatus.SENT]: 94, [EmailStatus.BOUNCED]: 6 }),
       );
+      givenHardBounces(6);
 
       await service.evaluate('user_1');
 
@@ -200,14 +236,16 @@ describe('ReputationService', () => {
       expect(line).toContain('contact@boutique-awa.gn');
       expect(line).toContain('user_1');
       expect(line).toContain('100 envois');
-      expect(line).toContain('6 rebonds');
+      expect(line).toContain('6 rebonds durs');
       expect(line).toContain('6.00 %');
+      expect(line).toContain('0 transitoires ignorés');
     });
 
     it('warns at 3 % bounces without suspending anything', async () => {
       groupBy.mockResolvedValue(
         statusRows({ [EmailStatus.SENT]: 97, [EmailStatus.BOUNCED]: 3 }),
       );
+      givenHardBounces(3);
 
       const metrics = await service.evaluate('user_1');
 
@@ -222,6 +260,7 @@ describe('ReputationService', () => {
       groupBy.mockResolvedValue(
         statusRows({ [EmailStatus.SENT]: 95, [EmailStatus.BOUNCED]: 5 }),
       );
+      givenHardBounces(5);
 
       const metrics = await service.evaluate('user_1');
 
@@ -233,6 +272,7 @@ describe('ReputationService', () => {
       groupBy.mockResolvedValue(
         statusRows({ [EmailStatus.SENT]: 98, [EmailStatus.BOUNCED]: 2 }),
       );
+      givenHardBounces(2);
 
       const metrics = await service.evaluate('user_1');
 
@@ -246,6 +286,7 @@ describe('ReputationService', () => {
       groupBy.mockResolvedValue(
         statusRows({ [EmailStatus.SENT]: 94, [EmailStatus.BOUNCED]: 6 }),
       );
+      givenHardBounces(6);
 
       const metrics = await service.evaluate('user_1');
 
@@ -262,18 +303,124 @@ describe('ReputationService', () => {
     });
   });
 
+  /**
+   * Le taux sanctionné ne compte que les rebonds durs : une boîte pleine
+   * n'est pas une faute de l'expéditeur, et AWS l'exclut lui aussi du taux
+   * sur lequel il suspend un compte.
+   */
+  describe('hard bounces vs transient bounces', () => {
+    it('never suspends on transient bounces alone (10 over 60 sends)', async () => {
+      groupBy.mockResolvedValue(
+        statusRows({ [EmailStatus.SENT]: 50, [EmailStatus.BOUNCED]: 10 }),
+      );
+      givenHardBounces(0);
+
+      const metrics = await service.evaluate('user_1');
+
+      expect(metrics).toEqual({
+        sent: 60,
+        bounces: 10,
+        hardBounces: 0,
+        transientBounces: 10,
+        complaints: 0,
+        bounceRate: 0,
+        complaintRate: 0,
+        verdict: 'OK',
+      });
+      expect(userUpdate).not.toHaveBeenCalled();
+      expect(warnLog).not.toHaveBeenCalled();
+      expect(errorLog).not.toHaveBeenCalled();
+    });
+
+    it('still suspends on 4 hard bounces over 60 sends', async () => {
+      groupBy.mockResolvedValue(
+        statusRows({ [EmailStatus.SENT]: 56, [EmailStatus.BOUNCED]: 4 }),
+      );
+      givenHardBounces(4);
+
+      const metrics = await service.evaluate('user_1');
+
+      expect(metrics).toMatchObject({
+        sent: 60,
+        hardBounces: 4,
+        transientBounces: 0,
+        verdict: 'SUSPEND',
+      });
+      expect(metrics.bounceRate).toBeCloseTo(4 / 60, 10);
+      expect(userUpdate).toHaveBeenCalledWith({
+        where: { id: 'user_1' },
+        data: { status: UserStatus.SUSPENDED },
+      });
+    });
+
+    it('suspends on the hard bounces only, transient ones just reported', async () => {
+      groupBy.mockResolvedValue(
+        statusRows({ [EmailStatus.SENT]: 46, [EmailStatus.BOUNCED]: 14 }),
+      );
+      givenHardBounces(4);
+
+      const metrics = await service.evaluate('user_1');
+
+      expect(metrics).toMatchObject({
+        sent: 60,
+        bounces: 14,
+        hardBounces: 4,
+        transientBounces: 10,
+        verdict: 'SUSPEND',
+      });
+      // 6,67 % — le taux des 4 durs, pas les 23,33 % des 14 rebonds bruts.
+      expect(metrics.bounceRate).toBeCloseTo(4 / 60, 10);
+
+      const [line] = errorLog.mock.calls[0] as [string];
+      expect(line).toContain('4 rebonds durs (6.67 %)');
+      expect(line).toContain('10 transitoires ignorés');
+    });
+
+    /**
+     * Écriture ↔ lecture : le lecteur relit le préfixe posé par le webhook.
+     * Si le format écrit change sans que le filtre suive, ce test casse —
+     * c'est tout l'intérêt de partir du builder réel et des fixtures réelles.
+     */
+    it('recognises as hard exactly what the webhook writes for a permanent bounce', async () => {
+      groupBy.mockResolvedValue(
+        statusRows({ [EmailStatus.SENT]: 59, [EmailStatus.BOUNCED]: 1 }),
+      );
+      givenHardBounces(1);
+
+      await service.evaluate('user_1');
+
+      const [query] = count.mock.calls[0] as [
+        { where: { errorMessage: { startsWith: string } } },
+      ];
+      const readPrefix = query.where.errorMessage.startsWith;
+
+      const written = buildBounceErrorMessage(
+        sesPayload(permanentBounceFixture()),
+      );
+      const transient = buildBounceErrorMessage(
+        sesPayload(transientBounceFixture()),
+      );
+
+      expect(written.startsWith(readPrefix)).toBe(true);
+      expect(transient.startsWith(readPrefix)).toBe(false);
+    });
+  });
+
   describe('overview', () => {
     it('returns the metrics along with the account state', async () => {
       givenUser({ dailySendLimit: 5_000 });
       groupBy.mockResolvedValue(
-        statusRows({ [EmailStatus.SENT]: 98, [EmailStatus.BOUNCED]: 2 }),
+        statusRows({ [EmailStatus.SENT]: 96, [EmailStatus.BOUNCED]: 4 }),
       );
+      givenHardBounces(2);
 
       const overview = await service.overview('user_1');
 
       expect(overview).toEqual({
         sent: 100,
-        bounces: 2,
+        bounces: 4,
+        hardBounces: 2,
+        transientBounces: 2,
         complaints: 0,
         bounceRate: 0.02,
         complaintRate: 0,
@@ -287,6 +434,7 @@ describe('ReputationService', () => {
       groupBy.mockResolvedValue(
         statusRows({ [EmailStatus.SENT]: 94, [EmailStatus.BOUNCED]: 6 }),
       );
+      givenHardBounces(6);
 
       const overview = await service.overview('user_1');
 
@@ -381,13 +529,16 @@ describe('ReputationService', () => {
           [EmailStatus.BOUNCED]: 300,
         }),
       );
-      count.mockResolvedValue(10_000);
+      givenHardBounces(300);
 
       await expect(service.recomputeDailyLimit('user_1')).resolves.toBe(200);
 
       expect(userUpdate).not.toHaveBeenCalled();
-      // Le compte du volume cumulé n'est même pas payé.
-      expect(count).not.toHaveBeenCalled();
+      // Le compte du volume cumulé n'est même pas payé (seul celui des
+      // rebonds durs, nécessaire au verdict, a été émis).
+      expect(count).not.toHaveBeenCalledWith({
+        where: { userId: 'user_1', status: { in: [...SENT_EMAIL_STATUSES] } },
+      });
     });
 
     it('suspends instead of elevating when a threshold is crossed', async () => {
@@ -395,6 +546,7 @@ describe('ReputationService', () => {
       groupBy.mockResolvedValue(
         statusRows({ [EmailStatus.SENT]: 9_400, [EmailStatus.BOUNCED]: 600 }),
       );
+      givenHardBounces(600);
 
       await expect(service.recomputeDailyLimit('user_1')).resolves.toBe(200);
 
