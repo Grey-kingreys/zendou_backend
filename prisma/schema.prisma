@@ -45,21 +45,22 @@ enum SuppressionReason {
 }
 
 model User {
-  id             String        @id @default(cuid())
-  email          String        @unique
+  id             String         @id @default(cuid())
+  email          String         @unique
   passwordHash   String
   name           String
   company        String?
   declaredUsage  String?
-  status         UserStatus    @default(ACTIVE)
-  role           UserRole      @default(CUSTOMER)
-  dailySendLimit Int           @default(200)
-  createdAt      DateTime      @default(now())
-  updatedAt      DateTime      @updatedAt
+  status         UserStatus     @default(ACTIVE)
+  role           UserRole       @default(CUSTOMER)
+  dailySendLimit Int            @default(200)
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
   apiKeys        ApiKey[]
   domains        Domain[]
   emails         Email[]
   creditEntries  CreditEntry[]
+  topUpRequests  TopUpRequest[]
 }
 
 model ApiKey {
@@ -131,4 +132,35 @@ model CreditEntry {
   createdAt DateTime @default(now())
 
   @@index([userId, createdAt])
+}
+
+enum TopUpStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum TopUpMethod {
+  ORANGE_MONEY
+  MTN_MOMO
+}
+
+model TopUpRequest {
+  id              String      @id @default(cuid())
+  userId          String
+  user            User        @relation(fields: [userId], references: [id])
+  packId          String
+  credits         Int
+  amountGnf       Int
+  method          TopUpMethod
+  phoneNumber     String
+  transactionRef  String
+  status          TopUpStatus @default(PENDING)
+  reviewedAt      DateTime?
+  reviewedBy      String?
+  rejectionReason String?
+  createdAt       DateTime    @default(now())
+
+  @@index([userId, createdAt])
+  @@index([status])
 }

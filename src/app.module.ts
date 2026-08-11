@@ -10,6 +10,7 @@ import { EmailsLogModule } from './emails-log/emails-log.module';
 import { EmailsModule } from './emails/emails.module';
 import { DomainsModule } from './domains/domains.module';
 import { SnsWebhookModule } from './sns-webhook/sns-webhook.module';
+import { BillingModule } from './billing/billing.module';
 import { EMAIL_SEND_QUEUE } from './queues/queues';
 
 @Module({
@@ -35,6 +36,7 @@ import { EMAIL_SEND_QUEUE } from './queues/queues';
     EmailsModule,
     DomainsModule,
     SnsWebhookModule,
+    BillingModule,
   ],
 })
 export class AppModule {}
