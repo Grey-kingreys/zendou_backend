@@ -1,5 +1,9 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { ConflictException, UnauthorizedException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { Prisma, UserRole, UserStatus } from '@prisma/client';
 import * as argon2 from 'argon2';
 import { PrismaService } from '../prisma/prisma.service';
@@ -8,6 +12,9 @@ import { AuthUser } from './auth.types';
 import {
   EMAIL_ALREADY_USED_MESSAGE,
   INVALID_CREDENTIALS_MESSAGE,
+  NO_CHANGES_MESSAGE,
+  SAME_PASSWORD_MESSAGE,
+  WRONG_CURRENT_PASSWORD_MESSAGE,
 } from './auth.constants';
 import { SessionService } from './session.service';
 
@@ -37,6 +44,7 @@ describe('AuthService', () => {
   let capturedCreateArgs: CreateArgs | undefined;
 
   const findUnique = jest.fn();
+  const update = jest.fn();
   const create = jest.fn((args: CreateArgs) => {
     capturedCreateArgs = args;
     return Promise.resolve(authUser);
@@ -45,6 +53,7 @@ describe('AuthService', () => {
     create: jest.fn(),
     resolve: jest.fn(),
     destroy: jest.fn(),
+    destroyAllForUser: jest.fn(),
   };
 
   beforeEach(async () => {
@@ -55,7 +64,10 @@ describe('AuthService', () => {
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         AuthService,
-        { provide: PrismaService, useValue: { user: { findUnique, create } } },
+        {
+          provide: PrismaService,
+          useValue: { user: { findUnique, create, update } },
+        },
         { provide: SessionService, useValue: sessionService },
       ],
     }).compile();
@@ -193,6 +205,159 @@ describe('AuthService', () => {
         (wrongPassword as UnauthorizedException).getResponse(),
       );
       expect(sessionService.create).not.toHaveBeenCalled();
+    }, 15000);
+  });
+
+  describe('updateProfile', () => {
+    it('rejects an empty body with a 400 and does not touch the database', async () => {
+      await expect(service.updateProfile('user_1', {})).rejects.toMatchObject(
+        new BadRequestException(NO_CHANGES_MESSAGE),
+      );
+
+      expect(update).not.toHaveBeenCalled();
+    });
+
+    it('updates only the fields provided (partial update)', async () => {
+      update.mockResolvedValue({ ...authUser, name: 'Nouveau Nom' });
+
+      const result = await service.updateProfile('user_1', {
+        name: 'Nouveau Nom',
+      });
+
+      expect(update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { id: 'user_1' },
+          data: { name: 'Nouveau Nom' },
+        }),
+      );
+      expect(result.name).toBe('Nouveau Nom');
+    });
+
+    it('trims the name before storing it', async () => {
+      update.mockResolvedValue(authUser);
+
+      await service.updateProfile('user_1', { name: '  Aïssatou Diallo  ' });
+
+      expect(update).toHaveBeenCalledWith(
+        expect.objectContaining({ data: { name: 'Aïssatou Diallo' } }),
+      );
+    });
+
+    it('clears company/declaredUsage when given an empty string', async () => {
+      update.mockResolvedValue({
+        ...authUser,
+        company: null,
+        declaredUsage: null,
+      });
+
+      await service.updateProfile('user_1', {
+        company: '',
+        declaredUsage: '',
+      });
+
+      expect(update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: { company: null, declaredUsage: null },
+        }),
+      );
+    });
+
+    it('clears company/declaredUsage when given null', async () => {
+      update.mockResolvedValue({
+        ...authUser,
+        company: null,
+        declaredUsage: null,
+      });
+
+      await service.updateProfile('user_1', {
+        company: null,
+        declaredUsage: null,
+      });
+
+      expect(update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: { company: null, declaredUsage: null },
+        }),
+      );
+    });
+
+    it('never forwards an email field even if one somehow reaches the service', async () => {
+      update.mockResolvedValue(authUser);
+
+      // Le ValidationPipe global (whitelist) retire déjà `email` avant que
+      // le contrôleur ne construise ce DTO. Ce test vérifie, en plus, que le
+      // service lui-même ne lit et ne forward jamais `email` vers Prisma :
+      // `UpdateProfileDto` n'a simplement pas ce champ dans son type, donc
+      // même une valeur injectée artificiellement ici ne peut pas fuiter.
+      await service.updateProfile('user_1', {
+        name: 'Aïssatou Diallo',
+        email: 'evil@example.com',
+      } as unknown as { name: string });
+
+      const [firstCallArgs] = update.mock.calls as Array<
+        [{ data: Record<string, unknown> }]
+      >;
+      expect(firstCallArgs[0].data).not.toHaveProperty('email');
+    });
+  });
+
+  describe('changePassword', () => {
+    const currentPassword = 'ancien-mot-de-passe';
+    let currentPasswordHash: string;
+
+    beforeEach(async () => {
+      currentPasswordHash = await argon2.hash(currentPassword, {
+        type: argon2.argon2id,
+      });
+      findUnique.mockResolvedValue({ passwordHash: currentPasswordHash });
+    }, 15000);
+
+    it('rejects a wrong current password with a 401 and writes nothing', async () => {
+      await expect(
+        service.changePassword('user_1', {
+          currentPassword: 'mauvais-mot-de-passe',
+          newPassword: 'nouveau-mot-de-passe',
+        }),
+      ).rejects.toMatchObject(
+        new UnauthorizedException(WRONG_CURRENT_PASSWORD_MESSAGE),
+      );
+
+      expect(update).not.toHaveBeenCalled();
+      expect(sessionService.destroyAllForUser).not.toHaveBeenCalled();
+    }, 15000);
+
+    it('rejects a new password identical to the current one with a 400', async () => {
+      await expect(
+        service.changePassword('user_1', {
+          currentPassword,
+          newPassword: currentPassword,
+        }),
+      ).rejects.toMatchObject(new BadRequestException(SAME_PASSWORD_MESSAGE));
+
+      expect(update).not.toHaveBeenCalled();
+      expect(sessionService.destroyAllForUser).not.toHaveBeenCalled();
+    }, 15000);
+
+    it('rehashes the password, persists a different hash, and revokes every session', async () => {
+      let storedHash: string | undefined;
+      update.mockImplementation((args: { data: { passwordHash: string } }) => {
+        storedHash = args.data.passwordHash;
+        return Promise.resolve(undefined);
+      });
+
+      await service.changePassword('user_1', {
+        currentPassword,
+        newPassword: 'nouveau-mot-de-passe',
+      });
+
+      expect(storedHash).toBeDefined();
+      expect(storedHash).not.toBe(currentPasswordHash);
+      expect(storedHash!.startsWith('$argon2id$')).toBe(true);
+      await expect(
+        argon2.verify(storedHash!, 'nouveau-mot-de-passe'),
+      ).resolves.toBe(true);
+
+      expect(sessionService.destroyAllForUser).toHaveBeenCalledWith('user_1');
     }, 15000);
   });
 });

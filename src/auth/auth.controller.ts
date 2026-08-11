@@ -4,6 +4,7 @@ import {
   Get,
   HttpCode,
   HttpStatus,
+  Patch,
   Post,
   Req,
   Res,
@@ -15,8 +16,10 @@ import { SESSION_COOKIE_NAME } from './auth.constants';
 import { AuthService } from './auth.service';
 import type { AuthUser } from './auth.types';
 import { CurrentUser } from './current-user.decorator';
+import { ChangePasswordDto } from './dto/change-password.dto';
 import { LoginDto } from './dto/login.dto';
 import { RegisterDto } from './dto/register.dto';
+import { UpdateProfileDto } from './dto/update-profile.dto';
 import { SessionAuthGuard } from './session-auth.guard';
 import {
   baseSessionCookieOptions,
@@ -90,5 +93,35 @@ export class AuthController {
   @HttpCode(HttpStatus.OK)
   me(@CurrentUser() user: AuthUser): AuthUser {
     return user;
+  }
+
+  @Patch('me')
+  @UseGuards(SessionAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async updateMe(
+    @CurrentUser() user: AuthUser,
+    @Body() dto: UpdateProfileDto,
+  ): Promise<AuthUser> {
+    return this.authService.updateProfile(user.id, dto);
+  }
+
+  @Post('change-password')
+  @UseGuards(SessionAuthGuard)
+  @HttpCode(HttpStatus.NO_CONTENT)
+  async changePassword(
+    @CurrentUser() user: AuthUser,
+    @Body() dto: ChangePasswordDto,
+    @Res({ passthrough: true }) response: Response,
+  ): Promise<void> {
+    await this.authService.changePassword(user.id, dto);
+
+    // Toutes les sessions de l'utilisateur (y compris celle-ci) viennent
+    // d'être révoquées côté Redis : on efface aussi le cookie du navigateur
+    // courant pour rester cohérent. Le client devra se reconnecter avec le
+    // nouveau mot de passe.
+    response.clearCookie(
+      SESSION_COOKIE_NAME,
+      baseSessionCookieOptions(this.isProduction),
+    );
   }
 }
