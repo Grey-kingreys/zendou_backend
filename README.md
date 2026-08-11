@@ -57,6 +57,21 @@ $ npm run test:e2e
 $ npm run test:cov
 ```
 
+## Vérifications avant commit
+
+Avant de committer, exécuter ces quatre commandes (toutes doivent passer sans erreur) :
+
+```bash
+$ npm test
+$ npm run build
+$ npm run lint
+$ npm run typecheck
+```
+
+`typecheck` est nécessaire en plus de `build` car `nest build` compile avec
+`tsconfig.build.json`, qui exclut les fichiers `*.spec.ts` : une erreur de
+typage dans un test peut donc passer le build sans être détectée.
+
 ## Deployment
 
 When you're ready to deploy your NestJS application to production, there are some key steps you can take to ensure it runs as efficiently as possible. Check out the [deployment documentation](https://docs.nestjs.com/deployment) for more information.

@@ -41,6 +41,8 @@ describe('ReputationController', () => {
     const overview: ReputationOverview = {
       sent: 120,
       bounces: 3,
+      hardBounces: 3,
+      transientBounces: 0,
       complaints: 0,
       bounceRate: 0.025,
       complaintRate: 0,
