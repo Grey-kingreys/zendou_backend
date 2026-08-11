@@ -24,7 +24,7 @@ export class UpdateProfileDto {
   @IsOptional()
   @IsString()
   @MinLength(2, { message: 'Le nom doit contenir au moins 2 caractères' })
-  @MaxLength(100)
+  @MaxLength(200)
   name?: string;
 
   @IsOptional()
