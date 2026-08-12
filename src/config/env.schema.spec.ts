@@ -135,3 +135,55 @@ describe('validateEnv — ADMIN_EMAIL / ADMIN_PASSWORD / ADMIN_NAME', () => {
     ).toThrow(/ADMIN_PASSWORD/);
   });
 });
+
+describe('validateEnv — SYSTEM_EMAIL_FROM', () => {
+  it('accepts a bare address', () => {
+    const env = validateEnv({
+      ...BASE_ENV,
+      SYSTEM_EMAIL_FROM: 'no-reply@mail.kingreys.fr',
+    });
+
+    expect(env.SYSTEM_EMAIL_FROM).toBe('no-reply@mail.kingreys.fr');
+  });
+
+  it('accepts an address with a display name', () => {
+    const env = validateEnv({
+      ...BASE_ENV,
+      SYSTEM_EMAIL_FROM: 'Zendou <no-reply@mail.kingreys.fr>',
+    });
+
+    expect(env.SYSTEM_EMAIL_FROM).toBe('Zendou <no-reply@mail.kingreys.fr>');
+  });
+
+  it('accepts a quoted display name', () => {
+    const env = validateEnv({
+      ...BASE_ENV,
+      SYSTEM_EMAIL_FROM: '"Zendou, Inc." <no-reply@mail.kingreys.fr>',
+    });
+
+    expect(env.SYSTEM_EMAIL_FROM).toBe(
+      '"Zendou, Inc." <no-reply@mail.kingreys.fr>',
+    );
+  });
+
+  it('rejects a value that is not an email address', () => {
+    expect(() =>
+      validateEnv({ ...BASE_ENV, SYSTEM_EMAIL_FROM: 'pas-une-adresse' }),
+    ).toThrow(/SYSTEM_EMAIL_FROM/);
+  });
+
+  it('rejects a display name with an empty address', () => {
+    expect(() =>
+      validateEnv({ ...BASE_ENV, SYSTEM_EMAIL_FROM: 'Zendou <>' }),
+    ).toThrow(/SYSTEM_EMAIL_FROM/);
+  });
+
+  it('rejects trailing content after the closing chevron', () => {
+    expect(() =>
+      validateEnv({
+        ...BASE_ENV,
+        SYSTEM_EMAIL_FROM: 'Zendou <no-reply@mail.kingreys.fr> suffixe',
+      }),
+    ).toThrow(/SYSTEM_EMAIL_FROM/);
+  });
+});
