@@ -9,6 +9,7 @@ import { AuthController } from '../auth/auth.controller';
 import { AuthService } from '../auth/auth.service';
 import { INVALID_CREDENTIALS_MESSAGE } from '../auth/auth.constants';
 import { SessionService } from '../auth/session.service';
+import { CaptchaService } from '../captcha/captcha.service';
 import { HealthController } from '../health/health.controller';
 import { HealthService } from '../health/health.service';
 import { PrismaService } from '../prisma/prisma.service';
@@ -65,6 +66,10 @@ describe('Limitation de débit (intégration)', () => {
         { provide: ConfigService, useValue: configStub },
         { provide: SessionService, useValue: sessionStub },
         { provide: PrismaService, useValue: {} },
+        // Captcha désactivé : suffit à satisfaire les dépendances de
+        // CaptchaGuard, posé sur /register (route non exercée par ce test,
+        // qui mesure la limitation de débit sur /login).
+        { provide: CaptchaService, useValue: { isEnabled: false } },
         {
           provide: AuthService,
           useValue: {

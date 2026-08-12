@@ -102,6 +102,19 @@ const baseEnvSchema = z.object({
   // bounce et faire suppressor des adresses arbitraires.
   SNS_SKIP_SIGNATURE_VALIDATION: booleanFromEnv,
 
+  /**
+   * Clé secrète Cloudflare Turnstile (`POST /v1/auth/register` uniquement).
+   * **Optionnelle** : absente ou vide (y compris une chaîne blanche), le
+   * captcha est **désactivé** — utile en dev/tests, et comme débrayage
+   * d'urgence en production si le widget gêne des utilisateurs sur mauvais
+   * réseau (il suffit de retirer la variable et de redéployer). Voir
+   * `src/captcha/captcha.service.ts`.
+   */
+  TURNSTILE_SECRET_KEY: z.preprocess(
+    emptyToUndefined,
+    z.string().min(1).optional(),
+  ),
+
   // Compte administrateur créé automatiquement au démarrage (voir SeedModule).
   // Entièrement optionnelles : sans elles, l'app démarre normalement et le
   // seed se contente de logger qu'il est ignoré.

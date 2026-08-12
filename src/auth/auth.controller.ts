@@ -12,6 +12,7 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { Request, Response } from 'express';
+import { CaptchaGuard } from '../captcha/captcha.guard';
 import { RATE_LIMIT_POLICY } from '../rate-limit/rate-limit.constants';
 import { RateLimit } from '../rate-limit/rate-limit.decorator';
 import { SESSION_COOKIE_NAME } from './auth.constants';
@@ -43,9 +44,13 @@ export class AuthController {
   }
 
   // Route non authentifiée : comptée par IP (et par adresse visée), jamais
-  // par utilisateur — il n'y en a pas encore.
+  // par utilisateur — il n'y en a pas encore. `CaptchaGuard` s'ajoute en
+  // complément de cette limite (pas en remplacement) : lui seul protège
+  // contre la création massive de comptes, le vecteur qui expose le compte
+  // SES partagé à un spammeur. Aucune autre route n'a ce garde.
   @Post('register')
   @RateLimit(RATE_LIMIT_POLICY.REGISTER)
+  @UseGuards(CaptchaGuard)
   @HttpCode(HttpStatus.CREATED)
   async register(
     @Body() dto: RegisterDto,

@@ -1,6 +1,7 @@
 import { Inject, Logger, Module, OnModuleDestroy } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import Redis from 'ioredis';
+import { CaptchaModule } from '../captcha/captcha.module';
 import { SESSION_REDIS } from './auth.constants';
 import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
@@ -8,6 +9,7 @@ import { SessionAuthGuard } from './session-auth.guard';
 import { SessionService } from './session.service';
 
 @Module({
+  imports: [CaptchaModule],
   controllers: [AuthController],
   providers: [
     {

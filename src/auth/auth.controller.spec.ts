@@ -2,6 +2,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { ConfigService } from '@nestjs/config';
 import { UserRole, UserStatus } from '@prisma/client';
 import type { Request, Response } from 'express';
+import { CaptchaService } from '../captcha/captcha.service';
 import { SESSION_COOKIE_NAME, SESSION_TTL_SECONDS } from './auth.constants';
 import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
@@ -72,6 +73,11 @@ describe('AuthController', () => {
           provide: ConfigService,
           useValue: { get: jest.fn().mockReturnValue('development') },
         },
+        // Captcha désactivé (pas de TURNSTILE_SECRET_KEY) : suffit à
+        // satisfaire les dépendances de CaptchaGuard, posé sur /register.
+        // Son comportement est couvert par captcha.guard.spec.ts et
+        // captcha-register.integration.spec.ts.
+        { provide: CaptchaService, useValue: { isEnabled: false } },
       ],
     })
       // Le guard est couvert par session-auth.guard.spec.ts.
