@@ -1,9 +1,19 @@
 import type { TopUpMethod, TopUpStatus } from '@prisma/client';
 
-/** Agrégats de solde exposés au client. */
+/**
+ * Agrégats de solde exposés au client.
+ *
+ * Liste d'autorisation, pas liste d'exclusion : `totalPurchased` est défini
+ * de façon fermée (motif `TOPUP` uniquement — le seul adossé à un
+ * encaissement réel) ; `totalGifted` est défini de façon ouverte (tout le
+ * reste : crédit de bienvenue, avoir admin, et tout futur motif de crédit
+ * gratuit, comptés à part sans jamais gonfler `totalPurchased`).
+ * Identité : `balance === totalPurchased + totalGifted - totalConsumed`.
+ */
 export interface BalanceSummary {
   balance: number;
   totalPurchased: number;
+  totalGifted: number;
   totalConsumed: number;
 }
 

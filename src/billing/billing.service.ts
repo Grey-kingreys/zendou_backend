@@ -7,6 +7,7 @@ import { TopUpStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { CREDIT_PACKS, findPack, type CreditPack } from './packs';
 import {
+  CREDIT_REASON_TOPUP,
   DEFAULT_LIMIT,
   DEFAULT_PAGE,
   DUPLICATE_TRANSACTION_REF_MESSAGE,
@@ -55,15 +56,38 @@ const TOPUP_REQUEST_SELECT = {
 export class BillingService {
   constructor(private readonly prisma: PrismaService) {}
 
-  /** Le solde et ses composantes sont dérivés du ledger, jamais stockés. */
+  /**
+   * Le solde et ses composantes sont dérivés du ledger, jamais stockés.
+   *
+   * `totalPurchased`/`totalGifted` reposent sur une **liste d'autorisation**,
+   * pas une liste d'exclusion : la définition d'un crédit payé est fermée
+   * (`reason === CREDIT_REASON_TOPUP`, le seul motif adossé à un encaissement
+   * réel), celle d'un crédit offert est ouverte (tout le reste — crédit de
+   * bienvenue, avoir admin, et tout futur motif gratuit). Un nouveau motif de
+   * crédit gratuit tombe ainsi du bon côté par défaut, sans devoir être ajouté
+   * à une liste d'exclusion au cas par cas. Identité conservée :
+   * `balance = totalPurchased + totalGifted - totalConsumed`.
+   */
   async getBalance(userId: string): Promise<BalanceSummary> {
-    const [total, purchased, consumed] = await Promise.all([
+    const [total, purchased, gifted, consumed] = await Promise.all([
       this.prisma.creditEntry.aggregate({
         where: { userId },
         _sum: { delta: true },
       }),
       this.prisma.creditEntry.aggregate({
-        where: { userId, delta: { gt: 0 } },
+        where: {
+          userId,
+          delta: { gt: 0 },
+          reason: CREDIT_REASON_TOPUP,
+        },
+        _sum: { delta: true },
+      }),
+      this.prisma.creditEntry.aggregate({
+        where: {
+          userId,
+          delta: { gt: 0 },
+          reason: { not: CREDIT_REASON_TOPUP },
+        },
         _sum: { delta: true },
       }),
       this.prisma.creditEntry.aggregate({
@@ -75,6 +99,7 @@ export class BillingService {
     return {
       balance: total._sum.delta ?? 0,
       totalPurchased: purchased._sum.delta ?? 0,
+      totalGifted: gifted._sum.delta ?? 0,
       totalConsumed: Math.abs(consumed._sum.delta ?? 0),
     };
   }
