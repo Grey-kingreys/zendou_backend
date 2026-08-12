@@ -22,6 +22,8 @@ describe('ApiKeysController', () => {
     create: jest.fn(),
     findAllForUser: jest.fn(),
     revoke: jest.fn(),
+    purge: jest.fn(),
+    rotate: jest.fn(),
   };
 
   beforeEach(async () => {
@@ -69,5 +71,28 @@ describe('ApiKeysController', () => {
     await controller.revoke(authUser, 'key_1');
 
     expect(apiKeysService.revoke).toHaveBeenCalledWith('user_1', 'key_1');
+  });
+
+  it('scopes deletion to the current user', async () => {
+    apiKeysService.purge.mockResolvedValue(undefined);
+
+    await controller.purge(authUser, 'key_1');
+
+    expect(apiKeysService.purge).toHaveBeenCalledWith('user_1', 'key_1');
+  });
+
+  it('scopes rotation to the current user', async () => {
+    apiKeysService.rotate.mockResolvedValue({
+      id: 'key_1',
+      name: 'Prod',
+      prefix: 'zd_live_wxyz',
+      key: 'zd_live_wxyz5678',
+      createdAt: new Date('2026-01-01T00:00:00.000Z'),
+      rotatedAt: new Date('2026-01-02T00:00:00.000Z'),
+    });
+
+    await controller.rotate(authUser, 'key_1');
+
+    expect(apiKeysService.rotate).toHaveBeenCalledWith('user_1', 'key_1');
   });
 });
