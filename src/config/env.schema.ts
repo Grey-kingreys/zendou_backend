@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { DEFAULT_WELCOME_CREDITS } from '../billing/billing.constants';
 import {
   DEFAULT_TRUST_PROXY_HOPS,
   RATE_LIMIT_DEFAULTS,
@@ -32,6 +33,17 @@ const booleanFromEnv = z
 const positiveIntFromEnv = (defaultValue: number) =>
   z
     .preprocess(emptyToUndefined, z.coerce.number().int().positive().optional())
+    .default(defaultValue);
+
+/**
+ * Comme `positiveIntFromEnv`, mais `0` est une valeur légitime. Réservé aux
+ * réglages où « zéro » veut dire « désactivé » et non « tout bloquer » —
+ * aujourd'hui `WELCOME_CREDITS` seul : mettre `0` coupe le crédit de
+ * bienvenue sans toucher au code.
+ */
+const nonNegativeIntFromEnv = (defaultValue: number) =>
+  z
+    .preprocess(emptyToUndefined, z.coerce.number().int().min(0).optional())
     .default(defaultValue);
 
 const baseEnvSchema = z.object({
@@ -165,6 +177,15 @@ const baseEnvSchema = z.object({
     emptyToUndefined,
     z.string().trim().url().optional(),
   ),
+
+  /**
+   * Crédits offerts **une seule fois**, au moment de la confirmation de
+   * l'adresse (jamais à l'inscription : sinon créer des comptes deviendrait
+   * une capacité de spam gratuite sur notre compte SES, hors bac à sable).
+   * Variable et non constante : la grille tarifaire est marquée non finale au
+   * cahier §12. `0` désactive le bonus.
+   */
+  WELCOME_CREDITS: nonNegativeIntFromEnv(DEFAULT_WELCOME_CREDITS),
 });
 
 export const envSchema = baseEnvSchema

@@ -8,6 +8,7 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Test, TestingModule } from '@nestjs/testing';
+import { CREDIT_REASON_WELCOME_BONUS } from '../billing/billing.constants';
 import { EmailsService } from '../emails/emails.service';
 import type { SystemEmailPayload } from '../emails/emails.types';
 import { PrismaService } from '../prisma/prisma.service';
@@ -25,6 +26,7 @@ import {
 const USER_ID = 'user_1';
 const USER_EMAIL = 'aissatou@example.com';
 const USER_NAME = 'Aïssatou Diallo';
+const WELCOME_CREDITS = 1_000;
 
 interface UserRow {
   id: string;
@@ -34,6 +36,14 @@ interface UserRow {
   emailVerificationTokenHash: string | null;
   emailVerificationSentTo: string | null;
   emailVerificationExpiresAt: Date | null;
+  welcomeCreditsGrantedAt: Date | null;
+}
+
+interface CreditRow {
+  userId: string;
+  delta: number;
+  reason: string;
+  reference: string | null;
 }
 
 interface SuppressionRow {
@@ -51,6 +61,7 @@ interface SuppressionRow {
  */
 class FakeStore {
   readonly users = new Map<string, UserRow>();
+  readonly credits: CreditRow[] = [];
   readonly suppressions: SuppressionRow[] = [];
 
   readonly user = {
@@ -82,6 +93,7 @@ class FakeStore {
         where: {
           id: string;
           emailVerifiedAt?: null;
+          welcomeCreditsGrantedAt?: null;
         };
         data: Partial<UserRow>;
       }) => {
@@ -89,7 +101,9 @@ class FakeStore {
 
         if (
           !row ||
-          ('emailVerifiedAt' in where && row.emailVerifiedAt !== null)
+          ('emailVerifiedAt' in where && row.emailVerifiedAt !== null) ||
+          ('welcomeCreditsGrantedAt' in where &&
+            row.welcomeCreditsGrantedAt !== null)
         ) {
           return Promise.resolve({ count: 0 });
         }
@@ -98,6 +112,13 @@ class FakeStore {
         return Promise.resolve({ count: 1 });
       },
     ),
+  };
+
+  readonly creditEntry = {
+    create: jest.fn(({ data }: { data: CreditRow }) => {
+      this.credits.push(data);
+      return Promise.resolve(data);
+    }),
   };
 
   readonly suppression = {
@@ -154,8 +175,9 @@ describe('EmailConfirmationService', () => {
   let store: FakeStore;
 
   const sendSystem = jest.fn();
-  const configValues: Record<string, string> = {
+  const configValues: Record<string, string | number> = {
     FRONTEND_ORIGIN: 'https://zendou.dev',
+    WELCOME_CREDITS,
   };
 
   beforeAll(() => {
@@ -179,6 +201,7 @@ describe('EmailConfirmationService', () => {
       emailVerificationTokenHash: null,
       emailVerificationSentTo: null,
       emailVerificationExpiresAt: null,
+      welcomeCreditsGrantedAt: null,
     });
     sendSystem.mockResolvedValue({ status: 'queued', id: 'e_abc' });
 
@@ -279,24 +302,65 @@ describe('EmailConfirmationService', () => {
   });
 
   describe('confirmation', () => {
-    it('confirme le compte et répond confirmed: true', async () => {
+    it('confirme le compte et crédite 1 000 crédits au ledger', async () => {
       const token = await issue();
 
       await expect(service.confirm(token)).resolves.toEqual({
         confirmed: true,
-        creditsGranted: 0,
+        creditsGranted: WELCOME_CREDITS,
       });
 
       expect(row().emailVerifiedAt).toBeInstanceOf(Date);
+      expect(store.credits).toEqual([
+        {
+          userId: USER_ID,
+          delta: WELCOME_CREDITS,
+          reason: CREDIT_REASON_WELCOME_BONUS,
+          reference: null,
+        },
+      ]);
     });
 
-    it('rejeu du même jeton : 409 (usage unique)', async () => {
+    it('n’utilise ni ADMIN_GRANT ni TOPUP comme motif de ledger', async () => {
+      await service.confirm(await issue());
+
+      expect(store.credits[0].reason).toBe('WELCOME_BONUS');
+      expect(['ADMIN_GRANT', 'TOPUP']).not.toContain(store.credits[0].reason);
+    });
+
+    /**
+     * Le test central du crédit de bienvenue : rejouer le lien — double-clic,
+     * préchargement du lien par un antivirus de messagerie, curieux qui garde
+     * l'URL — ne doit jamais produire un second crédit.
+     */
+    it('rejeu du même jeton : 409 et aucun second crédit', async () => {
       const token = await issue();
 
       await service.confirm(token);
       await expect(service.confirm(token)).rejects.toThrow(
         new ConflictException(ALREADY_CONFIRMED_MESSAGE),
       );
+
+      expect(store.credits).toHaveLength(1);
+      expect(store.credits[0].delta).toBe(WELCOME_CREDITS);
+    });
+
+    /**
+     * Forme forte de « strictement une fois par compte » : même une
+     * re-confirmation complète (compte remis à non confirmé à la main, nouveau
+     * jeton) ne rouvre pas le droit au crédit.
+     */
+    it('même une seconde confirmation complète n’accorde rien de plus', async () => {
+      await service.confirm(await issue());
+
+      row().emailVerifiedAt = null;
+      const second = await issue();
+
+      await expect(service.confirm(second)).resolves.toEqual({
+        confirmed: true,
+        creditsGranted: 0,
+      });
+      expect(store.credits).toHaveLength(1);
     });
 
     it('jeton expiré : 400', async () => {
@@ -307,12 +371,14 @@ describe('EmailConfirmationService', () => {
         new BadRequestException(INVALID_CONFIRMATION_TOKEN_MESSAGE),
       );
       expect(row().emailVerifiedAt).toBeNull();
+      expect(store.credits).toHaveLength(0);
     });
 
     it('jeton inconnu : 400', async () => {
       await expect(service.confirm('jeton-qui-nexiste-pas')).rejects.toThrow(
         new BadRequestException(INVALID_CONFIRMATION_TOKEN_MESSAGE),
       );
+      expect(store.credits).toHaveLength(0);
     });
 
     it('compte déjà confirmé : 409', async () => {
@@ -338,6 +404,22 @@ describe('EmailConfirmationService', () => {
         new BadRequestException(INVALID_CONFIRMATION_TOKEN_MESSAGE),
       );
       expect(row().emailVerifiedAt).toBeNull();
+      expect(store.credits).toHaveLength(0);
+    });
+
+    it('respecte WELCOME_CREDITS, y compris à 0 (bonus désactivé)', async () => {
+      configValues.WELCOME_CREDITS = 0;
+
+      await expect(service.confirm(await issue())).resolves.toEqual({
+        confirmed: true,
+        creditsGranted: 0,
+      });
+      expect(store.credits).toHaveLength(0);
+      // Le verrou est quand même posé : remonter la valeur plus tard ne doit
+      // pas rouvrir un droit sur un compte déjà confirmé.
+      expect(row().welcomeCreditsGrantedAt).toBeInstanceOf(Date);
+
+      configValues.WELCOME_CREDITS = WELCOME_CREDITS;
     });
   });
 

@@ -8,6 +8,11 @@ import {
   UnprocessableEntityException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import type { Prisma } from '@prisma/client';
+import {
+  CREDIT_REASON_WELCOME_BONUS,
+  DEFAULT_WELCOME_CREDITS,
+} from '../billing/billing.constants';
 import { EmailsService } from '../emails/emails.service';
 import { isAddressSuppressed } from '../emails/suppressions';
 import { PrismaService } from '../prisma/prisma.service';
@@ -30,13 +35,7 @@ const HOUR_MS = 60 * 60 * 1000;
 /** Réponse de `POST /v1/auth/confirm-email`. */
 export interface ConfirmEmailResult {
   confirmed: true;
-  /**
-   * Crédits réellement accordés par cet appel. Le champ appartient au contrat
-   * de la route dès maintenant : la confirmation est le seul moment où des
-   * crédits pourront être accordés, et l'ajouter plus tard casserait les
-   * clients déjà écrits. Aucun octroi n'est encore branché, la valeur est donc
-   * toujours `0`.
-   */
+  /** Crédits réellement accordés par cet appel — `0` s'ils l'avaient déjà été. */
   creditsGranted: number;
 }
 
@@ -162,6 +161,7 @@ export class EmailConfirmationService {
           emailVerifiedAt: true,
           emailVerificationSentTo: true,
           emailVerificationExpiresAt: true,
+          welcomeCreditsGrantedAt: true,
         },
       });
 
@@ -206,10 +206,58 @@ export class EmailConfirmationService {
         throw new ConflictException(ALREADY_CONFIRMED_MESSAGE);
       }
 
-      this.logger.log(`Adresse confirmée pour l'utilisateur ${user.id}`);
+      const creditsGranted = await this.grantWelcomeCredits(tx, user.id, now);
 
-      return { confirmed: true as const, creditsGranted: 0 };
+      this.logger.log(
+        `Adresse confirmée pour l'utilisateur ${user.id} — ${creditsGranted} crédits de bienvenue accordés`,
+      );
+
+      return { confirmed: true as const, creditsGranted };
     });
+  }
+
+  /**
+   * Crédit de bienvenue, **strictement une fois par compte**.
+   *
+   * Le verrou est `welcomeCreditsGrantedAt` : l'`updateMany` conditionnel ne
+   * touche la ligne que si la colonne est encore NULL, et le crédit n'est
+   * écrit que si cette écriture-là a compté. Le montant est lu dans la
+   * configuration (`WELCOME_CREDITS`) ; `0` n'écrit aucune ligne de ledger,
+   * mais pose quand même le verrou — remonter la valeur plus tard ne doit pas
+   * rouvrir un droit sur les comptes déjà passés par ici.
+   */
+  private async grantWelcomeCredits(
+    tx: Prisma.TransactionClient,
+    userId: string,
+    now: Date,
+  ): Promise<number> {
+    const claimed = await tx.user.updateMany({
+      where: { id: userId, welcomeCreditsGrantedAt: null },
+      data: { welcomeCreditsGrantedAt: now },
+    });
+
+    if (claimed.count === 0) {
+      return 0;
+    }
+
+    const amount = this.welcomeCredits();
+
+    if (amount <= 0) {
+      return 0;
+    }
+
+    await tx.creditEntry.create({
+      data: {
+        userId,
+        delta: amount,
+        // Motif dédié : surtout pas `ADMIN_GRANT` ni `TOPUP`, qui feraient
+        // compter du cadeau comme du revenu (voir `billing.constants.ts`).
+        reason: CREDIT_REASON_WELCOME_BONUS,
+        reference: null,
+      },
+    });
+
+    return amount;
   }
 
   /**
@@ -247,6 +295,14 @@ export class EmailConfirmationService {
     return (
       configured || (this.configService.get<string>('FRONTEND_ORIGIN') ?? '')
     );
+  }
+
+  private welcomeCredits(): number {
+    const configured = this.configService.get<number>('WELCOME_CREDITS');
+
+    return typeof configured === 'number' && Number.isInteger(configured)
+      ? configured
+      : DEFAULT_WELCOME_CREDITS;
   }
 }
 
