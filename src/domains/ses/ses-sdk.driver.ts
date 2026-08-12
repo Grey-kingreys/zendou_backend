@@ -1,9 +1,11 @@
-import { Logger } from '@nestjs/common';
+import { Logger, ServiceUnavailableException } from '@nestjs/common';
 import {
+  AlreadyExistsException,
   CreateEmailIdentityCommand,
   DeleteEmailIdentityCommand,
   DkimStatus,
   GetEmailIdentityCommand,
+  type GetEmailIdentityCommandOutput,
   NotFoundException,
   SESv2Client,
 } from '@aws-sdk/client-sesv2';
@@ -36,11 +38,66 @@ export class SesSdkDriver implements SesIdentityDriver {
   }
 
   async createIdentity(domain: string): Promise<{ dkimTokens: string[] }> {
-    const response = await this.client.send(
-      new CreateEmailIdentityCommand({ EmailIdentity: domain }),
-    );
+    try {
+      const response = await this.client.send(
+        new CreateEmailIdentityCommand({ EmailIdentity: domain }),
+      );
 
-    return { dkimTokens: response.DkimAttributes?.Tokens ?? [] };
+      return { dkimTokens: response.DkimAttributes?.Tokens ?? [] };
+    } catch (error) {
+      if (error instanceof AlreadyExistsException) {
+        // L'unicité du domaine côté Zendou est déjà garantie par la
+        // contrainte `@unique` sur `Domain.name` (un autre client reçoit un
+        // 409 avant d'arriver ici). L'identité SES est une ressource
+        // partagée de notre compte AWS : elle peut préexister (domaine
+        // vérifié hors Zendou, reprise après un échec d'écriture en base
+        // alors que l'appel AWS avait réussi, ou rejeu de requête). La
+        // retrouver plutôt que d'échouer est le comportement correct —
+        // c'est un succès idempotent, pas une erreur.
+        this.logger.warn(
+          `Identité SES déjà existante pour ${domain}, jetons DKIM récupérés`,
+        );
+        return this.recoverExistingIdentity(domain);
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Récupère les jetons DKIM d'une identité SES déjà existante. Si SES ne
+   * répond pas ou ne renvoie aucun jeton, on ne masque pas le problème : on
+   * remonte une erreur claire plutôt qu'un 500 opaque.
+   */
+  private async recoverExistingIdentity(
+    domain: string,
+  ): Promise<{ dkimTokens: string[] }> {
+    let response: GetEmailIdentityCommandOutput;
+    try {
+      response = await this.client.send(
+        new GetEmailIdentityCommand({ EmailIdentity: domain }),
+      );
+    } catch (error) {
+      this.logger.error(
+        `Échec de récupération des jetons DKIM pour l'identité SES déjà existante ${domain}`,
+        error instanceof Error ? error.stack : undefined,
+      );
+      throw new ServiceUnavailableException(
+        "Le service d'envoi est momentanément indisponible, réessayez dans quelques minutes.",
+      );
+    }
+
+    const dkimTokens = response.DkimAttributes?.Tokens ?? [];
+
+    if (dkimTokens.length === 0) {
+      this.logger.error(
+        `Identité SES déjà existante ${domain} sans jeton DKIM disponible`,
+      );
+      throw new ServiceUnavailableException(
+        "Le service d'envoi est momentanément indisponible, réessayez dans quelques minutes.",
+      );
+    }
+
+    return { dkimTokens };
   }
 
   async getIdentityStatus(domain: string): Promise<DomainStatus> {
