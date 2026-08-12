@@ -5,10 +5,62 @@ import { PrismaService } from '../prisma/prisma.service';
 import { BillingService } from './billing.service';
 import type { CreateTopUpRequestDto } from './dto/create-topup-request.dto';
 import {
+  CREDIT_REASON_TOPUP,
+  CREDIT_REASON_WELCOME_BONUS,
   DUPLICATE_TRANSACTION_REF_MESSAGE,
   PACK_NOT_FOUND_MESSAGE,
   PACK_NOT_PURCHASABLE_MESSAGE,
 } from './billing.constants';
+import { CREDIT_REASON_ADMIN_GRANT } from '../admin';
+import { CREDIT_REASON_SEND } from '../emails/emails.constants';
+
+/**
+ * Reproduit le filtrage de `Prisma.creditEntry.aggregate` sur un ledger en
+ * mémoire, pour que les tests de `getBalance` vérifient un vrai calcul par
+ * motif plutôt que des valeurs de retour câblées par position d'appel. Un
+ * retour à « somme de tous les deltas positifs » ferait donc réellement
+ * échouer ces tests, au lieu de passer parce que les mocks tombent dans le
+ * bon ordre.
+ */
+function fakeAggregateOver(
+  ledger: Array<{ userId: string; delta: number; reason: string }>,
+) {
+  return ({
+    where,
+  }: {
+    where: {
+      userId: string;
+      delta?: { gt?: number; lt?: number };
+      reason?: string | { not: string };
+    };
+  }) => {
+    const rows = ledger.filter((row) => {
+      if (row.userId !== where.userId) return false;
+      if (where.delta?.gt !== undefined && !(row.delta > where.delta.gt)) {
+        return false;
+      }
+      if (where.delta?.lt !== undefined && !(row.delta < where.delta.lt)) {
+        return false;
+      }
+      if (where.reason !== undefined) {
+        if (typeof where.reason === 'string') {
+          if (row.reason !== where.reason) return false;
+        } else if (row.reason === where.reason.not) {
+          return false;
+        }
+      }
+      return true;
+    });
+
+    if (rows.length === 0) {
+      return { _sum: { delta: null } };
+    }
+
+    return {
+      _sum: { delta: rows.reduce((sum, row) => sum + row.delta, 0) },
+    };
+  };
+}
 
 const CREDIT_ENTRY_SELECT = {
   delta: true,
@@ -68,10 +120,11 @@ describe('BillingService', () => {
   });
 
   describe('getBalance', () => {
-    it('sums delta for the balance, positive deltas for purchased, and abs(negative) for consumed', async () => {
+    it('sums delta for the balance, TOPUP-only positive deltas for purchased, non-TOPUP positive deltas for gifted, and abs(negative) for consumed', async () => {
       aggregate
         .mockResolvedValueOnce({ _sum: { delta: 15 } }) // total
-        .mockResolvedValueOnce({ _sum: { delta: 25 } }) // purchased (delta > 0)
+        .mockResolvedValueOnce({ _sum: { delta: 25 } }) // purchased (delta > 0, reason == TOPUP)
+        .mockResolvedValueOnce({ _sum: { delta: 0 } }) // gifted (delta > 0, reason != TOPUP)
         .mockResolvedValueOnce({ _sum: { delta: -10 } }); // consumed (delta < 0)
 
       const result = await service.getBalance('user_1');
@@ -79,6 +132,7 @@ describe('BillingService', () => {
       expect(result).toEqual({
         balance: 15,
         totalPurchased: 25,
+        totalGifted: 0,
         totalConsumed: 10,
       });
       expect(aggregate).toHaveBeenNthCalledWith(1, {
@@ -86,10 +140,22 @@ describe('BillingService', () => {
         _sum: { delta: true },
       });
       expect(aggregate).toHaveBeenNthCalledWith(2, {
-        where: { userId: 'user_1', delta: { gt: 0 } },
+        where: {
+          userId: 'user_1',
+          delta: { gt: 0 },
+          reason: CREDIT_REASON_TOPUP,
+        },
         _sum: { delta: true },
       });
       expect(aggregate).toHaveBeenNthCalledWith(3, {
+        where: {
+          userId: 'user_1',
+          delta: { gt: 0 },
+          reason: { not: CREDIT_REASON_TOPUP },
+        },
+        _sum: { delta: true },
+      });
+      expect(aggregate).toHaveBeenNthCalledWith(4, {
         where: { userId: 'user_1', delta: { lt: 0 } },
         _sum: { delta: true },
       });
@@ -103,8 +169,113 @@ describe('BillingService', () => {
       expect(result).toEqual({
         balance: 0,
         totalPurchased: 0,
+        totalGifted: 0,
         totalConsumed: 0,
       });
+    });
+
+    it('counts a lone paid top-up entirely as totalPurchased, nothing as gifted', async () => {
+      aggregate.mockImplementation(
+        fakeAggregateOver([
+          { userId: 'user_1', delta: 500, reason: CREDIT_REASON_TOPUP },
+        ]),
+      );
+
+      const result = await service.getBalance('user_1');
+
+      expect(result).toEqual({
+        balance: 500,
+        totalPurchased: 500,
+        totalGifted: 0,
+        totalConsumed: 0,
+      });
+    });
+
+    it('reports totalPurchased at 0 and a full 1000-credit balance for an account with only the welcome bonus', async () => {
+      aggregate.mockImplementation(
+        fakeAggregateOver([
+          {
+            userId: 'user_1',
+            delta: 1000,
+            reason: CREDIT_REASON_WELCOME_BONUS,
+          },
+        ]),
+      );
+
+      const result = await service.getBalance('user_1');
+
+      expect(result).toEqual({
+        balance: 1000,
+        totalPurchased: 0,
+        totalGifted: 1000,
+        totalConsumed: 0,
+      });
+    });
+
+    it('counts an admin-granted credit as totalGifted, never as totalPurchased — the allow-list regression this fixes', async () => {
+      aggregate.mockImplementation(
+        fakeAggregateOver([
+          { userId: 'user_1', delta: 2000, reason: CREDIT_REASON_ADMIN_GRANT },
+        ]),
+      );
+
+      const result = await service.getBalance('user_1');
+
+      expect(result).toEqual({
+        balance: 2000,
+        totalPurchased: 0,
+        totalGifted: 2000,
+        totalConsumed: 0,
+      });
+    });
+
+    it('excludes the welcome bonus from totalPurchased when the ledger has both a welcome bonus and a paid top-up, keeping the balance correct', async () => {
+      aggregate.mockImplementation(
+        fakeAggregateOver([
+          {
+            userId: 'user_1',
+            delta: 1000,
+            reason: CREDIT_REASON_WELCOME_BONUS,
+          },
+          { userId: 'user_1', delta: 500, reason: CREDIT_REASON_TOPUP },
+        ]),
+      );
+
+      const result = await service.getBalance('user_1');
+
+      expect(result).toEqual({
+        balance: 1500,
+        totalPurchased: 500, // uniquement la recharge payée, pas le cadeau
+        totalGifted: 1000,
+        totalConsumed: 0,
+      });
+    });
+
+    it('keeps balance === totalPurchased + totalGifted - totalConsumed across a TOPUP, a WELCOME_BONUS, an ADMIN_GRANT and a SEND debit', async () => {
+      aggregate.mockImplementation(
+        fakeAggregateOver([
+          { userId: 'user_1', delta: 500, reason: CREDIT_REASON_TOPUP },
+          {
+            userId: 'user_1',
+            delta: 1000,
+            reason: CREDIT_REASON_WELCOME_BONUS,
+          },
+          { userId: 'user_1', delta: 2000, reason: CREDIT_REASON_ADMIN_GRANT },
+          { userId: 'user_1', delta: -300, reason: CREDIT_REASON_SEND },
+        ]),
+      );
+
+      const result = await service.getBalance('user_1');
+
+      expect(result).toEqual({
+        balance: 3200,
+        totalPurchased: 500,
+        totalGifted: 3000,
+        totalConsumed: 300,
+      });
+      expect(result.balance).toBe(
+        result.totalPurchased + result.totalGifted - result.totalConsumed,
+      );
     });
   });
 
