@@ -9,7 +9,7 @@ import {
   Body,
   UseGuards,
 } from '@nestjs/common';
-import { CurrentUser, SessionAuthGuard } from '../auth';
+import { CurrentUser, EmailVerifiedGuard, SessionAuthGuard } from '../auth';
 import type { AuthUser } from '../auth';
 import { ApiKeysService } from './api-keys.service';
 import {
@@ -24,7 +24,15 @@ import { CreateApiKeyDto } from './dto/create-api-key.dto';
 export class ApiKeysController {
   constructor(private readonly apiKeysService: ApiKeysService) {}
 
+  /**
+   * Seule route du contrôleur fermée aux comptes non confirmés : créer une
+   * clé, c'est obtenir le moyen d'envoyer. Lister, révoquer, supprimer et
+   * régénérer restent ouverts — ce sont des gestes de reprise en main, pas de
+   * nouvelles capacités d'envoi, et les interdire enfermerait un compte non
+   * confirmé avec des clés qu'il ne pourrait plus révoquer.
+   */
   @Post()
+  @UseGuards(EmailVerifiedGuard)
   @HttpCode(HttpStatus.CREATED)
   create(
     @CurrentUser() user: AuthUser,

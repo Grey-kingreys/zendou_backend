@@ -2,6 +2,7 @@ import {
   BadRequestException,
   ConflictException,
   Injectable,
+  Logger,
   UnauthorizedException,
 } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
@@ -19,6 +20,7 @@ import { ChangePasswordDto } from './dto/change-password.dto';
 import { LoginDto } from './dto/login.dto';
 import { RegisterDto } from './dto/register.dto';
 import { UpdateProfileDto } from './dto/update-profile.dto';
+import { EmailConfirmationService } from './email-confirmation.service';
 import { SessionService } from './session.service';
 
 export interface AuthResult {
@@ -28,9 +30,12 @@ export interface AuthResult {
 
 @Injectable()
 export class AuthService {
+  private readonly logger = new Logger(AuthService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly sessionService: SessionService,
+    private readonly emailConfirmation: EmailConfirmationService,
   ) {}
 
   /** Crée un utilisateur, hache son mot de passe et ouvre une session. */
@@ -74,6 +79,20 @@ export class AuthService {
       throw error;
     }
 
+    // Émission et expédition du lien de confirmation, hors du chemin critique
+    // de l'inscription : une panne SES, une file Redis indisponible ou une
+    // adresse d'expédition mal configurée ne doivent pas faire échouer la
+    // création d'un compte déjà écrit en base. Le compte reste non confirmé,
+    // et l'utilisateur dispose de `POST /v1/auth/resend-confirmation`.
+    void this.emailConfirmation
+      .issueAndSend(user.id, user.email, user.name)
+      .catch((error: unknown) => {
+        this.logger.error(
+          `Envoi du lien de confirmation en échec pour l'utilisateur ${user.id}`,
+          error instanceof Error ? error.stack : String(error),
+        );
+      });
+
     const token = await this.sessionService.create(user.id);
 
     return { user, token };
@@ -108,6 +127,16 @@ export class AuthService {
    * `company` et `declaredUsage` acceptent `''` ou `null` pour effacer la
    * valeur existante. Au moins un champ doit être fourni (l'email, jamais
    * modifiable ici, est déjà retiré en amont par le `ValidationPipe`).
+   *
+   * **Confirmation d'adresse** : cette route ne peut pas changer `email` —
+   * `UpdateProfileDto` n'a pas ce champ et le `ValidationPipe` global
+   * (`whitelist: true`) l'écarte silencieusement s'il est envoyé. Le jeton de
+   * confirmation en cours n'a donc rien à craindre d'ici. L'invariant « une
+   * adresse qui change périme le jeton » n'est malgré tout pas confié à ce
+   * code : il est porté par la donnée (`User.emailVerificationSentTo`, comparé
+   * à `User.email` au moment de la confirmation), donc valable pour n'importe
+   * quel futur chemin de modification d'adresse, y compris celui qu'on n'a pas
+   * encore écrit.
    */
   async updateProfile(
     userId: string,

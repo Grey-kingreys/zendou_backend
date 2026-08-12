@@ -23,6 +23,18 @@ export interface AuthUser {
    * renvoient toujours dans le JSON réel.
    */
   dailySendLimit?: number;
+  /**
+   * Date de confirmation de l'adresse email, `null` tant qu'elle ne l'est
+   * pas. Exposée telle quelle par `GET`/`PATCH /v1/auth/me` (sérialisée en
+   * chaîne ISO), et lue par `EmailVerifiedGuard`.
+   *
+   * Optionnelle au niveau du type pour la même raison que `dailySendLimit` :
+   * ne pas casser la compilation des fixtures `AuthUser` déjà écrites dans
+   * les specs des autres modules. En pratique elle est toujours présente,
+   * `AUTH_USER_SELECT` la sélectionnant systématiquement. `EmailVerifiedGuard`
+   * traite l'absence comme « non confirmé » : en cas de doute on ferme.
+   */
+  emailVerifiedAt?: Date | null;
   createdAt: Date;
 }
 
@@ -39,6 +51,7 @@ export const AUTH_USER_SELECT = {
   role: true,
   status: true,
   dailySendLimit: true,
+  emailVerifiedAt: true,
   createdAt: true,
 } satisfies Record<keyof AuthUser, true>;
 

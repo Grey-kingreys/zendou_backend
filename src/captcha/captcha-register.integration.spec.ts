@@ -4,6 +4,7 @@ import { Test } from '@nestjs/testing';
 import request from 'supertest';
 import { AuthController } from '../auth/auth.controller';
 import { AuthService } from '../auth/auth.service';
+import { EmailConfirmationService } from '../auth/email-confirmation.service';
 import { SessionService } from '../auth/session.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { CAPTCHA_FAILED_MESSAGE } from './captcha.constants';
@@ -69,6 +70,12 @@ async function buildApp(
       // (posé sur d'autres routes du même contrôleur) pour que le module
       // compile.
       { provide: PrismaService, useValue: {} },
+      // Idem : requis par le contrôleur (routes de confirmation), jamais
+      // sollicité par la route testée.
+      {
+        provide: EmailConfirmationService,
+        useValue: { confirm: jest.fn(), resend: jest.fn() },
+      },
       CaptchaService,
       CaptchaGuard,
     ],

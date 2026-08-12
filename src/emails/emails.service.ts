@@ -5,8 +5,10 @@ import {
   HttpException,
   HttpStatus,
   Injectable,
+  Logger,
 } from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bullmq';
+import { ConfigService } from '@nestjs/config';
 import { DomainStatus, EmailStatus } from '@prisma/client';
 import type { Queue } from 'bullmq';
 import { PrismaService } from '../prisma/prisma.service';
@@ -32,17 +34,39 @@ import {
   MISSING_BODY_MESSAGE,
   SEND_JOB_ATTEMPTS,
   SEND_JOB_BACKOFF_DELAY_MS,
+  SYSTEM_SENDER_UNAVAILABLE_MESSAGE,
 } from './emails.constants';
-import type { EmailSendJobData, SendEmailResponse } from './emails.types';
+import type {
+  EmailSendJobData,
+  SendEmailResponse,
+  SystemEmailPayload,
+  SystemSendResult,
+} from './emails.types';
 import type { SendEmailDto } from './dto/send-email.dto';
 import { isAddressSuppressed } from './suppressions';
 
+/**
+ * Échec d'un envoi système imputable à la configuration du serveur, jamais au
+ * client : `SYSTEM_EMAIL_FROM` absente/illisible, ou domaine d'expédition non
+ * vérifié. Distincte des exceptions HTTP pour que chaque appelant choisisse sa
+ * traduction (503 sur une route explicite, simple log sur une inscription).
+ */
+export class SystemSenderUnavailableError extends Error {
+  constructor(detail: string) {
+    super(`${SYSTEM_SENDER_UNAVAILABLE_MESSAGE} (${detail})`);
+    this.name = 'SystemSenderUnavailableError';
+  }
+}
+
 @Injectable()
 export class EmailsService {
+  private readonly logger = new Logger(EmailsService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     @InjectQueue(EMAIL_SEND_QUEUE)
     private readonly queue: Queue<EmailSendJobData>,
+    private readonly configService: ConfigService,
   ) {}
 
   /**
@@ -144,6 +168,132 @@ export class EmailsService {
   }
 
   /**
+   * Envoi émis par Zendou lui-même (confirmation d'adresse aujourd'hui).
+   *
+   * Même chemin que l'envoi client — même file BullMQ, même worker, même
+   * driver SES, donc même DKIM et même configuration set. Ce qui change tient
+   * en une liste courte, volontairement énumérée ici plutôt que dissoute dans
+   * un drapeau « ignore les règles ». Ce sont les garde-fous bâtis en T12 que
+   * l'on contourne : la liste ci-dessous est le périmètre exact du
+   * contournement.
+   *
+   * **Ce que l'exemption contourne** (et rien d'autre) :
+   * 1. *Débit de crédits* — aucune `CreditEntry` n'est écrite. On ne facture
+   *    pas au client un email qu'on lui envoie de notre propre initiative.
+   * 2. *Solde de crédits* — pas d'`assertSufficientCredits` : un compte à zéro
+   *    doit pouvoir recevoir son lien de confirmation, sinon il ne peut jamais
+   *    obtenir le crédit de bienvenue qui suit la confirmation.
+   * 3. *Quota journalier* — pas d'`assertDailyLimitNotReached`, et la ligne est
+   *    exclue du comptage (`system: false` dans la requête). Un client qui a
+   *    consommé ses 200 envois du jour doit quand même recevoir nos messages.
+   * 4. *Propriété du domaine d'expédition* — `SYSTEM_EMAIL_FROM` appartient à
+   *    Zendou, pas au destinataire : on ne peut pas exiger que le domaine soit
+   *    l'un des siens. La vérification de propriété est donc levée ; la
+   *    vérification du domaine, elle, ne l'est pas (voir ci-dessous).
+   * 5. *Métrique de réputation* — les rebonds et plaintes de ces envois ne
+   *    comptent ni au numérateur ni au dénominateur de `ReputationService` :
+   *    un client n'a pas à être suspendu pour un email qu'il n'a pas envoyé,
+   *    et l'exclusion serait un cadeau empoisonné si elle ne portait que sur
+   *    le numérateur (voir `reputation.service.ts`).
+   * 6. *Journal des envois et KPI admin* — ces lignes ne sont pas « ce que ce
+   *    client a envoyé » et n'apparaissent donc ni dans `GET /v1/emails` ni
+   *    dans `emailsSent30d`.
+   *
+   * **Ce que l'exemption ne contourne PAS** :
+   * - la *liste de suppression* : consultée ici comme pour un envoi client, et
+   *   de nouveau par le worker. Une adresse en rebond dur reste inadressable,
+   *   y compris pour un email système ;
+   * - la *vérification du domaine d'expédition* : le domaine de
+   *   `SYSTEM_EMAIL_FROM` doit exister en base avec le statut `VERIFIED`.
+   *   Sans quoi l'envoi est refusé ici, avant toute mise en file ;
+   * - le *pipeline d'envoi* : file, tentatives, backoff, statuts, traçabilité
+   *   dans `Email`, remontée SNS — rien n'est court-circuité ;
+   * - la *suspension du compte* n'est pas contournée non plus au sens où elle
+   *   n'a jamais porté sur la réception : un compte suspendu ne peut pas
+   *   envoyer, il peut recevoir nos messages.
+   *
+   * @throws {SystemSenderUnavailableError} configuration serveur inutilisable.
+   */
+  async sendSystem(payload: SystemEmailPayload): Promise<SystemSendResult> {
+    const configured = (
+      this.configService.get<string>('SYSTEM_EMAIL_FROM') ?? ''
+    ).trim();
+
+    if (!configured) {
+      throw new SystemSenderUnavailableError(
+        'SYSTEM_EMAIL_FROM non renseignée',
+      );
+    }
+
+    const from = parseEmailAddress(configured);
+
+    if (!from) {
+      throw new SystemSenderUnavailableError(
+        `SYSTEM_EMAIL_FROM illisible : ${configured}`,
+      );
+    }
+
+    const toAddress = normalizeEmailAddress(payload.to);
+
+    if (!toAddress) {
+      throw new BadRequestException(INVALID_TO_MESSAGE);
+    }
+
+    // Non contourné : le domaine d'expédition doit être vérifié. La propriété,
+    // elle, ne peut pas l'être — le domaine est celui de Zendou, pas celui du
+    // destinataire — d'où la recherche sans `userId`.
+    const domain = await this.prisma.domain.findFirst({
+      where: { name: from.domain, status: DomainStatus.VERIFIED },
+      select: { id: true },
+    });
+
+    if (!domain) {
+      throw new SystemSenderUnavailableError(
+        `domaine ${from.domain} absent ou non vérifié dans Zendou`,
+      );
+    }
+
+    // Non contourné : la liste de suppression s'applique aussi aux emails
+    // système. Rien n'est mis en file, et l'appelant apprend que l'adresse est
+    // morte au lieu de faire patienter l'utilisateur indéfiniment.
+    if (await isAddressSuppressed(this.prisma, payload.userId, toAddress)) {
+      this.logger.warn(
+        `Envoi système non expédié : ${toAddress} est sur la liste de suppression`,
+      );
+      return { status: 'suppressed' };
+    }
+
+    // Aucune `CreditEntry` ici, et donc aucune transaction : il n'y a rien à
+    // rendre indissociable de la création de la ligne.
+    const email = await this.prisma.email.create({
+      data: {
+        userId: payload.userId,
+        domainId: domain.id,
+        fromAddress: formatEmailAddress(from),
+        toAddress,
+        subject: payload.subject,
+        publicId: generateEmailPublicId(),
+        status: EmailStatus.QUEUED,
+        system: true,
+      },
+      select: { id: true, publicId: true },
+    });
+
+    await this.queue.add(
+      EMAIL_SEND_JOB,
+      { emailId: email.id, html: payload.html, text: payload.text },
+      {
+        jobId: email.publicId,
+        attempts: SEND_JOB_ATTEMPTS,
+        backoff: { type: 'exponential', delay: SEND_JOB_BACKOFF_DELAY_MS },
+        removeOnComplete: true,
+      },
+    );
+
+    return { status: 'queued', id: email.publicId };
+  }
+
+  /**
    * Vérifie que le domaine de l'expéditeur appartient au client et qu'il
    * est vérifié. Un domaine appartenant à un tiers donne la même réponse
    * qu'un domaine inconnu : pas d'oracle sur les domaines des autres.
@@ -186,8 +336,15 @@ export class EmailsService {
         where: { id: userId },
         select: { dailySendLimit: true },
       }),
+      // `system: false` : le quota du client compte ce que **le client** a
+      // envoyé. Un lien de confirmation que Zendou lui expédie ne doit pas
+      // lui coûter un envoi de sa journée.
       this.prisma.email.count({
-        where: { userId, queuedAt: { gte: startOfUtcDay(new Date()) } },
+        where: {
+          userId,
+          system: false,
+          queuedAt: { gte: startOfUtcDay(new Date()) },
+        },
       }),
     ]);
 

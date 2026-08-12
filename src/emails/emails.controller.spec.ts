@@ -2,6 +2,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { GUARDS_METADATA, HTTP_CODE_METADATA } from '@nestjs/common/constants';
 import { HttpStatus } from '@nestjs/common';
 import { ApiKeyAuthGuard } from '../api-keys';
+import { EmailVerifiedGuard } from '../auth';
 import type { AuthUser } from '../auth';
 import type { SendEmailDto } from './dto/send-email.dto';
 import { EmailsController } from './emails.controller';
@@ -34,18 +35,21 @@ describe('EmailsController', () => {
     })
       .overrideGuard(ApiKeyAuthGuard)
       .useValue({ canActivate: () => true })
+      .overrideGuard(EmailVerifiedGuard)
+      .useValue({ canActivate: () => true })
       .compile();
 
     controller = module.get(EmailsController);
   });
 
-  it('is guarded by the API key guard, never by the session one', () => {
+  it('is guarded by the API key guard then the confirmation one, never by the session one', () => {
     const guards: unknown = Reflect.getMetadata(
       GUARDS_METADATA,
       EmailsController,
     );
 
-    expect(guards).toEqual([ApiKeyAuthGuard]);
+    // L'ordre compte : on authentifie avant de juger de la confirmation.
+    expect(guards).toEqual([ApiKeyAuthGuard, EmailVerifiedGuard]);
   });
 
   it('answers 202 Accepted — the send is only queued', () => {

@@ -8,6 +8,7 @@ import request from 'supertest';
 import { AuthController } from '../auth/auth.controller';
 import { AuthService } from '../auth/auth.service';
 import { INVALID_CREDENTIALS_MESSAGE } from '../auth/auth.constants';
+import { EmailConfirmationService } from '../auth/email-confirmation.service';
 import { SessionService } from '../auth/session.service';
 import { CaptchaService } from '../captcha/captcha.service';
 import { HealthController } from '../health/health.controller';
@@ -66,6 +67,12 @@ describe('Limitation de débit (intégration)', () => {
         { provide: ConfigService, useValue: configStub },
         { provide: SessionService, useValue: sessionStub },
         { provide: PrismaService, useValue: {} },
+        // Requis par `AuthController` (routes de confirmation) ; ce test ne
+        // mesure que la limitation sur /login.
+        {
+          provide: EmailConfirmationService,
+          useValue: { confirm: jest.fn(), resend: jest.fn() },
+        },
         // Captcha désactivé : suffit à satisfaire les dépendances de
         // CaptchaGuard, posé sur /register (route non exercée par ce test,
         // qui mesure la limitation de débit sur /login).

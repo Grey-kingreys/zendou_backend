@@ -16,6 +16,7 @@ import {
   SAME_PASSWORD_MESSAGE,
   WRONG_CURRENT_PASSWORD_MESSAGE,
 } from './auth.constants';
+import { EmailConfirmationService } from './email-confirmation.service';
 import { SessionService } from './session.service';
 
 interface CreateArgs {
@@ -55,11 +56,13 @@ describe('AuthService', () => {
     destroy: jest.fn(),
     destroyAllForUser: jest.fn(),
   };
+  const emailConfirmation = { issueAndSend: jest.fn() };
 
   beforeEach(async () => {
     jest.clearAllMocks();
     capturedCreateArgs = undefined;
     sessionService.create.mockResolvedValue('session-token');
+    emailConfirmation.issueAndSend.mockResolvedValue(undefined);
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -69,6 +72,10 @@ describe('AuthService', () => {
           useValue: { user: { findUnique, create, update } },
         },
         { provide: SessionService, useValue: sessionService },
+        {
+          provide: EmailConfirmationService,
+          useValue: emailConfirmation,
+        },
       ],
     }).compile();
 
@@ -102,6 +109,41 @@ describe('AuthService', () => {
       expect(sessionService.create).toHaveBeenCalledWith('user_1');
       expect(result).toEqual({ user: authUser, token: 'session-token' });
       expect(result.user).not.toHaveProperty('passwordHash');
+    }, 15000);
+
+    it('émet et expédie le lien de confirmation du compte créé', async () => {
+      findUnique.mockResolvedValue(null);
+
+      await service.register({
+        email: 'aissatou@example.com',
+        password: 'motdepasse-solide',
+        name: 'Aïssatou Diallo',
+      });
+
+      expect(emailConfirmation.issueAndSend).toHaveBeenCalledWith(
+        'user_1',
+        'aissatou@example.com',
+        'Aïssatou Diallo',
+      );
+    }, 15000);
+
+    /**
+     * Le compte est déjà écrit en base quand l'email part. Une panne SES, une
+     * file Redis coupée ou une adresse d'expédition mal configurée ne doivent
+     * donc pas transformer une inscription réussie en 500 : le compte reste
+     * non confirmé, et `POST /v1/auth/resend-confirmation` existe pour ça.
+     */
+    it('n’échoue pas si l’expédition du lien échoue', async () => {
+      findUnique.mockResolvedValue(null);
+      emailConfirmation.issueAndSend.mockRejectedValue(new Error('SES down'));
+
+      await expect(
+        service.register({
+          email: 'aissatou@example.com',
+          password: 'motdepasse-solide',
+          name: 'Aïssatou Diallo',
+        }),
+      ).resolves.toEqual({ user: authUser, token: 'session-token' });
     }, 15000);
 
     it('rejects a duplicate email with a 409 and does not create the user', async () => {

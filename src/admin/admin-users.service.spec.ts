@@ -204,6 +204,9 @@ describe('AdminUsersService', () => {
         by: ['userId'],
         where: {
           userId: { in: ['u1'] },
+          // Les emails que Zendou adresse au client ne sont pas des envois
+          // du client : ils ne gonflent pas le KPI.
+          system: false,
           queuedAt: { gte: new Date(NOW.getTime() - 30 * DAY_MS) },
           status: { in: [...SENT_EMAIL_STATUSES] },
         },

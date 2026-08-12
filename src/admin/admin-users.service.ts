@@ -125,10 +125,14 @@ export class AdminUsersService {
         where: { userId: { in: ids } },
         _sum: { delta: true },
       }),
+      // `system: false` : « emails envoyés » veut dire envoyés *par le
+      // client*. Compter les emails que Zendou lui adresse gonflerait le KPI
+      // d'exactement un envoi par compte créé.
       this.prisma.email.groupBy({
         by: ['userId'],
         where: {
           userId: { in: ids },
+          system: false,
           queuedAt: { gte: this.windowStart() },
           status: { in: [...SENT_EMAIL_STATUSES] },
         },
@@ -176,9 +180,12 @@ export class AdminUsersService {
           where: { userId: id },
           _sum: { delta: true },
         }),
+        // Même exclusion que dans `list` : ce compteur est celui des envois
+        // du client, pas des emails système qui lui sont adressés.
         this.prisma.email.count({
           where: {
             userId: id,
+            system: false,
             queuedAt: { gte: this.windowStart() },
             status: { in: [...SENT_EMAIL_STATUSES] },
           },

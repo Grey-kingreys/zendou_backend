@@ -1,6 +1,26 @@
 /** Valeur inscrite dans `CreditEntry.reason` lors d'une recharge approuvée. */
 export const CREDIT_REASON_TOPUP = 'TOPUP';
 
+/**
+ * Valeur inscrite dans `CreditEntry.reason` lors de l'octroi du crédit de
+ * bienvenue, à la confirmation de l'adresse email.
+ *
+ * Motif **dédié**, et surtout ni `TOPUP` ni `ADMIN_GRANT` : ces crédits sont
+ * offerts, ils n'ont donné lieu à aucun encaissement. Les confondre avec une
+ * recharge payée ferait compter du cadeau comme du revenu dans les KPI de
+ * l'espace admin et fausserait le calcul de marge — d'autant plus que le
+ * montant (1 000 par compte par défaut) écrase les premiers vrais paiements.
+ * Toute agrégation « chiffre d'affaires » doit donc exclure ce motif.
+ */
+export const CREDIT_REASON_WELCOME_BONUS = 'WELCOME_BONUS';
+
+/**
+ * Montant par défaut du crédit de bienvenue, surchargeable par la variable
+ * d'environnement `WELCOME_CREDITS` (cahier §12 : la grille tarifaire n'est
+ * pas finale).
+ */
+export const DEFAULT_WELCOME_CREDITS = 1_000;
+
 export const DEFAULT_PAGE = 1;
 export const DEFAULT_LIMIT = 25;
 export const MAX_LIMIT = 100;

@@ -56,13 +56,15 @@ describe('EmailsLogService', () => {
       const result = await service.list('user_1', {});
 
       expect(findMany).toHaveBeenCalledWith({
-        where: { userId: 'user_1' },
+        where: { userId: 'user_1', system: false },
         select: EMAIL_LIST_SELECT,
         orderBy: { queuedAt: 'desc' },
         skip: 0,
         take: 25,
       });
-      expect(count).toHaveBeenCalledWith({ where: { userId: 'user_1' } });
+      expect(count).toHaveBeenCalledWith({
+        where: { userId: 'user_1', system: false },
+      });
       expect(result).toEqual({
         items: [],
         total: 0,
@@ -118,11 +120,19 @@ describe('EmailsLogService', () => {
 
       expect(findMany).toHaveBeenCalledWith(
         expect.objectContaining({
-          where: { userId: 'user_1', status: EmailStatus.DELIVERED },
+          where: {
+            userId: 'user_1',
+            system: false,
+            status: EmailStatus.DELIVERED,
+          },
         }),
       );
       expect(count).toHaveBeenCalledWith({
-        where: { userId: 'user_1', status: EmailStatus.DELIVERED },
+        where: {
+          userId: 'user_1',
+          system: false,
+          status: EmailStatus.DELIVERED,
+        },
       });
     });
 
@@ -146,6 +156,7 @@ describe('EmailsLogService', () => {
         expect.objectContaining({
           where: {
             userId: 'user_1',
+            system: false,
             queuedAt: {
               gte: new Date('2026-01-01T00:00:00.000Z'),
               lte: new Date('2026-01-31T23:59:59.000Z'),
@@ -185,6 +196,7 @@ describe('EmailsLogService', () => {
         expect.objectContaining({
           where: {
             userId: 'user_1',
+            system: false,
             OR: [
               { toAddress: { contains: 'Diallo', mode: 'insensitive' } },
               { subject: { contains: 'Diallo', mode: 'insensitive' } },
@@ -201,7 +213,7 @@ describe('EmailsLogService', () => {
       await service.list('user_1', { q: '   ' });
 
       expect(findMany).toHaveBeenCalledWith(
-        expect.objectContaining({ where: { userId: 'user_1' } }),
+        expect.objectContaining({ where: { userId: 'user_1', system: false } }),
       );
     });
 
@@ -212,9 +224,11 @@ describe('EmailsLogService', () => {
       await service.list('user_A', {});
 
       expect(findMany).toHaveBeenCalledWith(
-        expect.objectContaining({ where: { userId: 'user_A' } }),
+        expect.objectContaining({ where: { userId: 'user_A', system: false } }),
       );
-      expect(count).toHaveBeenCalledWith({ where: { userId: 'user_A' } });
+      expect(count).toHaveBeenCalledWith({
+        where: { userId: 'user_A', system: false },
+      });
     });
   });
 
@@ -239,7 +253,7 @@ describe('EmailsLogService', () => {
       const result = await service.detail('user_1', 'pub_1');
 
       expect(findFirst).toHaveBeenCalledWith({
-        where: { publicId: 'pub_1', userId: 'user_1' },
+        where: { publicId: 'pub_1', userId: 'user_1', system: false },
         select: EMAIL_DETAIL_SELECT,
       });
       expect(result).toEqual(email);
@@ -272,7 +286,7 @@ describe('EmailsLogService', () => {
         (unknownEmailError as NotFoundException).getResponse(),
       );
       expect(findFirst).toHaveBeenNthCalledWith(1, {
-        where: { publicId: 'pub_of_user_A', userId: 'user_B' },
+        where: { publicId: 'pub_of_user_A', userId: 'user_B', system: false },
         select: EMAIL_DETAIL_SELECT,
       });
     });

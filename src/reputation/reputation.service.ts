@@ -104,8 +104,14 @@ export class ReputationService {
       return user.dailySendLimit;
     }
 
+    // `system: false` : la montée en charge se mérite sur les envois du
+    // client. Recevoir des emails de Zendou ne fait pas ses preuves.
     const lifetimeSends = await this.prisma.email.count({
-      where: { userId: user.id, status: { in: [...SENT_EMAIL_STATUSES] } },
+      where: {
+        userId: user.id,
+        system: false,
+        status: { in: [...SENT_EMAIL_STATUSES] },
+      },
     });
 
     const target = resolveDailyLimit(ageInDays(user.createdAt), lifetimeSends);
@@ -130,10 +136,20 @@ export class ReputationService {
   private async evaluateUser(user: ReputationUser): Promise<ReputationMetrics> {
     const since = windowStart(user);
 
+    // `system: false` — exemption **nommée** des envois émis par Zendou
+    // lui-même (confirmation d'adresse). Elle porte sur le numérateur *et* sur
+    // le dénominateur : exclure seulement les rebonds gonflerait artificiel-
+    // lement le volume et rendrait le compte plus difficile à sanctionner ;
+    // exclure seulement les envois ferait l'inverse. Le motif est le même dans
+    // les deux sens : ces messages ne sont pas ceux du client, ils ne disent
+    // rien de la qualité de sa liste, et un rebond dur sur l'adresse de compte
+    // qu'il a saisie à l'inscription ne doit pas suspendre son service.
+    // Ce qui reste sanctionné : absolument tout le reste de ses envois.
     const rows = await this.prisma.email.groupBy({
       by: ['status'],
       where: {
         userId: user.id,
+        system: false,
         queuedAt: { gte: since },
         status: { in: [...SENT_EMAIL_STATUSES] },
       },
@@ -194,6 +210,10 @@ export class ReputationService {
     return this.prisma.email.count({
       where: {
         userId,
+        // Même exemption que le dénominateur ci-dessus : les deux requêtes
+        // doivent porter sur exactement la même population, sans quoi le taux
+        // n'a plus de sens.
+        system: false,
         queuedAt: { gte: since },
         status: EmailStatus.BOUNCED,
         errorMessage: { startsWith: HARD_BOUNCE_ERROR_PREFIX },

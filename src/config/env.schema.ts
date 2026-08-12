@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { DEFAULT_WELCOME_CREDITS } from '../billing/billing.constants';
 import {
   DEFAULT_TRUST_PROXY_HOPS,
   RATE_LIMIT_DEFAULTS,
@@ -32,6 +33,17 @@ const booleanFromEnv = z
 const positiveIntFromEnv = (defaultValue: number) =>
   z
     .preprocess(emptyToUndefined, z.coerce.number().int().positive().optional())
+    .default(defaultValue);
+
+/**
+ * Comme `positiveIntFromEnv`, mais `0` est une valeur légitime. Réservé aux
+ * réglages où « zéro » veut dire « désactivé » et non « tout bloquer » —
+ * aujourd'hui `WELCOME_CREDITS` seul : mettre `0` coupe le crédit de
+ * bienvenue sans toucher au code.
+ */
+const nonNegativeIntFromEnv = (defaultValue: number) =>
+  z
+    .preprocess(emptyToUndefined, z.coerce.number().int().min(0).optional())
     .default(defaultValue);
 
 const baseEnvSchema = z.object({
@@ -86,6 +98,9 @@ const baseEnvSchema = z.object({
   RATE_LIMIT_SNS_PER_MINUTE: positiveIntFromEnv(
     RATE_LIMIT_DEFAULTS.SNS_PER_MINUTE,
   ),
+  RATE_LIMIT_RESEND_CONFIRMATION_PER_HOUR: positiveIntFromEnv(
+    RATE_LIMIT_DEFAULTS.RESEND_CONFIRMATION_PER_HOUR,
+  ),
 
   // AWS SES / SNS — optionnelles pour l'instant (pas de module d'envoi)
   AWS_REGION: z.string().optional(),
@@ -132,6 +147,45 @@ const baseEnvSchema = z.object({
   ADMIN_NAME: z
     .preprocess(emptyToUndefined, z.string().trim().optional())
     .default(DEFAULT_ADMIN_NAME),
+
+  // ─── Emails système (confirmation d'adresse) ───
+
+  /**
+   * Adresse d'expédition de **tous** les emails envoyés par Zendou lui-même
+   * (confirmation d'adresse aujourd'hui). Son domaine doit être vérifié —
+   * chez SES **et** dans la table `Domain` de Zendou : l'exemption des envois
+   * système ne relâche pas cette exigence (`EmailsService.sendSystem`).
+   *
+   * Configuration pure, rien en dur : le basculement de `mail.kingreys.fr`
+   * (bêta) vers un domaine Zendou est un changement de variable, pas de code.
+   * Obligatoire en production — voir le `refine` plus bas.
+   */
+  SYSTEM_EMAIL_FROM: z.preprocess(
+    emptyToUndefined,
+    z.string().trim().email('doit être une adresse email valide').optional(),
+  ),
+
+  /**
+   * Base des liens contenus dans les emails système :
+   * `${APP_BASE_URL}/confirmation?token=…`. Absente, on retombe sur
+   * `FRONTEND_ORIGIN` — c'est la même application dans la quasi-totalité des
+   * déploiements, et un lien de confirmation qui pointe vers le front est le
+   * comportement attendu. La variable existe pour les cas où les deux
+   * divergent (domaine marketing distinct du domaine applicatif).
+   */
+  APP_BASE_URL: z.preprocess(
+    emptyToUndefined,
+    z.string().trim().url().optional(),
+  ),
+
+  /**
+   * Crédits offerts **une seule fois**, au moment de la confirmation de
+   * l'adresse (jamais à l'inscription : sinon créer des comptes deviendrait
+   * une capacité de spam gratuite sur notre compte SES, hors bac à sable).
+   * Variable et non constante : la grille tarifaire est marquée non finale au
+   * cahier §12. `0` désactive le bonus.
+   */
+  WELCOME_CREDITS: nonNegativeIntFromEnv(DEFAULT_WELCOME_CREDITS),
 });
 
 export const envSchema = baseEnvSchema
@@ -148,7 +202,20 @@ export const envSchema = baseEnvSchema
     path: ['ADMIN_EMAIL'],
     message:
       'ADMIN_EMAIL et ADMIN_PASSWORD doivent être renseignées ensemble (configuration admin incomplète)',
-  });
+  })
+  // Sans adresse d'expédition système, aucun email de confirmation ne part :
+  // les nouveaux comptes restent non confirmés pour toujours, donc incapables
+  // d'envoyer ou de créer une clé. Échouer bruyamment au démarrage vaut mieux
+  // que livrer un tunnel d'inscription qui ne mène nulle part. Hors
+  // production, l'absence est tolérée (dev et tests n'expédient rien).
+  .refine(
+    (env) => env.NODE_ENV !== 'production' || Boolean(env.SYSTEM_EMAIL_FROM),
+    {
+      path: ['SYSTEM_EMAIL_FROM'],
+      message:
+        'est obligatoire quand NODE_ENV=production (sans elle, aucun email de confirmation ne peut partir et aucun compte créé ne peut être confirmé)',
+    },
+  );
 
 export type EnvConfig = z.infer<typeof envSchema>;
 

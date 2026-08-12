@@ -63,6 +63,34 @@ model User {
   suspendedAt       DateTime?
   suspensionReason  String?
 
+  /// Date de confirmation de l'adresse email. `null` = compte non confirmé :
+  /// il peut se connecter, mais ne peut ni envoyer d'email ni créer de clé API
+  /// (voir `EmailVerifiedGuard`). Les comptes antérieurs à la migration ont
+  /// été rétro-confirmés (`emailVerifiedAt = createdAt`) : voir le commentaire
+  /// de la migration `email_confirmation`.
+  emailVerifiedAt DateTime?
+
+  /// Empreinte SHA-256 (hex) du jeton de confirmation — **jamais le jeton en
+  /// clair**, exactement comme `ApiKey.keyHash`. Écrasée à chaque renvoi :
+  /// un seul jeton vivant à la fois. Conservée après confirmation pour que
+  /// un rejeu du lien réponde 409 « déjà confirmé » plutôt qu'un 400 trompeur
+  /// — elle est alors inerte, `emailVerifiedAt` verrouillant tout.
+  emailVerificationTokenHash String? @unique
+
+  /// Adresse à laquelle le jeton courant a été expédié. Le jeton n'est
+  /// accepté que si elle est encore l'adresse du compte : **toute**
+  /// modification de `email`, d'où qu'elle vienne, invalide donc le jeton
+  /// sans que le code qui change l'adresse ait à y penser.
+  emailVerificationSentTo String?
+
+  /// Expiration du jeton courant (voir `EMAIL_CONFIRMATION_TTL_HOURS`).
+  emailVerificationExpiresAt DateTime?
+
+  /// Date d'octroi du crédit de bienvenue. Sert de verrou « une seule fois par
+  /// compte » : le crédit n'est écrit que par la transaction qui réussit à
+  /// passer cette colonne de `null` à une date.
+  welcomeCreditsGrantedAt DateTime?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -120,6 +148,14 @@ model Email {
   sentAt       DateTime?
   deliveredAt  DateTime?
   lastEventAt  DateTime?
+
+  /// Envoi émis par Zendou lui-même (confirmation d'adresse…) et non par le
+  /// client. `userId` désigne alors le **destinataire**, pas l'expéditeur.
+  /// Ces lignes sont volontairement exclues de tout ce qui mesure « ce que ce
+  /// client a envoyé » : métrique de réputation, quota journalier, journal des
+  /// envois, KPI admin. Voir `EmailsService.sendSystem` pour la liste exacte
+  /// de ce que l'exemption couvre — et de ce qu'elle ne couvre pas.
+  system Boolean @default(false)
 
   @@index([userId, queuedAt])
   @@index([status])

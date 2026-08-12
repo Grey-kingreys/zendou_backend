@@ -20,9 +20,15 @@ import { AuthService } from './auth.service';
 import type { AuthUser } from './auth.types';
 import { CurrentUser } from './current-user.decorator';
 import { ChangePasswordDto } from './dto/change-password.dto';
+import { ConfirmEmailDto } from './dto/confirm-email.dto';
 import { LoginDto } from './dto/login.dto';
 import { RegisterDto } from './dto/register.dto';
 import { UpdateProfileDto } from './dto/update-profile.dto';
+import type {
+  ConfirmEmailResult,
+  ResendConfirmationResult,
+} from './email-confirmation.service';
+import { EmailConfirmationService } from './email-confirmation.service';
 import { SessionAuthGuard } from './session-auth.guard';
 import {
   baseSessionCookieOptions,
@@ -38,6 +44,7 @@ export class AuthController {
   constructor(
     private readonly authService: AuthService,
     private readonly sessionService: SessionService,
+    private readonly emailConfirmationService: EmailConfirmationService,
     configService: ConfigService,
   ) {
     this.isProduction = configService.get<string>('NODE_ENV') === 'production';
@@ -101,6 +108,36 @@ export class AuthController {
       SESSION_COOKIE_NAME,
       baseSessionCookieOptions(this.isProduction),
     );
+  }
+
+  /**
+   * Confirmation de l'adresse email. Route **non authentifiée** : le lien est
+   * souvent ouvert depuis le client de messagerie, donc dans un navigateur qui
+   * ne porte pas le cookie de session. Le jeton est la seule preuve exigée —
+   * il en faut 256 bits pour rien d'autre.
+   *
+   * Pas de politique de limitation dédiée : la politique globale (120/min par
+   * identité) s'applique, et deviner un jeton de 256 bits n'est pas un plan.
+   */
+  @Post('confirm-email')
+  @HttpCode(HttpStatus.OK)
+  confirmEmail(@Body() dto: ConfirmEmailDto): Promise<ConfirmEmailResult> {
+    return this.emailConfirmationService.confirm(dto.token);
+  }
+
+  /**
+   * Renvoi du lien de confirmation. Compté **par utilisateur** : la limite
+   * protège la boîte du titulaire de l'adresse, pas notre infrastructure —
+   * voir `RESEND_CONFIRMATION_PER_HOUR`.
+   */
+  @Post('resend-confirmation')
+  @UseGuards(SessionAuthGuard)
+  @RateLimit(RATE_LIMIT_POLICY.RESEND_CONFIRMATION)
+  @HttpCode(HttpStatus.ACCEPTED)
+  resendConfirmation(
+    @CurrentUser() user: AuthUser,
+  ): Promise<ResendConfirmationResult> {
+    return this.emailConfirmationService.resend(user.id);
   }
 
   @Get('me')

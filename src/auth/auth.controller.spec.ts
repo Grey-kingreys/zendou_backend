@@ -1,12 +1,17 @@
 import { Test, TestingModule } from '@nestjs/testing';
+import { HttpStatus } from '@nestjs/common';
+import { HTTP_CODE_METADATA } from '@nestjs/common/constants';
 import { ConfigService } from '@nestjs/config';
 import { UserRole, UserStatus } from '@prisma/client';
 import type { Request, Response } from 'express';
 import { CaptchaService } from '../captcha/captcha.service';
+import { RATE_LIMIT_POLICY } from '../rate-limit/rate-limit.constants';
+import { RATE_LIMIT_POLICY_METADATA } from '../rate-limit/rate-limit.decorator';
 import { SESSION_COOKIE_NAME, SESSION_TTL_SECONDS } from './auth.constants';
 import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
-import { AuthUser } from './auth.types';
+import { AUTH_USER_SELECT, AuthUser } from './auth.types';
+import { EmailConfirmationService } from './email-confirmation.service';
 import { SessionAuthGuard } from './session-auth.guard';
 import {
   baseSessionCookieOptions,
@@ -60,6 +65,10 @@ describe('AuthController', () => {
     resolve: jest.fn(),
     destroy: jest.fn(),
   };
+  const emailConfirmationService = {
+    confirm: jest.fn(),
+    resend: jest.fn(),
+  };
 
   beforeEach(async () => {
     jest.clearAllMocks();
@@ -69,6 +78,10 @@ describe('AuthController', () => {
       providers: [
         { provide: AuthService, useValue: authService },
         { provide: SessionService, useValue: sessionService },
+        {
+          provide: EmailConfirmationService,
+          useValue: emailConfirmationService,
+        },
         {
           provide: ConfigService,
           useValue: { get: jest.fn().mockReturnValue('development') },
@@ -216,6 +229,73 @@ describe('AuthController', () => {
     ).rejects.toThrow('nope');
 
     expect(clearCookie).not.toHaveBeenCalled();
+  });
+
+  describe('confirmation de l’adresse email', () => {
+    it('POST /confirm-email délègue le jeton et répond 200', async () => {
+      emailConfirmationService.confirm.mockResolvedValue({
+        confirmed: true,
+        creditsGranted: 1_000,
+      });
+
+      await expect(
+        controller.confirmEmail({ token: 'jeton-en-clair' }),
+      ).resolves.toEqual({ confirmed: true, creditsGranted: 1_000 });
+
+      expect(emailConfirmationService.confirm).toHaveBeenCalledWith(
+        'jeton-en-clair',
+      );
+    });
+
+    it('POST /confirm-email est bien un 200 (contrat figé)', () => {
+      const handler = Object.getOwnPropertyDescriptor(
+        AuthController.prototype,
+        'confirmEmail',
+      )?.value as (...args: unknown[]) => unknown;
+
+      expect(Reflect.getMetadata(HTTP_CODE_METADATA, handler)).toBe(
+        HttpStatus.OK,
+      );
+    });
+
+    it('POST /resend-confirmation délègue l’identifiant de session', async () => {
+      emailConfirmationService.resend.mockResolvedValue({ sent: true });
+
+      await expect(controller.resendConfirmation(authUser)).resolves.toEqual({
+        sent: true,
+      });
+
+      expect(emailConfirmationService.resend).toHaveBeenCalledWith('user_1');
+    });
+
+    it('POST /resend-confirmation répond 202 (accepté, pas encore remis)', () => {
+      const handler = Object.getOwnPropertyDescriptor(
+        AuthController.prototype,
+        'resendConfirmation',
+      )?.value as (...args: unknown[]) => unknown;
+
+      expect(Reflect.getMetadata(HTTP_CODE_METADATA, handler)).toBe(
+        HttpStatus.ACCEPTED,
+      );
+    });
+
+    it('le renvoi porte une politique de limitation dédiée, comptée par utilisateur', () => {
+      const handler = Object.getOwnPropertyDescriptor(
+        AuthController.prototype,
+        'resendConfirmation',
+      )?.value as (...args: unknown[]) => unknown;
+
+      expect(Reflect.getMetadata(RATE_LIMIT_POLICY_METADATA, handler)).toBe(
+        RATE_LIMIT_POLICY.RESEND_CONFIRMATION,
+      );
+    });
+
+    it('GET /me expose emailVerifiedAt', () => {
+      expect(AUTH_USER_SELECT).toHaveProperty('emailVerifiedAt', true);
+      expect(
+        controller.me({ ...authUser, emailVerifiedAt: null }),
+      ).toHaveProperty('emailVerifiedAt', null);
+    });
   });
 });
 

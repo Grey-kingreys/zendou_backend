@@ -7,7 +7,7 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { ApiKeyAuthGuard } from '../api-keys';
-import { CurrentUser } from '../auth';
+import { CurrentUser, EmailVerifiedGuard } from '../auth';
 import type { AuthUser } from '../auth';
 import { RATE_LIMIT_POLICY } from '../rate-limit/rate-limit.constants';
 import { RateLimit } from '../rate-limit/rate-limit.decorator';
@@ -20,9 +20,15 @@ import type { SendEmailResponse } from './emails.types';
  * c'est la surface appelée par les serveurs de nos clients.
  *
  * Cohabite avec `EmailsLogController`, qui sert les `GET /v1/emails`.
+ *
+ * `EmailVerifiedGuard` s'exécute après `ApiKeyAuthGuard` (l'ordre est celui de
+ * la liste) : un compte dont l'adresse n'est pas confirmée est authentifié
+ * normalement, puis refusé en 403. C'est la moitié de la fermeture ; l'autre
+ * est sur la création de clé API, sans quoi il suffirait d'attendre d'avoir
+ * une clé pour contourner celle-ci.
  */
 @Controller('emails')
-@UseGuards(ApiKeyAuthGuard)
+@UseGuards(ApiKeyAuthGuard, EmailVerifiedGuard)
 export class EmailsController {
   constructor(private readonly emailsService: EmailsService) {}
 
