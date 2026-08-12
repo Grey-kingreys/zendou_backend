@@ -13,6 +13,7 @@ import { CurrentUser, SessionAuthGuard } from '../auth';
 import type { AuthUser } from '../auth';
 import { RATE_LIMIT_POLICY } from '../rate-limit/rate-limit.constants';
 import { RateLimit } from '../rate-limit/rate-limit.decorator';
+import type { DomainDnsCheckResult } from './dns-check';
 import { DomainsService } from './domains.service';
 import type {
   DomainCheckResult,
@@ -60,6 +61,19 @@ export class DomainsController {
     @Param('id') id: string,
   ): Promise<DomainCheckResult> {
     return this.domainsService.check(user.id, id);
+  }
+
+  // Diagnostic DNS calculé côté Zendou (indépendant de SES) : plusieurs
+  // résolutions DNS réseau par appel (3 CNAME DKIM + TXT SPF + TXT DMARC),
+  // d'où la limitation de débit dédiée.
+  @Get(':id/dns-check')
+  @RateLimit(RATE_LIMIT_POLICY.DNS_CHECK)
+  @HttpCode(HttpStatus.OK)
+  dnsCheck(
+    @CurrentUser() user: AuthUser,
+    @Param('id') id: string,
+  ): Promise<DomainDnsCheckResult> {
+    return this.domainsService.dnsCheck(user.id, id);
   }
 
   @Delete(':id')

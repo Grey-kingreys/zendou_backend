@@ -5,6 +5,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { DomainStatus, Prisma } from '@prisma/client';
+import { resolveCname } from 'node:dns/promises';
 import { PrismaService } from '../prisma/prisma.service';
 import {
   DOMAIN_ALREADY_REGISTERED_MESSAGE,
@@ -12,6 +13,16 @@ import {
 } from './domains.constants';
 import { DomainsService } from './domains.service';
 import { SES_IDENTITY_DRIVER } from './ses/ses-identity-driver';
+
+// Le diagnostic DNS (`dnsCheck`) résout du DNS réel via `node:dns/promises` :
+// jamais de vrai réseau en test.
+jest.mock('node:dns/promises', () => ({
+  resolveCname: jest.fn(),
+  resolveTxt: jest.fn(),
+  resolve4: jest.fn(),
+}));
+
+const mockResolveCname = resolveCname as unknown as jest.Mock;
 
 const CREATED_AT = new Date('2026-08-11T10:00:00.000Z');
 const TOKENS = ['tokenaaa', 'tokenbbb', 'tokenccc'];
@@ -299,6 +310,33 @@ describe('DomainsService', () => {
 
       expect(sesDriver.getIdentityStatus).not.toHaveBeenCalled();
       expect(domain.update).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('dnsCheck', () => {
+    it('scopes the lookup to the owner and returns the DNS diagnostic', async () => {
+      domain.findFirst.mockResolvedValue(storedDomain());
+      mockResolveCname.mockResolvedValue([`${TOKENS[0]}.dkim.amazonses.com`]);
+
+      const result = await service.dnsCheck('user_1', 'dom_1');
+
+      expect(domain.findFirst).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { id: 'dom_1', userId: 'user_1' } }),
+      );
+      expect(result.domainId).toBe('dom_1');
+      expect(result.domainName).toBe('boutique-awa.gn');
+      expect(result.dkim).toHaveLength(3);
+      expect(result.sesStatus).toBe(DomainStatus.PENDING);
+    });
+
+    it("returns a 404 for another user's domain and never resolves DNS", async () => {
+      domain.findFirst.mockResolvedValue(null);
+
+      await expect(service.dnsCheck('user_2', 'dom_1')).rejects.toMatchObject(
+        new NotFoundException(DOMAIN_NOT_FOUND_MESSAGE),
+      );
+
+      expect(mockResolveCname).not.toHaveBeenCalled();
     });
   });
 

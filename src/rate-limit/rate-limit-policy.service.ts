@@ -134,6 +134,23 @@ export function buildRateLimitPolicies(
       },
     },
 
+    // Comme DOMAIN_CHECK : compté par utilisateur, jamais par IP (NAT
+    // opérateur guinéen). Fenêtre horaire plus large, car cet appel ne coûte
+    // rien côté AWS — seulement des résolutions DNS locales.
+    [RATE_LIMIT_POLICY.DNS_CHECK]: {
+      id: RATE_LIMIT_POLICY.DNS_CHECK,
+      tracker: TRACKER_KIND.USER,
+      exempt: false,
+      windows: {
+        [RATE_LIMIT_WINDOW.HOUR]: perHour(
+          read(
+            'RATE_LIMIT_DNS_CHECK_PER_HOUR',
+            RATE_LIMIT_DEFAULTS.DNS_CHECK_PER_HOUR,
+          ),
+        ),
+      },
+    },
+
     [RATE_LIMIT_POLICY.SNS_WEBHOOK]: {
       id: RATE_LIMIT_POLICY.SNS_WEBHOOK,
       tracker: TRACKER_KIND.IP,

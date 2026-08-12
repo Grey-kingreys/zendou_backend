@@ -49,6 +49,8 @@ export const RATE_LIMIT_POLICY = {
   EMAIL_SEND: 'email-send',
   /** `POST /v1/domains/:id/check` */
   DOMAIN_CHECK: 'domain-check',
+  /** `GET /v1/domains/:id/dns-check` */
+  DNS_CHECK: 'dns-check',
   /** `POST /v1/webhooks/sns` */
   SNS_WEBHOOK: 'sns-webhook',
   /** `GET /health` — jamais compté (voir plus bas). */
@@ -96,6 +98,14 @@ export const RATE_LIMIT_DEFAULTS = {
   EMAILS_PER_MINUTE: 60,
   /** `RATE_LIMIT_DOMAIN_CHECK_PER_HOUR` — chaque appel tape l'API AWS. */
   DOMAIN_CHECK_PER_HOUR: 10,
+  /**
+   * `RATE_LIMIT_DNS_CHECK_PER_HOUR` — chaque appel fait plusieurs
+   * résolutions DNS réseau (3 CNAME DKIM + TXT SPF + TXT DMARC). Ne coûte
+   * rien côté AWS (contrairement à `DOMAIN_CHECK`) ; le budget est donc plus
+   * large pour laisser le client re-tester après chaque correction pendant
+   * qu'il corrige sa zone DNS.
+   */
+  DNS_CHECK_PER_HOUR: 30,
   /**
    * `RATE_LIMIT_SNS_PER_MINUTE` — SNS livre par rafales et retente ; la vraie
    * barrière est la signature. Volontairement large : bloquer AWS trop tôt
