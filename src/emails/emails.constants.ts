@@ -13,6 +13,15 @@ export const CREDITS_PER_EMAIL = 1;
 /** Valeur inscrite dans `CreditEntry.reason` lors d'un débit d'envoi. */
 export const CREDIT_REASON_SEND = 'SEND';
 
+/**
+ * Message d'erreur interne quand un envoi système ne peut pas partir :
+ * `SYSTEM_EMAIL_FROM` absente, illisible, ou domaine d'expédition non vérifié.
+ * Jamais renvoyé tel quel au client (voir
+ * `CONFIRMATION_EMAIL_UNAVAILABLE_MESSAGE`), uniquement journalisé.
+ */
+export const SYSTEM_SENDER_UNAVAILABLE_MESSAGE =
+  "Expédition système indisponible : SYSTEM_EMAIL_FROM absente, invalide, ou domaine d'expédition non vérifié dans Zendou.";
+
 /** Préfixe des identifiants publics d'email (`e_` + 12 hexadécimaux). */
 export const EMAIL_PUBLIC_ID_PREFIX = 'e_';
 

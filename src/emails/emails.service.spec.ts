@@ -6,6 +6,7 @@ import {
   HttpStatus,
 } from '@nestjs/common';
 import { getQueueToken } from '@nestjs/bullmq';
+import { ConfigService } from '@nestjs/config';
 import { DomainStatus, EmailStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { EMAIL_SEND_QUEUE } from '../queues/queues';
@@ -61,6 +62,12 @@ describe('EmailsService', () => {
   const user = { findUnique: jest.fn() };
   const queue = { add: jest.fn() };
 
+  /** Configuration des envois système ; réglée par test. */
+  let configValues: Record<string, string> = {};
+  const config = {
+    get: (key: string): string | undefined => configValues[key],
+  } as unknown as ConfigService;
+
   const prisma = {
     domain,
     suppression,
@@ -73,6 +80,7 @@ describe('EmailsService', () => {
   beforeEach(async () => {
     jest.clearAllMocks();
     capturedEmailCreate = undefined;
+    configValues = { SYSTEM_EMAIL_FROM: 'Zendou <no-reply@mail.kingreys.fr>' };
 
     // Chemin nominal : domaine vérifié, pas de suppression, crédits et
     // quota disponibles. Chaque test ne dérègle que ce qu'il éprouve.
@@ -96,6 +104,7 @@ describe('EmailsService', () => {
         EmailsService,
         { provide: PrismaService, useValue: prisma },
         { provide: getQueueToken(EMAIL_SEND_QUEUE), useValue: queue },
+        { provide: ConfigService, useValue: config },
       ],
     }).compile();
 
@@ -239,12 +248,13 @@ describe('EmailsService', () => {
       expect(queue.add).not.toHaveBeenCalled();
     });
 
-    it('counts the emails created since UTC midnight', async () => {
+    it('counts the emails created since UTC midnight, system sends excluded', async () => {
       await service.send(USER_ID, dtoWith());
 
       expect(email.count).toHaveBeenCalledWith({
         where: {
           userId: USER_ID,
+          system: false,
           queuedAt: { gte: startOfUtcDay(new Date()) },
         },
       });

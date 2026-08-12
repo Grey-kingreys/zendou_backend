@@ -45,6 +45,8 @@ export const RATE_LIMIT_POLICY = {
   REGISTER: 'register',
   /** `POST /v1/auth/change-password` */
   CHANGE_PASSWORD: 'change-password',
+  /** `POST /v1/auth/resend-confirmation` */
+  RESEND_CONFIRMATION: 'resend-confirmation',
   /** `POST /v1/emails` */
   EMAIL_SEND: 'email-send',
   /** `POST /v1/domains/:id/check` */
@@ -91,6 +93,25 @@ export const RATE_LIMIT_DEFAULTS = {
   REGISTER_PER_HOUR: 3,
   /** `RATE_LIMIT_CHANGE_PASSWORD_PER_HOUR` — par utilisateur, pas par IP. */
   CHANGE_PASSWORD_PER_HOUR: 5,
+  /**
+   * `RATE_LIMIT_RESEND_CONFIRMATION_PER_HOUR` — renvoi du lien de
+   * confirmation, compté **par utilisateur**.
+   *
+   * Ce n'est pas un confort d'ergonomie mais une protection tierce. Rien
+   * n'empêche quelqu'un d'inscrire un compte avec l'adresse d'**une autre
+   * personne** (l'inscription ne vérifie rien, c'est précisément ce qu'on est
+   * en train de corriger), de s'y connecter puisqu'il en a choisi le mot de
+   * passe, puis de marteler ce renvoi : la victime reçoit alors autant
+   * d'emails que l'attaquant le veut, expédiés par notre compte SES et donc
+   * imputés à notre réputation.
+   *
+   * 3 par heure : de quoi couvrir un vrai besoin (email non reçu, mis en
+   * indésirables, adresse ajoutée aux contacts puis nouvel essai) sans
+   * transformer la route en robinet. L'unicité de `User.email` empêche de
+   * multiplier les comptes sur la même victime, et `REGISTER_PER_HOUR` (3/IP)
+   * borne déjà la création de comptes : les trois limites se composent.
+   */
+  RESEND_CONFIRMATION_PER_HOUR: 3,
   /**
    * `RATE_LIMIT_EMAILS_PER_MINUTE` — protection de rafale uniquement. Le
    * quota journalier et les crédits restent les limites métier réelles.

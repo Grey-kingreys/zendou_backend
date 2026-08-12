@@ -152,6 +152,9 @@ describe('ReputationService', () => {
         by: ['status'],
         where: {
           userId: 'user_1',
+          // Les envois système (confirmation d'adresse) sont hors métrique :
+          // ni au numérateur, ni au dénominateur.
+          system: false,
           queuedAt: { gte: new Date(NOW.getTime() - 30 * DAY_MS) },
           status: { in: [...SENT_EMAIL_STATUSES] },
         },
@@ -635,7 +638,11 @@ describe('ReputationService', () => {
       await expect(service.recomputeDailyLimit('user_1')).resolves.toBe(1_000);
 
       expect(count).toHaveBeenCalledWith({
-        where: { userId: 'user_1', status: { in: [...SENT_EMAIL_STATUSES] } },
+        where: {
+          userId: 'user_1',
+          system: false,
+          status: { in: [...SENT_EMAIL_STATUSES] },
+        },
       });
       expect(userUpdate).toHaveBeenCalledWith({
         where: { id: 'user_1' },
@@ -705,7 +712,11 @@ describe('ReputationService', () => {
       // Le compte du volume cumulé n'est même pas payé (seul celui des
       // rebonds durs, nécessaire au verdict, a été émis).
       expect(count).not.toHaveBeenCalledWith({
-        where: { userId: 'user_1', status: { in: [...SENT_EMAIL_STATUSES] } },
+        where: {
+          userId: 'user_1',
+          system: false,
+          status: { in: [...SENT_EMAIL_STATUSES] },
+        },
       });
     });
 

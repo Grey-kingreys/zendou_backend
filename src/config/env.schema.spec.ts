@@ -6,6 +6,14 @@ const BASE_ENV = {
   FRONTEND_ORIGIN: 'http://localhost:3000',
 };
 
+/**
+ * Variables exigées uniquement quand `NODE_ENV=production` : à ajouter à
+ * `BASE_ENV` dans les cas qui doivent démarrer en production.
+ */
+const PRODUCTION_REQUIRED = {
+  SYSTEM_EMAIL_FROM: 'no-reply@mail.kingreys.fr',
+};
+
 describe('validateEnv — SNS_SKIP_SIGNATURE_VALIDATION', () => {
   it('defaults to false', () => {
     expect(validateEnv({ ...BASE_ENV }).SNS_SKIP_SIGNATURE_VALIDATION).toBe(
@@ -42,7 +50,11 @@ describe('validateEnv — SNS_SKIP_SIGNATURE_VALIDATION', () => {
   });
 
   it('still boots in production when the flag is off', () => {
-    const env = validateEnv({ ...BASE_ENV, NODE_ENV: 'production' });
+    const env = validateEnv({
+      ...BASE_ENV,
+      ...PRODUCTION_REQUIRED,
+      NODE_ENV: 'production',
+    });
 
     expect(env.SNS_SKIP_SIGNATURE_VALIDATION).toBe(false);
   });

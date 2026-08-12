@@ -106,6 +106,23 @@ export function buildRateLimitPolicies(
       },
     },
 
+    // Renvoi du lien de confirmation : compté par utilisateur, jamais par IP.
+    // La cible à protéger n'est pas l'infrastructure mais la boîte aux lettres
+    // du titulaire de l'adresse — voir `RESEND_CONFIRMATION_PER_HOUR`.
+    [RATE_LIMIT_POLICY.RESEND_CONFIRMATION]: {
+      id: RATE_LIMIT_POLICY.RESEND_CONFIRMATION,
+      tracker: TRACKER_KIND.USER,
+      exempt: false,
+      windows: {
+        [RATE_LIMIT_WINDOW.HOUR]: perHour(
+          read(
+            'RATE_LIMIT_RESEND_CONFIRMATION_PER_HOUR',
+            RATE_LIMIT_DEFAULTS.RESEND_CONFIRMATION_PER_HOUR,
+          ),
+        ),
+      },
+    },
+
     [RATE_LIMIT_POLICY.EMAIL_SEND]: {
       id: RATE_LIMIT_POLICY.EMAIL_SEND,
       tracker: TRACKER_KIND.API_KEY,

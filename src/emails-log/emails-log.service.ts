@@ -56,7 +56,10 @@ export class EmailsLogService {
     );
     const { from, to } = this.parseDateRange(query.from, query.to);
 
-    const where: Prisma.EmailWhereInput = { userId };
+    // `system: false` : le journal montre ce que **le client** a envoyé. Les
+    // emails que Zendou lui adresse (confirmation d'adresse) portent son
+    // `userId` parce qu'ils le concernent, pas parce qu'il les a émis.
+    const where: Prisma.EmailWhereInput = { userId, system: false };
 
     if (status) {
       where.status = status;
@@ -101,7 +104,7 @@ export class EmailsLogService {
 
   async detail(userId: string, publicId: string): Promise<EmailDetail> {
     const email = await this.prisma.email.findFirst({
-      where: { publicId, userId },
+      where: { publicId, userId, system: false },
       select: EMAIL_DETAIL_SELECT,
     });
 

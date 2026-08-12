@@ -167,6 +167,7 @@ describe('buildRateLimitPolicies', () => {
       'RATE_LIMIT_LOGIN_PER_HOUR',
       'RATE_LIMIT_LOGIN_PER_MINUTE',
       'RATE_LIMIT_REGISTER_PER_HOUR',
+      'RATE_LIMIT_RESEND_CONFIRMATION_PER_HOUR',
       'RATE_LIMIT_SNS_PER_MINUTE',
     ]);
   });
