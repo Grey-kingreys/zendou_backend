@@ -108,8 +108,6 @@ const baseEnvSchema = z.object({
   AWS_ACCESS_KEY_ID: z.string().optional(),
   AWS_SECRET_ACCESS_KEY: z.string().optional(),
   SES_CONFIGURATION_SET: z.string().optional(),
-  MAIL_FROM_ADDRESS: z.string().optional(),
-  MAIL_FROM_NAME: z.string().optional(),
   SES_SMTP_HOST: z.string().optional(),
   SES_SMTP_PORT: z.string().optional(),
   SES_SMTP_USER: z.string().optional(),
