@@ -7,4 +7,5 @@ export type {
   ApiKeyAuthenticatedRequest,
   ApiKeySummary,
   CreateApiKeyResponse,
+  RotateApiKeyResponse,
 } from './api-keys.types';

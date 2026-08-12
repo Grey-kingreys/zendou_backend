@@ -12,7 +12,11 @@ import {
 import { CurrentUser, SessionAuthGuard } from '../auth';
 import type { AuthUser } from '../auth';
 import { ApiKeysService } from './api-keys.service';
-import { ApiKeySummary, CreateApiKeyResponse } from './api-keys.types';
+import {
+  ApiKeySummary,
+  CreateApiKeyResponse,
+  RotateApiKeyResponse,
+} from './api-keys.types';
 import { CreateApiKeyDto } from './dto/create-api-key.dto';
 
 @Controller('api-keys')
@@ -42,5 +46,28 @@ export class ApiKeysController {
     @Param('id') id: string,
   ): Promise<void> {
     await this.apiKeysService.revoke(user.id, id);
+  }
+
+  /**
+   * Suppression définitive, distincte de `DELETE /:id` (révocation) : ce
+   * segment supplémentaire ne casse aucun appel existant sur `DELETE /:id`.
+   * Réservée aux clés déjà révoquées.
+   */
+  @Delete(':id/purge')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  async purge(
+    @CurrentUser() user: AuthUser,
+    @Param('id') id: string,
+  ): Promise<void> {
+    await this.apiKeysService.purge(user.id, id);
+  }
+
+  @Post(':id/rotate')
+  @HttpCode(HttpStatus.OK)
+  rotate(
+    @CurrentUser() user: AuthUser,
+    @Param('id') id: string,
+  ): Promise<RotateApiKeyResponse> {
+    return this.apiKeysService.rotate(user.id, id);
   }
 }

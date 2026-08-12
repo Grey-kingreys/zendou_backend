@@ -19,6 +19,20 @@ export interface ApiKeySummary {
   revokedAt: Date | null;
 }
 
+/**
+ * Réponse à la rotation d'une clé API : la nouvelle clé complète n'apparaît
+ * qu'ici. `id`, `name` et `createdAt` sont inchangés par rapport à la clé
+ * d'origine ; `prefix` et la valeur secrète sont nouveaux.
+ */
+export interface RotateApiKeyResponse {
+  id: string;
+  name: string;
+  prefix: string;
+  key: string;
+  createdAt: Date;
+  rotatedAt: Date;
+}
+
 /** Requête Express enrichie par `ApiKeyAuthGuard`. */
 export interface ApiKeyAuthenticatedRequest extends AuthenticatedRequest {
   apiKeyId?: string;

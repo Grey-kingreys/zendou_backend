@@ -85,6 +85,7 @@ model ApiKey {
   keyHash    String    @unique
   lastUsedAt DateTime?
   revokedAt  DateTime?
+  rotatedAt  DateTime?
   createdAt  DateTime  @default(now())
 
   @@index([userId])
