@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { DEFAULT_WELCOME_CREDITS } from '../billing/billing.constants';
+import { parseEmailAddress } from '../emails/email-address';
 import {
   DEFAULT_TRUST_PROXY_HOPS,
   RATE_LIMIT_DEFAULTS,
@@ -156,13 +157,26 @@ const baseEnvSchema = z.object({
    * chez SES **et** dans la table `Domain` de Zendou : l'exemption des envois
    * système ne relâche pas cette exigence (`EmailsService.sendSystem`).
    *
+   * Accepte les deux formes reconnues par `parseEmailAddress`
+   * (`emails/email-address.ts`) : `adresse@domaine` nue, ou avec nom
+   * d'affichage `Nom <adresse@domaine>` (nom éventuellement entre
+   * guillemets). C'est la même règle que celle utilisée à l'envoi — pas de
+   * duplication.
+   *
    * Configuration pure, rien en dur : le basculement de `mail.kingreys.fr`
    * (bêta) vers un domaine Zendou est un changement de variable, pas de code.
    * Obligatoire en production — voir le `refine` plus bas.
    */
   SYSTEM_EMAIL_FROM: z.preprocess(
     emptyToUndefined,
-    z.string().trim().email('doit être une adresse email valide').optional(),
+    z
+      .string()
+      .trim()
+      .refine((value) => parseEmailAddress(value) !== null, {
+        message:
+          "doit être une adresse email valide, éventuellement précédée d'un nom d'affichage (Nom <adresse@domaine>)",
+      })
+      .optional(),
   ),
 
   /**
