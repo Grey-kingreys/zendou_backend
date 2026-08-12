@@ -24,6 +24,7 @@ describe('DomainsController', () => {
     list: jest.fn(),
     findOne: jest.fn(),
     check: jest.fn(),
+    dnsCheck: jest.fn(),
     remove: jest.fn(),
   };
 
@@ -55,6 +56,7 @@ describe('DomainsController', () => {
     await controller.list(user);
     await controller.findOne(user, 'dom_1');
     await controller.check(user, 'dom_1');
+    await controller.dnsCheck(user, 'dom_1');
     await controller.remove(user, 'dom_1');
 
     expect(domainsService.create).toHaveBeenCalledWith(
@@ -64,6 +66,7 @@ describe('DomainsController', () => {
     expect(domainsService.list).toHaveBeenCalledWith('user_1');
     expect(domainsService.findOne).toHaveBeenCalledWith('user_1', 'dom_1');
     expect(domainsService.check).toHaveBeenCalledWith('user_1', 'dom_1');
+    expect(domainsService.dnsCheck).toHaveBeenCalledWith('user_1', 'dom_1');
     expect(domainsService.remove).toHaveBeenCalledWith('user_1', 'dom_1');
   });
 });

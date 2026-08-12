@@ -13,6 +13,7 @@ import {
   DOMAIN_NOT_FOUND_MESSAGE,
   INVALID_DOMAIN_NAME_MESSAGE,
 } from './domains.constants';
+import { checkDomainDns, type DomainDnsCheckResult } from './dns-check';
 import type {
   DomainCheckResult,
   DomainDetail,
@@ -128,6 +129,18 @@ export class DomainsService {
       data: { status, verifiedAt },
       select: { id: true, status: true, verifiedAt: true },
     });
+  }
+
+  /**
+   * Diagnostic DNS des enregistrements DKIM/SPF/DMARC, calculé côté Zendou
+   * par résolution DNS directe — indépendant de SES, purement informatif
+   * (voir la documentation de `checkDomainDns`). N'appelle jamais SES et ne
+   * modifie rien en base : c'est une lecture pure.
+   */
+  async dnsCheck(userId: string, id: string): Promise<DomainDnsCheckResult> {
+    const domain = await this.requireOwnedDomain(userId, id);
+
+    return checkDomainDns(domain);
   }
 
   /** Supprime l'identité SES puis le domaine. */

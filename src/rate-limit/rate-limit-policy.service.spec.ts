@@ -109,6 +109,13 @@ describe('buildRateLimitPolicies', () => {
       limit: RATE_LIMIT_DEFAULTS.SNS_PER_MINUTE,
       ttl: MINUTE_WINDOW_MS,
     });
+
+    expect(
+      policies[RATE_LIMIT_POLICY.DNS_CHECK].windows[RATE_LIMIT_WINDOW.HOUR],
+    ).toEqual({
+      limit: RATE_LIMIT_DEFAULTS.DNS_CHECK_PER_HOUR,
+      ttl: HOUR_WINDOW_MS,
+    });
   });
 
   it('laisse passer SNS plus largement que le budget par défaut', () => {
@@ -133,6 +140,9 @@ describe('buildRateLimitPolicies', () => {
     expect(policies[RATE_LIMIT_POLICY.DOMAIN_CHECK].tracker).toBe(
       TRACKER_KIND.USER,
     );
+    expect(policies[RATE_LIMIT_POLICY.DNS_CHECK].tracker).toBe(
+      TRACKER_KIND.USER,
+    );
     expect(policies[RATE_LIMIT_POLICY.EMAIL_SEND].tracker).toBe(
       TRACKER_KIND.API_KEY,
     );
@@ -151,6 +161,7 @@ describe('buildRateLimitPolicies', () => {
     expect(read.mock.calls.map(([name]) => name).sort()).toEqual([
       'RATE_LIMIT_CHANGE_PASSWORD_PER_HOUR',
       'RATE_LIMIT_DEFAULT_PER_MINUTE',
+      'RATE_LIMIT_DNS_CHECK_PER_HOUR',
       'RATE_LIMIT_DOMAIN_CHECK_PER_HOUR',
       'RATE_LIMIT_EMAILS_PER_MINUTE',
       'RATE_LIMIT_LOGIN_PER_HOUR',
@@ -180,6 +191,9 @@ describe('RateLimitPolicyService', () => {
     expect(resolver.policyFor(contextOf(DomainsController, 'check')).id).toBe(
       RATE_LIMIT_POLICY.DOMAIN_CHECK,
     );
+    expect(
+      resolver.policyFor(contextOf(DomainsController, 'dnsCheck')).id,
+    ).toBe(RATE_LIMIT_POLICY.DNS_CHECK);
     expect(
       resolver.policyFor(contextOf(SnsWebhookController, 'receive')).id,
     ).toBe(RATE_LIMIT_POLICY.SNS_WEBHOOK);
