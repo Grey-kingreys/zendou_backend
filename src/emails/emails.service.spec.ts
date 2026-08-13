@@ -4,6 +4,7 @@ import {
   ForbiddenException,
   HttpException,
   HttpStatus,
+  ServiceUnavailableException,
 } from '@nestjs/common';
 import { getQueueToken } from '@nestjs/bullmq';
 import { ConfigService } from '@nestjs/config';
@@ -24,6 +25,7 @@ import {
   SEND_JOB_ATTEMPTS,
   SEND_JOB_BACKOFF_DELAY_MS,
   TEST_SENDER_RECIPIENT_RESTRICTED_MESSAGE,
+  TEST_SENDER_UNAVAILABLE_MESSAGE,
 } from './emails.constants';
 import { EmailsService, startOfUtcDay } from './emails.service';
 
@@ -202,14 +204,20 @@ describe('EmailsService', () => {
       });
     });
 
-    it('accepts a send to the caller’s own confirmed address, without checking any domain', async () => {
+    it('accepts a send to the caller’s own confirmed address, checking only that the test domain is verified — never ownership', async () => {
       const result = await service.send(
         USER_ID,
         dtoWith({ from: TEST_FROM, to: OWN_EMAIL }),
       );
 
       expect(result.status).toBe('queued');
-      expect(domain.findFirst).not.toHaveBeenCalled();
+      // V11C : le domaine de TEST_EMAIL_FROM est bien consulté (sinon une
+      // config cassée ne serait détectée qu'à l'envoi SES), mais sans
+      // `userId` — ce domaine appartient à Zendou, pas au client.
+      expect(domain.findFirst).toHaveBeenCalledWith({
+        where: { name: 'mail.kingreys.fr', status: DomainStatus.VERIFIED },
+        select: { id: true },
+      });
 
       const args = capturedEmailCreate!;
       expect(args.data.domainId).toBeNull();
@@ -251,7 +259,10 @@ describe('EmailsService', () => {
       );
 
       expect(result.status).toBe('queued');
-      expect(domain.findFirst).not.toHaveBeenCalled();
+      expect(domain.findFirst).toHaveBeenCalledWith({
+        where: { name: 'mail.kingreys.fr', status: DomainStatus.VERIFIED },
+        select: { id: true },
+      });
     });
 
     it('refuses any recipient other than the caller’s own address, with a 403 that explains the mode', async () => {
@@ -321,6 +332,78 @@ describe('EmailsService', () => {
       ).rejects.toThrow(new ForbiddenException(DOMAIN_NOT_VERIFIED_MESSAGE));
 
       expect(email.create).not.toHaveBeenCalled();
+    });
+  });
+
+  /**
+   * V11C : le domaine de `TEST_EMAIL_FROM` doit être `VERIFIED` dans Zendou
+   * pour que le mode bac à sable accepte un envoi — même exigence que
+   * `sendSystem` pour `SYSTEM_EMAIL_FROM`. Sans ce contrôle, une mauvaise
+   * configuration (domaine absent ou encore `PENDING`) ne serait détectée
+   * qu'à l'envoi SES, après que le client ait déjà payé un crédit pour un
+   * email qui ne partira jamais.
+   */
+  describe('test sending address — domain verification (V11C)', () => {
+    const TEST_FROM = 'Zendou <essai@mail.kingreys.fr>';
+    const OWN_EMAIL = 'aissatou@exemple.gn';
+
+    beforeEach(() => {
+      configValues = { ...configValues, TEST_EMAIL_FROM: TEST_FROM };
+      user.findUnique.mockResolvedValue({
+        dailySendLimit: 200,
+        email: OWN_EMAIL,
+      });
+    });
+
+    it('refuses with a 503 when the test domain is absent from Domain, and debits no credit', async () => {
+      domain.findFirst.mockResolvedValue(null);
+
+      await expect(
+        service.send(USER_ID, dtoWith({ from: TEST_FROM, to: OWN_EMAIL })),
+      ).rejects.toThrow(
+        new ServiceUnavailableException(TEST_SENDER_UNAVAILABLE_MESSAGE),
+      );
+
+      expect(domain.findFirst).toHaveBeenCalledWith({
+        where: { name: 'mail.kingreys.fr', status: DomainStatus.VERIFIED },
+        select: { id: true },
+      });
+      // Le refus se produit avant tout autre effet de bord : ni email tracé,
+      // ni crédit débité (même le solde n'est pas consulté), ni job en file.
+      expect(email.create).not.toHaveBeenCalled();
+      expect(creditEntry.create).not.toHaveBeenCalled();
+      expect(creditEntry.aggregate).not.toHaveBeenCalled();
+      expect(queue.add).not.toHaveBeenCalled();
+    });
+
+    it('refuses with the same 503 when the test domain exists but is only PENDING', async () => {
+      // La requête filtre sur `status: VERIFIED` (voir l'assertion
+      // ci-dessus) : un domaine encore `PENDING` ne matche jamais cette
+      // requête, donc `findFirst` renvoie `null` — exactement comme un
+      // domaine absent. C'est la même ligne de code qui refuse les deux cas ;
+      // la preuve contre une vraie base (scratchpad/) insère un domaine
+      // `PENDING` en base pour lever toute ambiguïté sur le mock.
+      domain.findFirst.mockResolvedValue(null);
+
+      await expect(
+        service.send(USER_ID, dtoWith({ from: TEST_FROM, to: OWN_EMAIL })),
+      ).rejects.toThrow(
+        new ServiceUnavailableException(TEST_SENDER_UNAVAILABLE_MESSAGE),
+      );
+
+      expect(creditEntry.create).not.toHaveBeenCalled();
+    });
+
+    it('accepts the send once the test domain is VERIFIED (non-regression)', async () => {
+      domain.findFirst.mockResolvedValue({ id: 'dom_test' });
+
+      const result = await service.send(
+        USER_ID,
+        dtoWith({ from: TEST_FROM, to: OWN_EMAIL }),
+      );
+
+      expect(result.status).toBe('queued');
+      expect(creditEntry.create).toHaveBeenCalled();
     });
   });
 

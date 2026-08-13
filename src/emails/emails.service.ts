@@ -6,6 +6,7 @@ import {
   HttpStatus,
   Injectable,
   Logger,
+  ServiceUnavailableException,
 } from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bullmq';
 import { ConfigService } from '@nestjs/config';
@@ -36,6 +37,7 @@ import {
   SEND_JOB_BACKOFF_DELAY_MS,
   SYSTEM_SENDER_UNAVAILABLE_MESSAGE,
   TEST_SENDER_RECIPIENT_RESTRICTED_MESSAGE,
+  TEST_SENDER_UNAVAILABLE_MESSAGE,
 } from './emails.constants';
 import type {
   EmailSendJobData,
@@ -103,9 +105,21 @@ export class EmailsService {
     // Mode bac à sable (B20) : reconnu au seul rapprochement d'adresse, sans
     // se soucier du nom d'affichage — un client peut envoyer
     // « Ma Boutique <adresse-de-test> » et rester dans ce mode.
-    const domainId = this.isTestSenderAddress(from.address)
-      ? await this.requireOwnAddressAsRecipient(userId, toAddress)
-      : await this.requireVerifiedDomain(userId, from.domain);
+    //
+    // Le domaine de `TEST_EMAIL_FROM` est vérifié en premier, avant même la
+    // restriction de destinataire : c'est une erreur de configuration
+    // Zendou, indépendante de ce que le client a demandé. Même exigence que
+    // `sendSystem` pour `SYSTEM_EMAIL_FROM` — même type d'adresse (une
+    // adresse qui appartient à Zendou, pas au client) —, pour ne pas
+    // reproduire la divergence qui a déjà causé un bug sur ce projet (V6-D).
+    let domainId: string | null;
+
+    if (this.isTestSenderAddress(from.address)) {
+      await this.requireVerifiedTestSenderDomain(from.domain);
+      domainId = await this.requireOwnAddressAsRecipient(userId, toAddress);
+    } else {
+      domainId = await this.requireVerifiedDomain(userId, from.domain);
+    }
     const fromAddress = formatEmailAddress(from);
     const common = {
       userId,
@@ -342,6 +356,39 @@ export class EmailsService {
     }
 
     return parseEmailAddress(configured)?.address === address;
+  }
+
+  /**
+   * Gardes-fou de configuration du mode bac à sable : le domaine de
+   * `TEST_EMAIL_FROM` doit exister en base avec le statut `VERIFIED`, tout
+   * comme `sendSystem` l'exige pour `SYSTEM_EMAIL_FROM` (voir la recherche
+   * sans `userId` autour de la ligne 257) — même besoin, sur le même type
+   * d'adresse : une adresse qui appartient à Zendou, pas au client.
+   *
+   * Sans ce contrôle, une mauvaise configuration (domaine absent ou encore
+   * `PENDING`) ne serait détectée qu'au moment de l'envoi SES — après que le
+   * client ait déjà été débité d'un crédit pour un email qui ne partira
+   * jamais. Le contrôle doit donc se faire ici, à l'acceptation, avant tout
+   * effet de bord.
+   *
+   * Recherche sans `userId` : comme pour `SYSTEM_EMAIL_FROM`, ce domaine
+   * appartient à Zendou, pas au client — il n'y a pas de propriété à
+   * vérifier, seulement le statut.
+   *
+   * @throws {ServiceUnavailableException} domaine absent ou non `VERIFIED`.
+   */
+  private async requireVerifiedTestSenderDomain(name: string): Promise<void> {
+    const domain = await this.prisma.domain.findFirst({
+      where: { name, status: DomainStatus.VERIFIED },
+      select: { id: true },
+    });
+
+    if (!domain) {
+      this.logger.error(
+        `Mode bac à sable indisponible : domaine ${name} (TEST_EMAIL_FROM) absent ou non VERIFIED dans Zendou`,
+      );
+      throw new ServiceUnavailableException(TEST_SENDER_UNAVAILABLE_MESSAGE);
+    }
   }
 
   /**
