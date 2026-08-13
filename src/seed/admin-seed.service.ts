@@ -20,6 +20,18 @@ import { PrismaService } from '../prisma/prisma.service';
  * - une erreur du seed (y compris une course P2002 entre deux instances qui
  *   démarrent en même temps) ne doit jamais empêcher l'application de
  *   démarrer.
+ *
+ * `emailVerifiedAt` : posé à la création, et à la promotion si absent.
+ * L'admin est désigné par une variable d'environnement du serveur
+ * (`ADMIN_EMAIL`) — quiconque peut l'écrire contrôle déjà l'infrastructure,
+ * ce qui constitue une preuve de contrôle plus forte que le clic dans un
+ * email reçu. Ce n'est donc pas un contournement de `EmailVerifiedGuard`
+ * mais une confirmation par un autre canal, plus fort. On n'exempte
+ * volontairement pas les ADMIN de la garde côté application : un admin dont
+ * l'adresse est fausse doit lui aussi être bloqué, sinon il n'apprendrait
+ * jamais qu'il ne reçoit pas les alertes système. On ne réécrit jamais une
+ * `emailVerifiedAt` déjà posée (même logique que pour le mot de passe) :
+ * elle pourrait dater la confirmation d'un vrai compte client promu admin.
  */
 @Injectable()
 export class AdminSeedService implements OnApplicationBootstrap {
@@ -56,18 +68,28 @@ export class AdminSeedService implements OnApplicationBootstrap {
 
     const existing = await this.prisma.user.findUnique({
       where: { email },
-      select: { id: true, role: true },
+      select: { id: true, role: true, emailVerifiedAt: true },
     });
 
     if (existing) {
       if (existing.role !== UserRole.ADMIN) {
+        const needsEmailVerification = !existing.emailVerifiedAt;
+
         await this.prisma.user.update({
           where: { id: existing.id },
-          data: { role: UserRole.ADMIN },
+          data: {
+            role: UserRole.ADMIN,
+            ...(needsEmailVerification ? { emailVerifiedAt: new Date() } : {}),
+          },
         });
         this.logger.warn(
           `compte existant promu ADMIN (était ${existing.role}) : ${email}`,
         );
+        if (needsEmailVerification) {
+          this.logger.log(
+            `email confirmé automatiquement pour le compte admin (contrôle de ADMIN_EMAIL) : ${email}`,
+          );
+        }
       } else {
         this.logger.log('compte admin déjà présent');
       }
@@ -86,9 +108,14 @@ export class AdminSeedService implements OnApplicationBootstrap {
           name,
           role: UserRole.ADMIN,
           status: UserStatus.ACTIVE,
+          // Confirmé d'office : voir le commentaire de tête de fichier
+          // (preuve de contrôle par ADMIN_EMAIL, plus forte qu'un clic email).
+          emailVerifiedAt: new Date(),
         },
       });
-      this.logger.log(`compte admin créé : ${email}`);
+      this.logger.log(
+        `compte admin créé (email confirmé automatiquement) : ${email}`,
+      );
     } catch (error) {
       // Course entre deux instances qui démarrent en même temps et tentent
       // toutes les deux de créer le même compte admin.
