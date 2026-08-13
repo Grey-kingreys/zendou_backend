@@ -115,7 +115,7 @@ describe('AdminSeedService', () => {
       expect(update).not.toHaveBeenCalled();
     }, 15000);
 
-    it('does not write anything when an ADMIN account already exists', async () => {
+    it('does not write anything when an already-confirmed ADMIN account already exists', async () => {
       findUnique.mockResolvedValue({
         id: 'admin_1',
         role: UserRole.ADMIN,
@@ -126,6 +126,24 @@ describe('AdminSeedService', () => {
 
       expect(create).not.toHaveBeenCalled();
       expect(update).not.toHaveBeenCalled();
+    });
+
+    it('confirms emailVerifiedAt for an existing ADMIN account that was never confirmed, without touching the password or role', async () => {
+      findUnique.mockResolvedValue({
+        id: 'admin_unconfirmed',
+        role: UserRole.ADMIN,
+        emailVerifiedAt: null,
+      });
+
+      await service.onApplicationBootstrap();
+
+      expect(create).not.toHaveBeenCalled();
+      expect(update).toHaveBeenCalledTimes(1);
+      expect(capturedUpdateArgs).toBeDefined();
+      expect(capturedUpdateArgs!.where).toEqual({ id: 'admin_unconfirmed' });
+      expect(capturedUpdateArgs!.data.emailVerifiedAt).toBeInstanceOf(Date);
+      expect(capturedUpdateArgs!.data).not.toHaveProperty('passwordHash');
+      expect(capturedUpdateArgs!.data).not.toHaveProperty('role');
     });
 
     it('promotes an existing unconfirmed CUSTOMER account to ADMIN, and confirms its email, without touching the password', async () => {

@@ -21,7 +21,8 @@ import { PrismaService } from '../prisma/prisma.service';
  *   démarrent en même temps) ne doit jamais empêcher l'application de
  *   démarrer.
  *
- * `emailVerifiedAt` : posé à la création, et à la promotion si absent.
+ * `emailVerifiedAt` : posé à la création, et si absent à la promotion ou
+ * pour un compte déjà ADMIN.
  * L'admin est désigné par une variable d'environnement du serveur
  * (`ADMIN_EMAIL`) — quiconque peut l'écrire contrôle déjà l'infrastructure,
  * ce qui constitue une preuve de contrôle plus forte que le clic dans un
@@ -92,6 +93,15 @@ export class AdminSeedService implements OnApplicationBootstrap {
         }
       } else {
         this.logger.log('compte admin déjà présent');
+        if (!existing.emailVerifiedAt) {
+          await this.prisma.user.update({
+            where: { id: existing.id },
+            data: { emailVerifiedAt: new Date() },
+          });
+          this.logger.log(
+            `email confirmé automatiquement pour le compte admin (contrôle de ADMIN_EMAIL) : ${email}`,
+          );
+        }
       }
       return;
     }
