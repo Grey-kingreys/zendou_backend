@@ -86,7 +86,7 @@ function dtoWith(
   overrides: Partial<CreateTopUpRequestDto> = {},
 ): CreateTopUpRequestDto {
   return {
-    packId: 'essentiel',
+    packId: 'starter',
     method: TopUpMethod.ORANGE_MONEY,
     phoneNumber: '+224 622 00 11 22',
     transactionRef: 'OM-123456',
@@ -337,10 +337,10 @@ describe('BillingService', () => {
       const packs = service.listPacks();
 
       const decouverte = packs.find((pack) => pack.id === 'decouverte');
-      const essentiel = packs.find((pack) => pack.id === 'essentiel');
+      const starter = packs.find((pack) => pack.id === 'starter');
 
       expect(decouverte).toMatchObject({ purchasable: false, credits: 1_000 });
-      expect(essentiel).toMatchObject({
+      expect(starter).toMatchObject({
         purchasable: true,
         credits: 15_000,
         amountGnf: 50_000,

@@ -29,8 +29,8 @@ export const CREDIT_PACKS: readonly CreditPack[] = [
     purchasable: false,
   },
   {
-    id: 'essentiel',
-    label: 'Essentiel',
+    id: 'starter',
+    label: 'Starter',
     credits: 15_000,
     amountGnf: 50_000,
     purchasable: true,

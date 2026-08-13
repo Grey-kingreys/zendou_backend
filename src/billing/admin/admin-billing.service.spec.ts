@@ -11,15 +11,19 @@ import { AdminBillingService } from './admin-billing.service';
 import type { RejectTopUpRequestDto } from './dto/reject-topup-request.dto';
 
 /**
- * `packId: 'starter'` est intentionnellement un identifiant retiré du
- * catalogue courant (`src/billing/packs.ts` n'expose plus que `decouverte`,
- * `essentiel` et `growth` depuis V12A). `credits`/`amountGnf` sont un
- * instantané pris à la création de la demande (cf. `BillingService.
+ * `packId: 'starter'` rejoue volontairement une collision d'identifiant.
+ * `starter` a désigné le pack 10 000 crédits / 25 000 GNF avant V12A ; V12A
+ * l'a renommé `essentiel` (15 000 / 50 000) ; V12D lui redonne l'id
+ * `starter`, mais toujours avec les valeurs `essentiel` (15 000 / 50 000),
+ * pas les valeurs historiques figées ci-dessous. `credits`/`amountGnf` sont
+ * un instantané pris à la création de la demande (cf. `BillingService.
  * createTopUpRequest`) et ne sont plus jamais recalculés depuis le
  * catalogue : l'admin approuve/rejette sur la base de ces valeurs figées en
- * base, jamais via `findPack(packId)`. Une demande existante qui pointe vers
- * un pack désormais absent du catalogue doit donc continuer à s'approuver
- * normalement — c'est exactement ce que cette fixture vérifie.
+ * base, jamais via `findPack(packId)`. Cette fixture représente donc une
+ * demande créée avant V12D, dont l'id `starter` coexiste aujourd'hui avec un
+ * pack courant homonyme mais à un prix différent — le mécanisme testé doit
+ * quand même s'approuver avec SES valeurs à elle (10 000 / 25 000), jamais
+ * avec celles, plus récentes, du catalogue courant.
  */
 const PENDING_REQUEST = {
   id: 'topup_1',
