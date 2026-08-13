@@ -4,6 +4,7 @@ import {
   ForbiddenException,
   UnauthorizedException,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { UserRole, UserStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { SESSION_COOKIE_NAME } from './auth.constants';
@@ -20,6 +21,9 @@ const activeUser: AuthUser = {
   role: UserRole.CUSTOMER,
   status: UserStatus.ACTIVE,
   createdAt: new Date('2026-01-01T00:00:00.000Z'),
+  // TEST_EMAIL_FROM non configurée par défaut dans ces tests (voir le mock
+  // de ConfigService ci-dessous) : `resolveTestSenderAddress` renvoie `null`.
+  testSenderAddress: null,
 };
 
 function contextFor(request: Partial<AuthenticatedRequest>): ExecutionContext {
@@ -37,15 +41,18 @@ describe('SessionAuthGuard', () => {
     resolve: jest.fn(),
     destroy: jest.fn(),
   };
+  const configGet = jest.fn();
 
   beforeEach(async () => {
     jest.clearAllMocks();
+    configGet.mockReturnValue(undefined);
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         SessionAuthGuard,
         { provide: SessionService, useValue: sessionService },
         { provide: PrismaService, useValue: { user: { findUnique } } },
+        { provide: ConfigService, useValue: { get: configGet } },
       ],
     }).compile();
 
@@ -91,6 +98,37 @@ describe('SessionAuthGuard', () => {
     expect(sessionService.resolve).toHaveBeenCalledWith('tok');
     expect(request.user).toEqual(activeUser);
     expect(request.sessionToken).toBe('tok');
+  });
+
+  it('attaches the sandbox sender address (bare form) when TEST_EMAIL_FROM is configured', async () => {
+    configGet.mockReturnValue('Zendou Test <test@mail.kingreys.fr>');
+    sessionService.resolve.mockResolvedValue('user_1');
+    findUnique.mockResolvedValue(activeUser);
+
+    const request: Partial<AuthenticatedRequest> = {
+      cookies: { [SESSION_COOKIE_NAME]: 'tok' },
+    };
+
+    await guard.canActivate(contextFor(request));
+
+    expect(request.user).toHaveProperty(
+      'testSenderAddress',
+      'test@mail.kingreys.fr',
+    );
+  });
+
+  it('reports null when TEST_EMAIL_FROM is absent', async () => {
+    configGet.mockReturnValue(undefined);
+    sessionService.resolve.mockResolvedValue('user_1');
+    findUnique.mockResolvedValue(activeUser);
+
+    const request: Partial<AuthenticatedRequest> = {
+      cookies: { [SESSION_COOKIE_NAME]: 'tok' },
+    };
+
+    await guard.canActivate(contextFor(request));
+
+    expect(request.user).toHaveProperty('testSenderAddress', null);
   });
 
   it('throws 403 when the account is suspended', async () => {

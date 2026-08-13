@@ -4,6 +4,7 @@ import {
   ForbiddenException,
   UnauthorizedException,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { UserRole, UserStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuthUser } from '../auth';
@@ -25,6 +26,9 @@ const activeUser: AuthUser = {
   role: UserRole.CUSTOMER,
   status: UserStatus.ACTIVE,
   createdAt: new Date('2026-01-01T00:00:00.000Z'),
+  // TEST_EMAIL_FROM non configurée par défaut dans ces tests (voir le mock
+  // de ConfigService ci-dessous) : `resolveTestSenderAddress` renvoie `null`.
+  testSenderAddress: null,
 };
 
 function contextFor(
@@ -52,11 +56,13 @@ describe('ApiKeyAuthGuard', () => {
       resolve();
     });
   });
+  const configGet = jest.fn();
 
   beforeEach(async () => {
     jest.clearAllMocks();
     capturedUpdateArgs = undefined;
     resolveUpdate = undefined;
+    configGet.mockReturnValue(undefined);
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -65,6 +71,7 @@ describe('ApiKeyAuthGuard', () => {
           provide: PrismaService,
           useValue: { apiKey: { findUnique, update } },
         },
+        { provide: ConfigService, useValue: { get: configGet } },
       ],
     }).compile();
 
@@ -151,6 +158,27 @@ describe('ApiKeyAuthGuard', () => {
 
     expect(request.user).toEqual(activeUser);
     expect(request.apiKeyId).toBe('key_1');
+  });
+
+  it('reports the sandbox sender address when TEST_EMAIL_FROM is configured', async () => {
+    configGet.mockReturnValue('Zendou Test <test@mail.kingreys.fr>');
+    findUnique.mockResolvedValue({
+      id: 'key_1',
+      revokedAt: null,
+      user: activeUser,
+    });
+
+    const request: Partial<ApiKeyAuthenticatedRequest> = {
+      headers: { authorization: `Bearer ${validKey}` },
+    };
+
+    await guard.canActivate(contextFor(request));
+
+    // Adresse nue, sans le nom d'affichage — voir `resolveTestSenderAddress`.
+    expect(request.user).toHaveProperty(
+      'testSenderAddress',
+      'test@mail.kingreys.fr',
+    );
   });
 
   it('updates lastUsedAt in the background without blocking canActivate', async () => {
