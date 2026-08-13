@@ -198,6 +198,42 @@ const baseEnvSchema = z.object({
    * cahier §12. `0` désactive le bonus.
    */
   WELCOME_CREDITS: nonNegativeIntFromEnv(DEFAULT_WELCOME_CREDITS),
+
+  // ─── Adresse d'expédition de test (bac à sable, façon Resend) ───
+
+  /**
+   * Adresse d'expédition du mode « bac à sable » (B20) : permet à un client
+   * fraîchement inscrit d'envoyer **immédiatement**, avant même d'avoir
+   * vérifié un domaine — exactement le rôle d'`onboarding@resend.dev` chez
+   * Resend. En échange, `EmailsService.send` restreint le destinataire à la
+   * seule adresse du compte appelant (`user.email`, déjà confirmée) : voir
+   * `TEST_SENDER_RECIPIENT_RESTRICTED_MESSAGE` dans `emails.constants.ts`
+   * pour le raisonnement complet (protection de la réputation du domaine
+   * d'expédition partagé, qui expédie aussi les confirmations d'inscription).
+   *
+   * Accepte les deux mêmes formes que `SYSTEM_EMAIL_FROM`, validées par le
+   * même `parseEmailAddress` (`emails/email-address.ts`, source de vérité
+   * unique — pas de seconde regex) : `adresse@domaine` nue, ou
+   * `Nom <adresse@domaine>`.
+   *
+   * **Optionnelle partout, y compris en production** : absente, ce mode est
+   * simplement indisponible et tout envoi retombe sur l'exigence normale de
+   * domaine vérifié et possédé par le client — aucune régression possible.
+   * En bêta : une adresse sous `mail.kingreys.fr`, le seul domaine vérifié
+   * chez SES ; le domaine Zendou définitif ne demandera qu'un changement de
+   * variable.
+   */
+  TEST_EMAIL_FROM: z.preprocess(
+    emptyToUndefined,
+    z
+      .string()
+      .trim()
+      .refine((value) => parseEmailAddress(value) !== null, {
+        message:
+          "doit être une adresse email valide, éventuellement précédée d'un nom d'affichage (Nom <adresse@domaine>)",
+      })
+      .optional(),
+  ),
 });
 
 export const envSchema = baseEnvSchema

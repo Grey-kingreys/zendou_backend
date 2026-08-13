@@ -63,6 +63,18 @@ export const BODY_TOO_LARGE_MESSAGE =
 export const DOMAIN_NOT_VERIFIED_MESSAGE =
   "Le domaine d'envoi n'est pas vérifié : ajoutez-le à votre compte et validez ses enregistrements DNS avant d'envoyer.";
 
+/**
+ * Message renvoyé quand un envoi depuis l'adresse de test (`TEST_EMAIL_FROM`,
+ * mode bac à sable B20) cible un destinataire autre que l'adresse du compte
+ * appelant. Explique le mode plutôt que de refuser sèchement : cette
+ * restriction n'est pas arbitraire, c'est ce qui protège la réputation du
+ * domaine d'expédition partagé — le même qui expédie les emails de
+ * confirmation d'inscription. Voir
+ * `EmailsService.requireOwnAddressAsRecipient`.
+ */
+export const TEST_SENDER_RECIPIENT_RESTRICTED_MESSAGE =
+  "Depuis l'adresse de test, vous ne pouvez écrire qu'à l'adresse email de votre compte. Vérifiez un domaine pour écrire à vos utilisateurs.";
+
 /** Message renvoyé quand le solde de crédits ne couvre pas l'envoi. */
 export const INSUFFICIENT_CREDITS_MESSAGE =
   'Crédits insuffisants : rechargez votre compte pour continuer à envoyer.';

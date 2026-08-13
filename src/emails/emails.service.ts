@@ -35,6 +35,7 @@ import {
   SEND_JOB_ATTEMPTS,
   SEND_JOB_BACKOFF_DELAY_MS,
   SYSTEM_SENDER_UNAVAILABLE_MESSAGE,
+  TEST_SENDER_RECIPIENT_RESTRICTED_MESSAGE,
 } from './emails.constants';
 import type {
   EmailSendJobData,
@@ -99,7 +100,12 @@ export class EmailsService {
       throw new BadRequestException(BODY_TOO_LARGE_MESSAGE);
     }
 
-    const domainId = await this.requireVerifiedDomain(userId, from.domain);
+    // Mode bac à sable (B20) : reconnu au seul rapprochement d'adresse, sans
+    // se soucier du nom d'affichage — un client peut envoyer
+    // « Ma Boutique <adresse-de-test> » et rester dans ce mode.
+    const domainId = this.isTestSenderAddress(from.address)
+      ? await this.requireOwnAddressAsRecipient(userId, toAddress)
+      : await this.requireVerifiedDomain(userId, from.domain);
     const fromAddress = formatEmailAddress(from);
     const common = {
       userId,
@@ -107,6 +113,12 @@ export class EmailsService {
       fromAddress,
       toAddress,
       subject: dto.subject,
+      // Explicite (plutôt que de compter sur le défaut du schéma) : un envoi
+      // de test reste un envoi **client** ordinaire — compté dans la
+      // réputation, le quota journalier, le journal et les KPI — jamais
+      // traité comme `EmailsService.sendSystem`. Détourner cette exemption
+      // rouvrirait exactement les protections anti-abus bâties en T12.
+      system: false,
     };
 
     // Adresse bloquée : on trace l'email pour que le client le voie dans
@@ -312,6 +324,65 @@ export class EmailsService {
     }
 
     return domain.id;
+  }
+
+  /**
+   * `true` si `address` (déjà normalisée par `parseEmailAddress`) est celle
+   * du mode bac à sable — `TEST_EMAIL_FROM`. Absente ou illisible, ce mode
+   * est simplement indisponible : tout envoi retombe sur
+   * `requireVerifiedDomain`, sans régression possible.
+   */
+  private isTestSenderAddress(address: string): boolean {
+    const configured = (
+      this.configService.get<string>('TEST_EMAIL_FROM') ?? ''
+    ).trim();
+
+    if (!configured) {
+      return false;
+    }
+
+    return parseEmailAddress(configured)?.address === address;
+  }
+
+  /**
+   * Contrepartie de l'exemption de domaine du mode bac à sable : le seul
+   * destinataire autorisé est l'adresse **du compte appelant**
+   * (`user.email`), et elle seule.
+   *
+   * Ce n'est pas une limite arbitraire copiée sur Resend — c'est ce qui
+   * protège la réputation du domaine d'expédition partagé. L'adresse du
+   * compte est déjà confirmée (`EmailVerifiedGuard`, requis en amont pour
+   * atteindre cette méthode) : elle a donc déjà reçu un email avec succès,
+   * ce qui rend le risque de rebond dur quasi nul. Sans cette restriction,
+   * `TEST_EMAIL_FROM` — un domaine que **Zendou** possède, pas le client —
+   * deviendrait un relais d'envoi anonyme vers n'importe quelle adresse : sa
+   * réputation s'abîmerait en quelques heures. Et ce domaine est
+   * aujourd'hui aussi celui qui expédie les emails de confirmation
+   * d'inscription (`SYSTEM_EMAIL_FROM`) : s'il se dégrade, plus aucun
+   * nouveau client ne reçoit sa confirmation — la porte d'entrée du produit
+   * se ferme. Ce raisonnement doit survivre à toute réécriture de cette
+   * méthode.
+   *
+   * Ne renvoie jamais qu'un `domainId` nul : un envoi de test n'est
+   * rattaché à aucun `Domain` du client (il n'en a pas forcément un), et
+   * la colonne `Email.domainId` est nullable précisément pour ce cas.
+   * `requireVerifiedDomain`, lui, reste inchangé pour tout autre envoi.
+   */
+  private async requireOwnAddressAsRecipient(
+    userId: string,
+    toAddress: string,
+  ): Promise<null> {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { email: true },
+    });
+    const ownAddress = user ? normalizeEmailAddress(user.email) : null;
+
+    if (!ownAddress || ownAddress !== toAddress) {
+      throw new ForbiddenException(TEST_SENDER_RECIPIENT_RESTRICTED_MESSAGE);
+    }
+
+    return null;
   }
 
   /** Le solde est la somme des mouvements de crédits du client. */
