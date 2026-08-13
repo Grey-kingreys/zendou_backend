@@ -12,7 +12,7 @@ describe('CREDIT_PACKS', () => {
   });
 
   it.each([
-    ['essentiel', 15_000, 50_000],
+    ['starter', 15_000, 50_000],
     ['growth', 30_000, 90_000],
   ])(
     'exposes %s as purchasable with the right credits/price',
