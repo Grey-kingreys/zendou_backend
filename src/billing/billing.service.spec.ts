@@ -86,7 +86,7 @@ function dtoWith(
   overrides: Partial<CreateTopUpRequestDto> = {},
 ): CreateTopUpRequestDto {
   return {
-    packId: 'starter',
+    packId: 'essentiel',
     method: TopUpMethod.ORANGE_MONEY,
     phoneNumber: '+224 622 00 11 22',
     transactionRef: 'OM-123456',
@@ -337,13 +337,13 @@ describe('BillingService', () => {
       const packs = service.listPacks();
 
       const decouverte = packs.find((pack) => pack.id === 'decouverte');
-      const starter = packs.find((pack) => pack.id === 'starter');
+      const essentiel = packs.find((pack) => pack.id === 'essentiel');
 
       expect(decouverte).toMatchObject({ purchasable: false, credits: 1_000 });
-      expect(starter).toMatchObject({
+      expect(essentiel).toMatchObject({
         purchasable: true,
-        credits: 10_000,
-        amountGnf: 25_000,
+        credits: 15_000,
+        amountGnf: 50_000,
       });
     });
   });
@@ -413,7 +413,7 @@ describe('BillingService', () => {
           userId: 'user_1',
           packId: 'growth',
           credits: 30_000,
-          amountGnf: 60_000,
+          amountGnf: 90_000,
           method: TopUpMethod.ORANGE_MONEY,
           phoneNumber: '+224 622 00 11 22',
           transactionRef: 'OM-123456',

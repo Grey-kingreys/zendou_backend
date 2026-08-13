@@ -87,16 +87,16 @@ describe('BillingController', () => {
 
   it('delegates top-up request creation to the service, scoped to the current user', async () => {
     const dto: CreateTopUpRequestDto = {
-      packId: 'starter',
+      packId: 'essentiel',
       method: TopUpMethod.ORANGE_MONEY,
       phoneNumber: '+224 622 00 11 22',
       transactionRef: 'OM-123456',
     };
     const created = {
       id: 'topup_1',
-      packId: 'starter',
-      credits: 10_000,
-      amountGnf: 25_000,
+      packId: 'essentiel',
+      credits: 15_000,
+      amountGnf: 50_000,
       method: TopUpMethod.ORANGE_MONEY,
       phoneNumber: '+224 622 00 11 22',
       transactionRef: 'OM-123456',
