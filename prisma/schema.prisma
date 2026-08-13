@@ -159,6 +159,13 @@ model Email {
 
   @@index([userId, queuedAt])
   @@index([status])
+  /// Sert les fenêtres glissantes (aujourd'hui / 7 j / 30 j) de
+  /// `GET /v1/admin/stats/emails`, qui filtrent par `queuedAt`
+  /// toutes-comptes confondues : `@@index([userId, queuedAt])` ne peut pas
+  /// servir ce filtre (aucune de ces requêtes ne connaît de `userId`), il
+  /// forcerait un balayage complet de la table, de plus en plus lent à
+  /// mesure que la plateforme envoie.
+  @@index([queuedAt])
 }
 
 model Suppression {
