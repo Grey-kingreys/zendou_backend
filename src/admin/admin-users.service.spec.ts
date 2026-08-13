@@ -11,6 +11,7 @@ import {
   UserStatus,
 } from '@prisma/client';
 import { SessionService } from '../auth';
+import { CREDIT_REASON_WELCOME_BONUS } from '../billing/billing.constants';
 import { PrismaService } from '../prisma/prisma.service';
 import { SENT_EMAIL_STATUSES } from '../reputation/reputation.constants';
 import { AdminUsersService } from './admin-users.service';
@@ -55,8 +56,10 @@ describe('AdminUsersService', () => {
   const creditAggregate = jest.fn();
   const creditCreate = jest.fn();
   const creditEntryCount = jest.fn();
+  const creditEntryDeleteMany = jest.fn();
   const emailGroupBy = jest.fn();
   const emailCount = jest.fn();
+  const emailDeleteMany = jest.fn();
   const domainGroupBy = jest.fn();
   const domainCount = jest.fn();
   const apiKeyCount = jest.fn();
@@ -78,8 +81,10 @@ describe('AdminUsersService', () => {
     creditAggregate,
     creditCreate,
     creditEntryCount,
+    creditEntryDeleteMany,
     emailGroupBy,
     emailCount,
+    emailDeleteMany,
     domainGroupBy,
     domainCount,
     apiKeyCount,
@@ -105,8 +110,13 @@ describe('AdminUsersService', () => {
       aggregate: creditAggregate,
       create: creditCreate,
       count: creditEntryCount,
+      deleteMany: creditEntryDeleteMany,
     },
-    email: { groupBy: emailGroupBy, count: emailCount },
+    email: {
+      groupBy: emailGroupBy,
+      count: emailCount,
+      deleteMany: emailDeleteMany,
+    },
     domain: { groupBy: domainGroupBy, count: domainCount },
     apiKey: { count: apiKeyCount },
     topUpRequest: { count: topUpRequestCount },
@@ -648,12 +658,46 @@ describe('AdminUsersService', () => {
   });
 
   describe('deleteUser', () => {
+    /**
+     * `emailCount`/`creditEntryCount` sont chacun appelés deux fois dans
+     * `deleteUser` : une fois filtrés pour le décompte des blocages
+     * (`system: false` / `reason != WELCOME_BONUS`), une fois sans filtre
+     * pour l'invariant post-cascade. Ce helper distingue les deux appels
+     * par leur clause `where`, comme le ferait une vraie base : le second
+     * appel voit l'effet du `deleteMany` simulé par `remainingAfterCascade`.
+     */
+    function mockEmailCounts(
+      clientEmails: number,
+      remainingAfterCascade: number,
+    ) {
+      emailCount.mockImplementation(
+        ({ where }: { where: { system?: boolean } }) =>
+          Promise.resolve(
+            where.system === false ? clientEmails : remainingAfterCascade,
+          ),
+      );
+    }
+
+    function mockCreditEntryCounts(
+      nonWelcomeEntries: number,
+      remainingAfterCascade: number,
+    ) {
+      creditEntryCount.mockImplementation(
+        ({ where }: { where: { reason?: unknown } }) =>
+          Promise.resolve(
+            'reason' in where ? nonWelcomeEntries : remainingAfterCascade,
+          ),
+      );
+    }
+
     beforeEach(() => {
       userFindUnique.mockResolvedValue({
         id: 'u1',
         email: 'jean@gmial.com',
         name: 'Jean Camara',
       });
+      emailDeleteMany.mockResolvedValue({ count: 0 });
+      creditEntryDeleteMany.mockResolvedValue({ count: 0 });
     });
 
     it('deletes the account, audits it and revokes its sessions when nothing blocks', async () => {
@@ -678,12 +722,27 @@ describe('AdminUsersService', () => {
         select: { id: true },
       });
 
+      // Cascade : emails système et crédit de bienvenue supprimés
+      // explicitement, dans la même transaction, avant le compte.
+      expect(emailDeleteMany).toHaveBeenCalledWith({
+        where: { userId: 'u1', system: true },
+      });
+      expect(creditEntryDeleteMany).toHaveBeenCalledWith({
+        where: { userId: 'u1', reason: CREDIT_REASON_WELCOME_BONUS },
+      });
+
       expect(userDelete).toHaveBeenCalledWith({ where: { id: 'u1' } });
 
-      // L'ordre compte : la ligne d'audit doit exister avant la suppression.
+      // L'ordre compte : audit, puis cascade, puis suppression du compte.
       const actionCreateOrder = actionCreate.mock.invocationCallOrder[0];
+      const emailDeleteManyOrder = emailDeleteMany.mock.invocationCallOrder[0];
+      const creditEntryDeleteManyOrder =
+        creditEntryDeleteMany.mock.invocationCallOrder[0];
       const userDeleteOrder = userDelete.mock.invocationCallOrder[0];
-      expect(actionCreateOrder).toBeLessThan(userDeleteOrder);
+      expect(actionCreateOrder).toBeLessThan(emailDeleteManyOrder);
+      expect(actionCreateOrder).toBeLessThan(creditEntryDeleteManyOrder);
+      expect(emailDeleteManyOrder).toBeLessThan(userDeleteOrder);
+      expect(creditEntryDeleteManyOrder).toBeLessThan(userDeleteOrder);
 
       // Révocation Redis après le succès de la transaction, via l'index
       // inverse posé pour le changement de mot de passe (T16).
@@ -721,9 +780,13 @@ describe('AdminUsersService', () => {
     it.each([
       ['a domain', () => domainCount.mockResolvedValue(2), '2 domaines'],
       ['an API key', () => apiKeyCount.mockResolvedValue(1), '1 clé API'],
-      ['an email', () => emailCount.mockResolvedValue(14), '14 emails'],
       [
-        'a credit entry',
+        'a client email (system: false)',
+        () => emailCount.mockResolvedValue(14),
+        '14 emails',
+      ],
+      [
+        'a non-welcome-bonus credit entry',
         () => creditEntryCount.mockResolvedValue(3),
         '3 mouvements de crédit',
       ],
@@ -750,6 +813,8 @@ describe('AdminUsersService', () => {
         );
 
         expect(actionCreate).not.toHaveBeenCalled();
+        expect(emailDeleteMany).not.toHaveBeenCalled();
+        expect(creditEntryDeleteMany).not.toHaveBeenCalled();
         expect(userDelete).not.toHaveBeenCalled();
         expect(destroyAllForUser).not.toHaveBeenCalled();
       },
@@ -767,16 +832,86 @@ describe('AdminUsersService', () => {
       );
     });
 
-    /**
-     * `Email.system = true` (emails système reçus par le compte) n'est
-     * jamais exclu du décompte : `email.count` n'est appelé qu'avec
-     * `{ userId }`, sans filtre `system`, donc ces lignes bloquent la
-     * suppression exactement comme les envois du client.
-     */
-    it('counts emails without filtering out system ones', async () => {
-      await service.deleteUser('admin_1', 'u1');
+    // --- Cœur du correctif V9-A --------------------------------------
 
-      expect(emailCount).toHaveBeenCalledWith({ where: { userId: 'u1' } });
+    /**
+     * Le scénario exact du porteur : un compte qui n'a fait que confirmer
+     * son adresse — un `Email` système et le `CreditEntry` de bienvenue,
+     * rien d'autre — doit être supprimable. C'est l'inverse du
+     * comportement V8-A, qui comptait ces deux lignes comme des blocages.
+     */
+    it('deletes an account that has only a system email and the welcome bonus credit entry', async () => {
+      // 0 email *client* (system: false), mais le compte a bien un email
+      // système qui disparaît une fois la cascade passée.
+      mockEmailCounts(0, 0);
+      // 0 mouvement *hors* bonus de bienvenue, et le bonus lui-même
+      // disparaît une fois la cascade passée.
+      mockCreditEntryCounts(0, 0);
+
+      const result = await service.deleteUser('admin_1', 'u1');
+
+      expect(emailCount).toHaveBeenCalledWith({
+        where: { userId: 'u1', system: false },
+      });
+      expect(creditEntryCount).toHaveBeenCalledWith({
+        where: {
+          userId: 'u1',
+          reason: { not: CREDIT_REASON_WELCOME_BONUS },
+        },
+      });
+      expect(emailDeleteMany).toHaveBeenCalledWith({
+        where: { userId: 'u1', system: true },
+      });
+      expect(creditEntryDeleteMany).toHaveBeenCalledWith({
+        where: { userId: 'u1', reason: CREDIT_REASON_WELCOME_BONUS },
+      });
+      expect(userDelete).toHaveBeenCalledWith({ where: { id: 'u1' } });
+      expect(result).toEqual({
+        id: 'u1',
+        email: 'jean@gmial.com',
+        actionId: 'action_1',
+      });
+    });
+
+    /**
+     * Symétrique : dès qu'un email **client** (`system: false`) existe, la
+     * suppression reste refusée — c'est la garde qui empêche de supprimer
+     * un compte ayant une vraie activité d'envoi.
+     */
+    it('refuses to delete an account that has a client email (system: false)', async () => {
+      mockEmailCounts(1, 0);
+      mockCreditEntryCounts(0, 0);
+
+      await expect(service.deleteUser('admin_1', 'u1')).rejects.toThrow(
+        new ConflictException(
+          'Suppression refusée : ce compte possède encore 1 email. Suspendez le compte plutôt que de le supprimer.',
+        ),
+      );
+
+      expect(actionCreate).not.toHaveBeenCalled();
+      expect(emailDeleteMany).not.toHaveBeenCalled();
+      expect(userDelete).not.toHaveBeenCalled();
+    });
+
+    /**
+     * Filet de sécurité : si, malgré des compteurs de blocage à zéro, des
+     * lignes `Email`/`CreditEntry` subsistent après la cascade (signe d'un
+     * trou dans `buildDeleteBlockers`), `deleteUser` doit refuser plutôt
+     * que de heurter la contrainte `Restrict` Postgres ou, pire, réussir en
+     * silence en laissant les lignes derrière lui — impossible ici puisque
+     * la transaction échoue avant `user.delete`.
+     */
+    it('refuses when rows unexpectedly survive the cascade (invariant guard)', async () => {
+      // Rien ne bloque en apparence...
+      mockEmailCounts(0, 1); // ...mais un email non prévu subsiste après la cascade.
+      mockCreditEntryCounts(0, 0);
+
+      await expect(service.deleteUser('admin_1', 'u1')).rejects.toThrow(
+        /Invariant violé/,
+      );
+
+      expect(userDelete).not.toHaveBeenCalled();
+      expect(destroyAllForUser).not.toHaveBeenCalled();
     });
   });
 });
