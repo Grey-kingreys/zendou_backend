@@ -10,6 +10,17 @@ import {
 import { AdminBillingService } from './admin-billing.service';
 import type { RejectTopUpRequestDto } from './dto/reject-topup-request.dto';
 
+/**
+ * `packId: 'starter'` est intentionnellement un identifiant retiré du
+ * catalogue courant (`src/billing/packs.ts` n'expose plus que `decouverte`,
+ * `essentiel` et `growth` depuis V12A). `credits`/`amountGnf` sont un
+ * instantané pris à la création de la demande (cf. `BillingService.
+ * createTopUpRequest`) et ne sont plus jamais recalculés depuis le
+ * catalogue : l'admin approuve/rejette sur la base de ces valeurs figées en
+ * base, jamais via `findPack(packId)`. Une demande existante qui pointe vers
+ * un pack désormais absent du catalogue doit donc continuer à s'approuver
+ * normalement — c'est exactement ce que cette fixture vérifie.
+ */
 const PENDING_REQUEST = {
   id: 'topup_1',
   userId: 'user_1',
