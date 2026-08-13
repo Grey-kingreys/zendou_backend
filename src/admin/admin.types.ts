@@ -97,3 +97,10 @@ export interface AdminCreditResult {
   creditBalance: number;
   actionId: string;
 }
+
+/** Réponse de `DELETE /v1/admin/users/:id` : le compte a réellement disparu. */
+export interface AdminUserDeleteResult {
+  id: string;
+  email: string;
+  actionId: string;
+}

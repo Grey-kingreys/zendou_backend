@@ -11,6 +11,7 @@ import {
   UserRole,
   UserStatus,
 } from '@prisma/client';
+import { SessionService } from '../auth';
 import { PrismaService } from '../prisma/prisma.service';
 import {
   REPUTATION_WINDOW_DAYS,
@@ -20,9 +21,12 @@ import {
   CREDIT_REASON_ADMIN_GRANT,
   DEFAULT_LIMIT,
   DEFAULT_PAGE,
+  DELETE_BLOCKED_MESSAGE_PREFIX,
+  DELETE_BLOCKED_MESSAGE_SUFFIX,
   MAX_LIMIT,
   RECENT_ACTIONS_LIMIT,
   SELF_CREDIT_MESSAGE,
+  SELF_DELETE_MESSAGE,
   SELF_SUSPEND_MESSAGE,
   USER_ALREADY_ACTIVE_MESSAGE,
   USER_ALREADY_SUSPENDED_MESSAGE,
@@ -32,6 +36,7 @@ import type {
   AdminCreditResult,
   AdminQuotaResult,
   AdminUserActionResult,
+  AdminUserDeleteResult,
   AdminUserDetail,
   AdminUserRow,
   AdminUserActionResultState,
@@ -86,7 +91,10 @@ const ADMIN_ACTION_SELECT = {
  */
 @Injectable()
 export class AdminUsersService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly sessionService: SessionService,
+  ) {}
 
   /**
    * Liste paginée des comptes.
@@ -427,6 +435,117 @@ export class AdminUsersService {
   }
 
   /**
+   * Suppression **réelle** (hard delete) du compte, pour libérer son adresse
+   * email en vue d'une réinscription. Cas visé : une adresse mal tapée à
+   * l'inscription (`jean@gmial.com`), jamais confirmée, dont l'email de
+   * confirmation rebondit en dur et part en liste de suppression — le
+   * compte est alors définitivement inerte.
+   *
+   * Un compte jamais confirmé n'a, par construction, ni domaine, ni clé
+   * API, ni crédit : tout cela est déjà bloqué avant confirmation (voir
+   * `EmailVerifiedGuard`). Le refus ci-dessous ne peut donc viser que de
+   * vrais comptes actifs, qu'il faut suspendre plutôt que supprimer — sans
+   * lui, la suppression échouerait de toute façon sur une contrainte
+   * `Restrict` Postgres brute (500 opaque) au lieu d'un message utile.
+   *
+   * Piège d'audit : `AdminAction.targetUserId` est optionnel donc en
+   * `SetNull` — supprimer l'utilisateur met à NULL la cible de **toutes**
+   * ses lignes d'audit passées, y compris celle que cette méthode écrit
+   * elle-même (elle référence le compte au moment de l'écriture, puis perd
+   * sa cible dès la ligne suivante qui le supprime). Le journal étant
+   * append-only, l'email et le nom du compte sont dupliqués dans `details`
+   * *avant* la suppression : la ligne reste exploitable même une fois sa
+   * cible réduite à néant.
+   */
+  async deleteUser(
+    adminId: string,
+    id: string,
+  ): Promise<AdminUserDeleteResult> {
+    this.refuseSelf(adminId, id, SELF_DELETE_MESSAGE);
+
+    const result = await this.prisma.$transaction(async (tx) => {
+      const user = await tx.user.findUnique({
+        where: { id },
+        select: { id: true, email: true, name: true },
+      });
+
+      if (!user) {
+        throw new NotFoundException(USER_NOT_FOUND_MESSAGE);
+      }
+
+      const [
+        domainsCount,
+        apiKeysCount,
+        emailsCount,
+        creditEntriesCount,
+        topUpRequestsCount,
+        adminActionsPerformedCount,
+      ] = await Promise.all([
+        tx.domain.count({ where: { userId: id } }),
+        tx.apiKey.count({ where: { userId: id } }),
+        // Compte aussi les emails **système** reçus (`system: true`) : ils
+        // portent le même `userId` (le destinataire) et bloquent la
+        // suppression exactement comme les emails envoyés par le client.
+        tx.email.count({ where: { userId: id } }),
+        tx.creditEntry.count({ where: { userId: id } }),
+        tx.topUpRequest.count({ where: { userId: id } }),
+        // Restrict lui aussi (`AdminAction.adminId` est obligatoire) : un
+        // compte ADMIN ayant déjà agi ne peut pas être supprimé sans violer
+        // cette contrainte. Cas distinct des cinq précédents (il ne s'agit
+        // pas de ce que le compte *possède*, mais de ce qu'il a *fait* en
+        // tant qu'admin), donc gardé et signalé séparément.
+        tx.adminAction.count({ where: { adminId: id } }),
+      ]);
+
+      const blockers = this.buildDeleteBlockers({
+        domainsCount,
+        apiKeysCount,
+        emailsCount,
+        creditEntriesCount,
+        topUpRequestsCount,
+        adminActionsPerformedCount,
+      });
+
+      if (blockers.length > 0) {
+        throw new ConflictException(
+          `${DELETE_BLOCKED_MESSAGE_PREFIX}${blockers.join(', ')}${DELETE_BLOCKED_MESSAGE_SUFFIX}`,
+        );
+      }
+
+      // Écrite *avant* le hard delete : à cet instant `targetUserId`
+      // référence encore un compte existant, la contrainte `SetNull` ne
+      // s'applique qu'à la suppression qui suit dans cette même
+      // transaction. Le nom et l'email sont dupliqués dans `details`, seule
+      // donnée qui survit une fois `targetUserId` mis à NULL.
+      const action = await tx.adminAction.create({
+        data: {
+          adminId,
+          targetUserId: id,
+          type: AdminActionType.DELETE_USER,
+          details: {
+            deletedUserEmail: user.email,
+            deletedUserName: user.name,
+          },
+        },
+        select: { id: true },
+      });
+
+      await tx.user.delete({ where: { id } });
+
+      return { id, email: user.email, actionId: action.id };
+    });
+
+    // Hors de la transaction Postgres, et seulement après son succès : un
+    // rollback (blocage métier, contrainte) ne doit pas déconnecter un
+    // compte qui, en réalité, n'a pas été supprimé. Réutilise l'index
+    // inverse `usersess:<userId>` posé pour le changement de mot de passe
+    // (T16) — aucun SCAN Redis.
+    await this.sessionService.destroyAllForUser(id);
+
+    return result;
+  }
+
+  /**
    * Un admin ne s'administre pas lui-même : se suspendre coupe son propre
    * accès (plus personne pour revenir en arrière si c'est le seul admin), et
    * se créditer est un conflit d'intérêts que le journal d'audit ne corrige
@@ -440,6 +559,69 @@ export class AdminUsersService {
 
   private windowStart(): Date {
     return new Date(Date.now() - REPUTATION_WINDOW_DAYS * DAY_MS);
+  }
+
+  /**
+   * Traduit les six compteurs de `deleteUser` en membres de phrase français,
+   * un par cause non nulle — ordre stable, celui de la consigne. Liste vide
+   * si rien ne bloque.
+   */
+  private buildDeleteBlockers(counts: {
+    domainsCount: number;
+    apiKeysCount: number;
+    emailsCount: number;
+    creditEntriesCount: number;
+    topUpRequestsCount: number;
+    adminActionsPerformedCount: number;
+  }): string[] {
+    const parts: string[] = [];
+
+    if (counts.domainsCount > 0) {
+      parts.push(this.pluralize(counts.domainsCount, 'domaine'));
+    }
+    if (counts.apiKeysCount > 0) {
+      parts.push(this.pluralize(counts.apiKeysCount, 'clé API', 'clés API'));
+    }
+    if (counts.emailsCount > 0) {
+      parts.push(this.pluralize(counts.emailsCount, 'email'));
+    }
+    if (counts.creditEntriesCount > 0) {
+      parts.push(
+        this.pluralize(
+          counts.creditEntriesCount,
+          'mouvement de crédit',
+          'mouvements de crédit',
+        ),
+      );
+    }
+    if (counts.topUpRequestsCount > 0) {
+      parts.push(
+        this.pluralize(
+          counts.topUpRequestsCount,
+          'demande de recharge',
+          'demandes de recharge',
+        ),
+      );
+    }
+    if (counts.adminActionsPerformedCount > 0) {
+      parts.push(
+        this.pluralize(
+          counts.adminActionsPerformedCount,
+          "action d'administration effectuée en tant qu'admin",
+          "actions d'administration effectuées en tant qu'admin",
+        ),
+      );
+    }
+
+    return parts;
+  }
+
+  private pluralize(
+    count: number,
+    singular: string,
+    plural: string = `${singular}s`,
+  ): string {
+    return `${count} ${count > 1 ? plural : singular}`;
   }
 
   private buildWhere(query: RawAdminUsersQuery): Prisma.UserWhereInput {

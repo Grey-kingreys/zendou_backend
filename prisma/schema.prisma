@@ -231,6 +231,7 @@ enum AdminActionType {
   DEMOTE_ADMIN
   APPROVE_TOPUP
   REJECT_TOPUP
+  DELETE_USER
 }
 
 /// Journal d'audit des actions administratives : qui a fait quoi, sur qui,

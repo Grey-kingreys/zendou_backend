@@ -26,6 +26,7 @@ describe('AdminUsersController', () => {
     reactivate: jest.fn(),
     updateQuota: jest.fn(),
     grantCredits: jest.fn(),
+    deleteUser: jest.fn(),
   };
 
   beforeEach(async () => {
@@ -114,5 +115,17 @@ describe('AdminUsersController', () => {
       'u1',
       dto,
     );
+  });
+
+  it('deletes with the acting admin taken from the session', async () => {
+    adminUsersService.deleteUser.mockResolvedValue({
+      id: 'u1',
+      email: 'jean@gmial.com',
+      actionId: 'action_1',
+    });
+
+    await controller.remove('u1', adminUser);
+
+    expect(adminUsersService.deleteUser).toHaveBeenCalledWith('admin_1', 'u1');
   });
 });

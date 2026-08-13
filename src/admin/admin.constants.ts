@@ -28,3 +28,16 @@ export const SELF_SUSPEND_MESSAGE =
   'Un administrateur ne peut pas suspendre son propre compte : demandez à un autre administrateur.';
 export const SELF_CREDIT_MESSAGE =
   'Un administrateur ne peut pas créditer son propre compte : demandez à un autre administrateur.';
+export const SELF_DELETE_MESSAGE =
+  'Un administrateur ne peut pas supprimer son propre compte : demandez à un autre administrateur.';
+
+/**
+ * Encadrent la liste des compteurs dans le message 409 de
+ * `AdminUsersService.deleteUser` — voir `buildDeleteBlockers`. Un seul
+ * message concaténé plutôt que des constantes par cause : le nombre et
+ * l'ordre des causes possibles ne sont pas fixes (de 1 à 6 items).
+ */
+export const DELETE_BLOCKED_MESSAGE_PREFIX =
+  'Suppression refusée : ce compte possède encore ';
+export const DELETE_BLOCKED_MESSAGE_SUFFIX =
+  '. Suspendez le compte plutôt que de le supprimer.';
