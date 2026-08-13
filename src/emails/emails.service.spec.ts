@@ -23,6 +23,7 @@ import {
   MISSING_BODY_MESSAGE,
   SEND_JOB_ATTEMPTS,
   SEND_JOB_BACKOFF_DELAY_MS,
+  TEST_SENDER_RECIPIENT_RESTRICTED_MESSAGE,
 } from './emails.constants';
 import { EmailsService, startOfUtcDay } from './emails.service';
 
@@ -48,6 +49,7 @@ interface EmailCreateArgs {
     toAddress: string;
     subject: string;
     status: EmailStatus;
+    system?: boolean;
   };
 }
 
@@ -89,7 +91,10 @@ describe('EmailsService', () => {
     creditEntry.aggregate.mockResolvedValue({ _sum: { delta: 10 } });
     creditEntry.create.mockResolvedValue({ id: 'credit_1' });
     email.count.mockResolvedValue(0);
-    user.findUnique.mockResolvedValue({ dailySendLimit: 200 });
+    user.findUnique.mockResolvedValue({
+      dailySendLimit: 200,
+      email: 'aissatou@exemple.gn',
+    });
     email.create.mockImplementation((args: EmailCreateArgs) => {
       capturedEmailCreate = args;
       return Promise.resolve({ id: 'email_1', publicId: args.data.publicId });
@@ -176,6 +181,146 @@ describe('EmailsService', () => {
 
       expect(email.create).not.toHaveBeenCalled();
       expect(queue.add).not.toHaveBeenCalled();
+    });
+  });
+
+  /**
+   * Mode bac à sable (B20) : `TEST_EMAIL_FROM` permet d'envoyer sans domaine
+   * vérifié, mais uniquement vers l'adresse du compte appelant. C'est la
+   * seule chose qui protège la réputation du domaine d'expédition partagé —
+   * le même qui expédie les confirmations d'inscription.
+   */
+  describe('test sending address (sandbox mode)', () => {
+    const TEST_FROM = 'Zendou <essai@mail.kingreys.fr>';
+    const OWN_EMAIL = 'aissatou@exemple.gn';
+
+    beforeEach(() => {
+      configValues = { ...configValues, TEST_EMAIL_FROM: TEST_FROM };
+      user.findUnique.mockResolvedValue({
+        dailySendLimit: 200,
+        email: OWN_EMAIL,
+      });
+    });
+
+    it('accepts a send to the caller’s own confirmed address, without checking any domain', async () => {
+      const result = await service.send(
+        USER_ID,
+        dtoWith({ from: TEST_FROM, to: OWN_EMAIL }),
+      );
+
+      expect(result.status).toBe('queued');
+      expect(domain.findFirst).not.toHaveBeenCalled();
+
+      const args = capturedEmailCreate!;
+      expect(args.data.domainId).toBeNull();
+      expect(args.data).toMatchObject({
+        fromAddress: TEST_FROM,
+        toAddress: OWN_EMAIL,
+        status: EmailStatus.QUEUED,
+      });
+    });
+
+    it('does not record it as a system send — it is an ordinary client send', async () => {
+      await service.send(USER_ID, dtoWith({ from: TEST_FROM, to: OWN_EMAIL }));
+
+      const args = capturedEmailCreate!;
+      expect(args.data).toMatchObject({ system: false });
+    });
+
+    it('still debits one credit, like any other send', async () => {
+      await service.send(USER_ID, dtoWith({ from: TEST_FROM, to: OWN_EMAIL }));
+
+      const emailArgs = capturedEmailCreate!;
+      expect(creditEntry.create).toHaveBeenCalledWith({
+        data: {
+          userId: USER_ID,
+          delta: -1,
+          reason: CREDIT_REASON_SEND,
+          reference: emailArgs.data.publicId,
+        },
+      });
+    });
+
+    it('recognises the address regardless of the display name used', async () => {
+      const result = await service.send(
+        USER_ID,
+        dtoWith({
+          from: `Ma Boutique <${'essai@mail.kingreys.fr'}>`,
+          to: OWN_EMAIL,
+        }),
+      );
+
+      expect(result.status).toBe('queued');
+      expect(domain.findFirst).not.toHaveBeenCalled();
+    });
+
+    it('refuses any recipient other than the caller’s own address, with a 403 that explains the mode', async () => {
+      await expect(
+        service.send(
+          USER_ID,
+          dtoWith({ from: TEST_FROM, to: 'quelquun-dautre@exemple.gn' }),
+        ),
+      ).rejects.toThrow(
+        new ForbiddenException(TEST_SENDER_RECIPIENT_RESTRICTED_MESSAGE),
+      );
+    });
+
+    it('debits no credit and creates no email row when the recipient is refused', async () => {
+      await expect(
+        service.send(
+          USER_ID,
+          dtoWith({ from: TEST_FROM, to: 'quelquun-dautre@exemple.gn' }),
+        ),
+      ).rejects.toThrow(ForbiddenException);
+
+      expect(email.create).not.toHaveBeenCalled();
+      expect(creditEntry.create).not.toHaveBeenCalled();
+      expect(queue.add).not.toHaveBeenCalled();
+      // Le contrôle du destinataire est au même endroit que l'ancien contrôle
+      // de domaine, avant tout autre effet de bord : ni suppression, ni
+      // solde, ni quota ne sont même consultés.
+      expect(suppression.findFirst).not.toHaveBeenCalled();
+      expect(creditEntry.aggregate).not.toHaveBeenCalled();
+    });
+
+    it('compares addresses case-insensitively', async () => {
+      const result = await service.send(
+        USER_ID,
+        dtoWith({ from: TEST_FROM, to: OWN_EMAIL.toUpperCase() }),
+      );
+
+      expect(result.status).toBe('queued');
+    });
+
+    it('leaves an ordinary send from a verified domain unaffected (non-regression)', async () => {
+      const result = await service.send(USER_ID, dtoWith());
+
+      expect(result.status).toBe('queued');
+      expect(domain.findFirst).toHaveBeenCalledWith({
+        where: {
+          name: 'boutique-awa.gn',
+          userId: USER_ID,
+          status: DomainStatus.VERIFIED,
+        },
+        select: { id: true },
+      });
+
+      const args = capturedEmailCreate!;
+      expect(args.data.domainId).toBe(DOMAIN_ID);
+    });
+
+    it('treats an unconfigured TEST_EMAIL_FROM as no sandbox at all — falls back to the domain check', async () => {
+      configValues = { SYSTEM_EMAIL_FROM: configValues.SYSTEM_EMAIL_FROM };
+      domain.findFirst.mockResolvedValue(null);
+
+      await expect(
+        service.send(
+          USER_ID,
+          dtoWith({ from: 'essai@mail.kingreys.fr', to: 'anyone@exemple.gn' }),
+        ),
+      ).rejects.toThrow(new ForbiddenException(DOMAIN_NOT_VERIFIED_MESSAGE));
+
+      expect(email.create).not.toHaveBeenCalled();
     });
   });
 
