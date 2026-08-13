@@ -12,6 +12,7 @@ interface CreateArgs {
     name: string;
     role: UserRole;
     status: UserStatus;
+    emailVerifiedAt?: Date;
   };
 }
 
@@ -106,11 +107,20 @@ describe('AdminSeedService', () => {
         argon2.verify(data.passwordHash, 'motdepasse-admin-solide'),
       ).resolves.toBe(true);
 
+      // Le compte créé par le seed doit être confirmé d'office : ADMIN_EMAIL
+      // est une variable d'environnement du serveur, une preuve de contrôle
+      // plus forte qu'un clic dans un email reçu.
+      expect(data.emailVerifiedAt).toBeInstanceOf(Date);
+
       expect(update).not.toHaveBeenCalled();
     }, 15000);
 
     it('does not write anything when an ADMIN account already exists', async () => {
-      findUnique.mockResolvedValue({ id: 'admin_1', role: UserRole.ADMIN });
+      findUnique.mockResolvedValue({
+        id: 'admin_1',
+        role: UserRole.ADMIN,
+        emailVerifiedAt: new Date('2025-01-01T00:00:00.000Z'),
+      });
 
       await service.onApplicationBootstrap();
 
@@ -118,21 +128,41 @@ describe('AdminSeedService', () => {
       expect(update).not.toHaveBeenCalled();
     });
 
-    it('promotes an existing CUSTOMER account to ADMIN without touching the password', async () => {
+    it('promotes an existing unconfirmed CUSTOMER account to ADMIN, and confirms its email, without touching the password', async () => {
       findUnique.mockResolvedValue({
         id: 'user_existing',
         role: UserRole.CUSTOMER,
+        emailVerifiedAt: null,
+      });
+
+      await service.onApplicationBootstrap();
+
+      expect(create).not.toHaveBeenCalled();
+      expect(update).toHaveBeenCalledTimes(1);
+      expect(capturedUpdateArgs).toBeDefined();
+      expect(capturedUpdateArgs!.where).toEqual({ id: 'user_existing' });
+      expect(capturedUpdateArgs!.data.role).toBe(UserRole.ADMIN);
+      expect(capturedUpdateArgs!.data.emailVerifiedAt).toBeInstanceOf(Date);
+      expect(capturedUpdateArgs!.data).not.toHaveProperty('passwordHash');
+    });
+
+    it('promotes an existing already-confirmed CUSTOMER account to ADMIN without rewriting emailVerifiedAt', async () => {
+      const originalConfirmationDate = new Date('2024-03-05T10:00:00.000Z');
+      findUnique.mockResolvedValue({
+        id: 'user_existing_confirmed',
+        role: UserRole.CUSTOMER,
+        emailVerifiedAt: originalConfirmationDate,
       });
 
       await service.onApplicationBootstrap();
 
       expect(create).not.toHaveBeenCalled();
       expect(update).toHaveBeenCalledWith({
-        where: { id: 'user_existing' },
+        where: { id: 'user_existing_confirmed' },
         data: { role: UserRole.ADMIN },
       });
       expect(capturedUpdateArgs).toBeDefined();
-      expect(capturedUpdateArgs!.data).not.toHaveProperty('passwordHash');
+      expect(capturedUpdateArgs!.data).not.toHaveProperty('emailVerifiedAt');
     });
 
     it('treats a P2002 unique violation on create as already-created (no throw)', async () => {
