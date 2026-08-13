@@ -296,6 +296,36 @@ describe('AuthController', () => {
         controller.me({ ...authUser, emailVerifiedAt: null }),
       ).toHaveProperty('emailVerifiedAt', null);
     });
+
+    /**
+     * V11D : `testSenderAddress` n'est pas une colonne Prisma, donc il n'a
+     * pas sa place dans `AUTH_USER_SELECT` (voir `auth.types.ts`) — à la
+     * différence du test ci-dessus pour `emailVerifiedAt`. Le contrôleur ne
+     * fait que transmettre ce que `SessionAuthGuard`/`AuthService` lui
+     * donnent ; la construction réelle de la valeur est couverte par
+     * `auth.service.spec.ts` (describe `testSenderAddress (V11D)`) et
+     * `session-auth.guard.spec.ts`. Ce test vérifie seulement le contrat
+     * d'API des deux routes qui renvoient un `AuthUser` complet.
+     */
+    it('GET /me expose testSenderAddress', () => {
+      expect(
+        controller.me({
+          ...authUser,
+          testSenderAddress: 'test@mail.kingreys.fr',
+        }),
+      ).toHaveProperty('testSenderAddress', 'test@mail.kingreys.fr');
+    });
+
+    it('PATCH /me expose aussi testSenderAddress (même contrat que GET)', async () => {
+      authService.updateProfile.mockResolvedValue({
+        ...authUser,
+        testSenderAddress: 'test@mail.kingreys.fr',
+      });
+
+      await expect(
+        controller.updateMe(authUser, { name: authUser.name }),
+      ).resolves.toHaveProperty('testSenderAddress', 'test@mail.kingreys.fr');
+    });
   });
 });
 

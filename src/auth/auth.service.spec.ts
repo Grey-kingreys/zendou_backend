@@ -4,6 +4,7 @@ import {
   ConflictException,
   UnauthorizedException,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { Prisma, UserRole, UserStatus } from '@prisma/client';
 import * as argon2 from 'argon2';
 import { PrismaService } from '../prisma/prisma.service';
@@ -38,6 +39,9 @@ const authUser: AuthUser = {
   role: UserRole.CUSTOMER,
   status: UserStatus.ACTIVE,
   createdAt: new Date('2026-01-01T00:00:00.000Z'),
+  // TEST_EMAIL_FROM non configurée par défaut dans ces tests (voir le mock
+  // de ConfigService ci-dessous) : `resolveTestSenderAddress` renvoie `null`.
+  testSenderAddress: null,
 };
 
 describe('AuthService', () => {
@@ -57,12 +61,14 @@ describe('AuthService', () => {
     destroyAllForUser: jest.fn(),
   };
   const emailConfirmation = { issueAndSend: jest.fn() };
+  const configGet = jest.fn();
 
   beforeEach(async () => {
     jest.clearAllMocks();
     capturedCreateArgs = undefined;
     sessionService.create.mockResolvedValue('session-token');
     emailConfirmation.issueAndSend.mockResolvedValue(undefined);
+    configGet.mockReturnValue(undefined);
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -76,6 +82,7 @@ describe('AuthService', () => {
           provide: EmailConfirmationService,
           useValue: emailConfirmation,
         },
+        { provide: ConfigService, useValue: { get: configGet } },
       ],
     }).compile();
 
@@ -340,6 +347,108 @@ describe('AuthService', () => {
         [{ data: Record<string, unknown> }]
       >;
       expect(firstCallArgs[0].data).not.toHaveProperty('email');
+    });
+  });
+
+  /**
+   * V11D : `testSenderAddress` n'est pas une colonne Prisma (voir
+   * `AuthUser.testSenderAddress` dans `auth.types.ts`) — ces trois méthodes
+   * sont les seules, dans `AuthService`, à construire un `AuthUser` complet,
+   * donc les seules qui doivent le fusionner depuis `ConfigService`.
+   *
+   * Le test « PATCH renvoie testSenderAddress » sur `updateProfile` est celui
+   * qui garde le piège signalé par l'agent frontend : `GET /v1/auth/me`
+   * (`SessionAuthGuard`) et `PATCH /v1/auth/me` (`updateProfile`) sont deux
+   * chemins de construction différents ; sans ce test, un seul des deux
+   * pourrait renvoyer le champ sans qu'aucun test ne le remarque.
+   */
+  describe('testSenderAddress (V11D)', () => {
+    it('register() renvoie l’adresse nue quand TEST_EMAIL_FROM est configurée', async () => {
+      configGet.mockReturnValue('Zendou Test <test@mail.kingreys.fr>');
+      findUnique.mockResolvedValue(null);
+
+      const result = await service.register({
+        email: 'aissatou@example.com',
+        password: 'motdepasse-solide',
+        name: 'Aïssatou Diallo',
+      });
+
+      expect(result.user.testSenderAddress).toBe('test@mail.kingreys.fr');
+    }, 15000);
+
+    it('register() renvoie null quand TEST_EMAIL_FROM est absente', async () => {
+      configGet.mockReturnValue(undefined);
+      findUnique.mockResolvedValue(null);
+
+      const result = await service.register({
+        email: 'aissatou@example.com',
+        password: 'motdepasse-solide',
+        name: 'Aïssatou Diallo',
+      });
+
+      expect(result.user.testSenderAddress).toBeNull();
+    }, 15000);
+
+    it('login() renvoie l’adresse nue quand TEST_EMAIL_FROM est configurée', async () => {
+      configGet.mockReturnValue('test@mail.kingreys.fr');
+      const passwordHash = await argon2.hash('motdepasse-solide', {
+        type: argon2.argon2id,
+      });
+      findUnique.mockResolvedValue({ ...authUser, passwordHash });
+
+      const result = await service.login({
+        email: 'aissatou@example.com',
+        password: 'motdepasse-solide',
+      });
+
+      expect(result.user.testSenderAddress).toBe('test@mail.kingreys.fr');
+    }, 15000);
+
+    it('updateProfile() (PATCH /v1/auth/me) renvoie aussi testSenderAddress — garde le piège GET/PATCH', async () => {
+      configGet.mockReturnValue('Zendou Test <test@mail.kingreys.fr>');
+      update.mockResolvedValue({ ...authUser, name: 'Nouveau Nom' });
+
+      const result = await service.updateProfile('user_1', {
+        name: 'Nouveau Nom',
+      });
+
+      expect(result.testSenderAddress).toBe('test@mail.kingreys.fr');
+    });
+
+    it('updateProfile() renvoie null quand TEST_EMAIL_FROM est absente', async () => {
+      configGet.mockReturnValue(undefined);
+      update.mockResolvedValue(authUser);
+
+      const result = await service.updateProfile('user_1', {
+        name: 'Aïssatou Diallo',
+      });
+
+      expect(result.testSenderAddress).toBeNull();
+    });
+
+    it('ne lit que TEST_EMAIL_FROM sur ConfigService, aucune autre variable', async () => {
+      configGet.mockReturnValue('test@mail.kingreys.fr');
+      update.mockResolvedValue(authUser);
+
+      await service.updateProfile('user_1', { name: 'Aïssatou Diallo' });
+
+      const keysRead = configGet.mock.calls.map(
+        (call: unknown[]) => call[0] as string,
+      );
+      expect(new Set(keysRead)).toEqual(new Set(['TEST_EMAIL_FROM']));
+    });
+
+    it("n'expose aucun autre champ de configuration dans la réponse PATCH", async () => {
+      configGet.mockReturnValue('test@mail.kingreys.fr');
+      update.mockResolvedValue(authUser);
+
+      const result = await service.updateProfile('user_1', {
+        name: 'Aïssatou Diallo',
+      });
+
+      expect(Object.keys(result).sort()).toEqual(
+        Object.keys({ ...authUser, testSenderAddress: null }).sort(),
+      );
     });
   });
 

@@ -5,6 +5,7 @@ import {
   Logger,
   UnauthorizedException,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { Prisma } from '@prisma/client';
 import * as argon2 from 'argon2';
 import { PrismaService } from '../prisma/prisma.service';
@@ -22,6 +23,7 @@ import { RegisterDto } from './dto/register.dto';
 import { UpdateProfileDto } from './dto/update-profile.dto';
 import { EmailConfirmationService } from './email-confirmation.service';
 import { SessionService } from './session.service';
+import { resolveTestSenderAddress } from './test-sender-address';
 
 export interface AuthResult {
   user: AuthUser;
@@ -36,6 +38,7 @@ export class AuthService {
     private readonly prisma: PrismaService,
     private readonly sessionService: SessionService,
     private readonly emailConfirmation: EmailConfirmationService,
+    private readonly configService: ConfigService,
   ) {}
 
   /** Crée un utilisateur, hache son mot de passe et ouvre une session. */
@@ -58,7 +61,7 @@ export class AuthService {
     let user: AuthUser;
 
     try {
-      user = await this.prisma.user.create({
+      const created = await this.prisma.user.create({
         data: {
           email,
           passwordHash,
@@ -68,6 +71,12 @@ export class AuthService {
         },
         select: AUTH_USER_SELECT,
       });
+      // `testSenderAddress` n'est pas une colonne Prisma : voir la
+      // documentation de `AuthUser.testSenderAddress` (`auth.types.ts`).
+      user = {
+        ...created,
+        testSenderAddress: resolveTestSenderAddress(this.configService),
+      };
     } catch (error) {
       // Course entre deux inscriptions simultanées sur la même adresse.
       if (
@@ -111,11 +120,18 @@ export class AuthService {
       throw new UnauthorizedException(INVALID_CREDENTIALS_MESSAGE);
     }
 
-    const { passwordHash, ...user } = record;
+    const { passwordHash, ...selected } = record;
 
     if (!(await this.verifyPassword(passwordHash, dto.password))) {
       throw new UnauthorizedException(INVALID_CREDENTIALS_MESSAGE);
     }
+
+    // `testSenderAddress` n'est pas une colonne Prisma : voir la
+    // documentation de `AuthUser.testSenderAddress` (`auth.types.ts`).
+    const user: AuthUser = {
+      ...selected,
+      testSenderAddress: resolveTestSenderAddress(this.configService),
+    };
 
     const token = await this.sessionService.create(user.id);
 
@@ -165,11 +181,21 @@ export class AuthService {
       data.declaredUsage = dto.declaredUsage === '' ? null : dto.declaredUsage;
     }
 
-    return this.prisma.user.update({
+    const updated = await this.prisma.user.update({
       where: { id: userId },
       data,
       select: AUTH_USER_SELECT,
     });
+
+    // `testSenderAddress` n'est pas une colonne Prisma : voir la
+    // documentation de `AuthUser.testSenderAddress` (`auth.types.ts`). Sans
+    // cette ligne, `PATCH /v1/auth/me` renverrait un utilisateur sans ce
+    // champ alors que `GET /v1/auth/me` (via `SessionAuthGuard`) l'expose —
+    // exactement la régression signalée par l'agent frontend.
+    return {
+      ...updated,
+      testSenderAddress: resolveTestSenderAddress(this.configService),
+    };
   }
 
   /**

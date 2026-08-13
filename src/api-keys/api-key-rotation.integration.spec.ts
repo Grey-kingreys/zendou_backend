@@ -1,5 +1,6 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { ExecutionContext, UnauthorizedException } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { UserRole, UserStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuthUser } from '../auth';
@@ -31,6 +32,9 @@ const owner: AuthUser = {
   role: UserRole.CUSTOMER,
   status: UserStatus.ACTIVE,
   createdAt: new Date('2026-01-01T00:00:00.000Z'),
+  // TEST_EMAIL_FROM non configurée dans ce test : `ApiKeyAuthGuard` calcule
+  // `null` et le fusionne dans `request.user` (voir `resolveTestSenderAddress`).
+  testSenderAddress: null,
 };
 
 /**
@@ -147,6 +151,9 @@ describe('Rotation de clé API — chemin d’authentification réel', () => {
         ApiKeysService,
         ApiKeyAuthGuard,
         { provide: PrismaService, useValue: { apiKey: store } },
+        // TEST_EMAIL_FROM non configurée : `resolveTestSenderAddress` doit
+        // renvoyer `null` (voir `owner.testSenderAddress` ci-dessus).
+        { provide: ConfigService, useValue: { get: jest.fn() } },
       ],
     }).compile();
 

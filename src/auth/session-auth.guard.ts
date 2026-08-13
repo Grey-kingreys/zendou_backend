@@ -5,11 +5,13 @@ import {
   Injectable,
   UnauthorizedException,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { UserStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { AUTH_USER_SELECT, AuthenticatedRequest } from './auth.types';
 import { readSessionCookie } from './session-cookie';
 import { SessionService } from './session.service';
+import { resolveTestSenderAddress } from './test-sender-address';
 
 /**
  * Authentifie la requête à partir du cookie de session.
@@ -22,6 +24,7 @@ export class SessionAuthGuard implements CanActivate {
   constructor(
     private readonly sessionService: SessionService,
     private readonly prisma: PrismaService,
+    private readonly configService: ConfigService,
   ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
@@ -38,22 +41,28 @@ export class SessionAuthGuard implements CanActivate {
       throw new UnauthorizedException('Session invalide ou expirée');
     }
 
-    const user = await this.prisma.user.findUnique({
+    const selected = await this.prisma.user.findUnique({
       where: { id: userId },
       select: AUTH_USER_SELECT,
     });
 
-    if (!user) {
+    if (!selected) {
       // Session orpheline : l'utilisateur n'existe plus.
       await this.sessionService.destroy(token);
       throw new UnauthorizedException('Session invalide ou expirée');
     }
 
-    if (user.status === UserStatus.SUSPENDED) {
+    if (selected.status === UserStatus.SUSPENDED) {
       throw new ForbiddenException('Ce compte est suspendu');
     }
 
-    request.user = user;
+    // `testSenderAddress` n'est pas une colonne Prisma : voir la
+    // documentation de `AuthUser.testSenderAddress` (`auth.types.ts`). C'est
+    // ce chemin qui alimente `GET /v1/auth/me`.
+    request.user = {
+      ...selected,
+      testSenderAddress: resolveTestSenderAddress(this.configService),
+    };
     request.sessionToken = token;
 
     return true;

@@ -21,3 +21,4 @@ export {
 } from './email-confirmation.constants';
 export { AUTH_USER_SELECT } from './auth.types';
 export type { AuthUser, AuthenticatedRequest } from './auth.types';
+export { resolveTestSenderAddress } from './test-sender-address';
