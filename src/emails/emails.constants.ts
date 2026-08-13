@@ -75,6 +75,18 @@ export const DOMAIN_NOT_VERIFIED_MESSAGE =
 export const TEST_SENDER_RECIPIENT_RESTRICTED_MESSAGE =
   "Depuis l'adresse de test, vous ne pouvez écrire qu'à l'adresse email de votre compte. Vérifiez un domaine pour écrire à vos utilisateurs.";
 
+/**
+ * 503 — le domaine de `TEST_EMAIL_FROM` (mode bac à sable B20) n'est pas
+ * `VERIFIED` dans Zendou. Erreur de configuration serveur, jamais une faute
+ * du client : on le dit à l'acceptation, avant tout débit de crédit, plutôt
+ * que de laisser l'envoi échouer bien plus tard chez SES. Même raisonnement
+ * que `CONFIRMATION_EMAIL_UNAVAILABLE_MESSAGE` côté confirmation d'inscription.
+ * Message volontairement neutre : le client n'a rien mal configuré, il n'y a
+ * donc rien à lui demander de corriger.
+ */
+export const TEST_SENDER_UNAVAILABLE_MESSAGE =
+  "Le mode d'envoi de test est momentanément indisponible. Réessayez dans quelques minutes, ou vérifiez un domaine pour envoyer dès maintenant.";
+
 /** Message renvoyé quand le solde de crédits ne couvre pas l'envoi. */
 export const INSUFFICIENT_CREDITS_MESSAGE =
   'Crédits insuffisants : rechargez votre compte pour continuer à envoyer.';
