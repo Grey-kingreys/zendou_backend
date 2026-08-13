@@ -1,3 +1,4 @@
+import type { ExecutionContext } from '@nestjs/common';
 import { UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { APP_GUARD } from '@nestjs/core';
@@ -17,11 +18,13 @@ import { PrismaService } from '../prisma/prisma.service';
 import { RateLimitPolicyService } from './rate-limit-policy.service';
 import { RateLimitTrackerService } from './rate-limit-tracker.service';
 import {
+  MINUTE_WINDOW_MS,
   RATE_LIMIT_DEFAULTS,
+  RATE_LIMIT_WINDOW,
   TOO_MANY_REQUESTS_MESSAGE,
 } from './rate-limit.constants';
 import { RateLimitGuard } from './rate-limit.guard';
-import { buildThrottlerOptions } from './rate-limit.options';
+import { buildThrottlerOptions, generateKey } from './rate-limit.options';
 
 /**
  * Test d'intégration de bout en bout de la couche de limitation : vraies
@@ -177,13 +180,62 @@ describe('Limitation de débit (intégration)', () => {
     expect(messageDe(inconnu)).toBe(TOO_MANY_REQUESTS_MESSAGE);
   });
 
-  it('laisse passer /health indéfiniment', async () => {
+  it('laisse passer /health même quand son identité a déjà dépassé le budget par défaut', async () => {
     // Le HEALTHCHECK Docker frappe cette route en boucle : au-delà du budget
-    // global (120/min) elle doit toujours répondre 200, sinon le conteneur
-    // basculerait en unhealthy.
-    const calls = RATE_LIMIT_DEFAULTS.DEFAULT_PER_MINUTE + 10;
+    // global (`RATE_LIMIT_DEFAULTS.DEFAULT_PER_MINUTE`, 120/min) elle doit
+    // toujours répondre 200, sinon le conteneur basculerait en unhealthy.
+    //
+    // La version précédente de ce test envoyait DEFAULT_PER_MINUTE + 10 (soit
+    // 130) vraies requêtes HTTP en série pour « accumuler » un dépassement.
+    // Coûteux (130 aller-retours supertest réels) et, en pratique, ce n'est
+    // même pas ce qui prouve la propriété : `/health` porte `@RateLimitExempt`
+    // (voir `health.controller.ts`), donc `RateLimitGuard.shouldSkip` la
+    // court-circuite *avant* de toucher le moindre compteur — qu'on envoie 1
+    // requête ou 1000 ne change rigoureusement rien à son comportement.
+    //
+    // Ce que la propriété demande vraiment, c'est : même si l'identité de
+    // l'appelant (son IP, ici, faute d'utilisateur authentifié) est **déjà**
+    // au-delà du budget par défaut sur *une autre route*, `/health` répond
+    // quand même 200. On le prouve en pré-remplissant directement le
+    // compteur — via l'API publique `storage.increment`, la même que le
+    // garde utiliserait — plutôt qu'en le faisant grimper par 130 requêtes
+    // réelles. Le calcul de la clé passe par le vrai `generateKey` de
+    // `rate-limit.options.ts`, avec un contexte factice sans métadonnée de
+    // politique : c'est exactement la clé que produirait `/health` si son
+    // exemption était retirée (politique `DEFAULT`, tracker `IDENTITY` →
+    // IP, comme prouvé par la preuve de mutation associée à ce test).
+    const noPolicyContext = {
+      getHandler: () => function handlerFactice() {},
+      getClass: () => class ControleurFactice {},
+    } as unknown as ExecutionContext;
 
-    for (let i = 0; i < calls; i++) {
+    const defaultMinuteKey = generateKey(
+      noPolicyContext,
+      `ip:${PROXY_IP}`,
+      RATE_LIMIT_WINDOW.MINUTE,
+    );
+
+    let record:
+      Awaited<ReturnType<ThrottlerStorageService['increment']>> | undefined;
+    for (let i = 0; i <= RATE_LIMIT_DEFAULTS.DEFAULT_PER_MINUTE; i++) {
+      record = await storage.increment(
+        defaultMinuteKey,
+        MINUTE_WINDOW_MS,
+        RATE_LIMIT_DEFAULTS.DEFAULT_PER_MINUTE,
+        MINUTE_WINDOW_MS,
+        RATE_LIMIT_WINDOW.MINUTE,
+      );
+    }
+
+    // Preuve que le pré-remplissage a bien poussé cette identité au-delà du
+    // budget par défaut — sans quoi le reste du test ne prouverait rien.
+    expect(record?.isBlocked).toBe(true);
+
+    // Seules quelques vraies requêtes HTTP suffisent maintenant : la
+    // propriété testée n'est pas « ça tient sous N requêtes » mais « même
+    // avec cette identité déjà bloquée ailleurs, /health répond toujours
+    // 200 ».
+    for (let i = 0; i < 5; i++) {
       const response = await request(app.getHttpServer())
         .get('/health')
         .set('X-Forwarded-For', PROXY_IP);
