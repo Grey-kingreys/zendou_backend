@@ -12,6 +12,7 @@ import {
   UserStatus,
 } from '@prisma/client';
 import { SessionService } from '../auth';
+import { CREDIT_REASON_WELCOME_BONUS } from '../billing/billing.constants';
 import { PrismaService } from '../prisma/prisma.service';
 import {
   REPUTATION_WINDOW_DAYS,
@@ -441,12 +442,25 @@ export class AdminUsersService {
    * confirmation rebondit en dur et part en liste de suppression — le
    * compte est alors définitivement inerte.
    *
-   * Un compte jamais confirmé n'a, par construction, ni domaine, ni clé
-   * API, ni crédit : tout cela est déjà bloqué avant confirmation (voir
-   * `EmailVerifiedGuard`). Le refus ci-dessous ne peut donc viser que de
-   * vrais comptes actifs, qu'il faut suspendre plutôt que supprimer — sans
-   * lui, la suppression échouerait de toute façon sur une contrainte
-   * `Restrict` Postgres brute (500 opaque) au lieu d'un message utile.
+   * Le blocage porte sur l'**activité réelle du client**, jamais sur ce que
+   * le système a créé tout seul. Confirmer son adresse crée mécaniquement
+   * deux lignes : un `Email` système (`system: true`, la confirmation) et
+   * un `CreditEntry` de bienvenue (`reason = CREDIT_REASON_WELCOME_BONUS`).
+   * Les compter comme les envois et les mouvements de crédit du client
+   * rendrait non supprimable **tout** compte confirmé, y compris ceux qui
+   * n'ont rien fait d'autre — l'inverse du besoin. Ils sont donc exclus du
+   * décompte des blocages ci-dessous, et supprimés en cascade avec le
+   * compte (voir plus bas).
+   *
+   * Bloquent réellement (409) : un domaine, une clé API, un email envoyé
+   * par le client (`system: false`), une demande de recharge, ou un
+   * mouvement de crédit qui n'est pas le bonus de bienvenue (recharge,
+   * geste d'admin, consommation…). Un compte jamais confirmé n'a, par
+   * construction, aucun de ces éléments — voir `EmailVerifiedGuard`. Le
+   * refus ci-dessous ne peut donc viser que de vrais comptes actifs, qu'il
+   * faut suspendre plutôt que supprimer — sans lui, la suppression
+   * échouerait de toute façon sur une contrainte `Restrict` Postgres brute
+   * (500 opaque) au lieu d'un message utile.
    *
    * Piège d'audit : `AdminAction.targetUserId` est optionnel donc en
    * `SetNull` — supprimer l'utilisateur met à NULL la cible de **toutes**
@@ -456,6 +470,14 @@ export class AdminUsersService {
    * append-only, l'email et le nom du compte sont dupliqués dans `details`
    * *avant* la suppression : la ligne reste exploitable même une fois sa
    * cible réduite à néant.
+   *
+   * Effet de bord assumé : les emails système comptent dans le total
+   * historique de `GET /v1/admin/stats/emails` (vague 7-B). Les supprimer
+   * ici fait donc légèrement baisser ce total. Accepté : un compte
+   * supprimé est un compte de test ou une erreur d'inscription, et
+   * l'alternative (laisser des lignes `Email`/`CreditEntry` orphelines)
+   * exigerait de rendre leur `userId` optionnel — une migration bien plus
+   * lourde pour un gain nul.
    */
   async deleteUser(
     adminId: string,
@@ -476,18 +498,25 @@ export class AdminUsersService {
       const [
         domainsCount,
         apiKeysCount,
-        emailsCount,
-        creditEntriesCount,
+        clientEmailsCount,
+        nonWelcomeCreditEntriesCount,
         topUpRequestsCount,
         adminActionsPerformedCount,
       ] = await Promise.all([
         tx.domain.count({ where: { userId: id } }),
         tx.apiKey.count({ where: { userId: id } }),
-        // Compte aussi les emails **système** reçus (`system: true`) : ils
-        // portent le même `userId` (le destinataire) et bloquent la
-        // suppression exactement comme les emails envoyés par le client.
-        tx.email.count({ where: { userId: id } }),
-        tx.creditEntry.count({ where: { userId: id } }),
+        // Seuls les emails **envoyés par le client** bloquent. Un email
+        // système (`system: true`, confirmation d'adresse) est un
+        // sous-produit de l'inscription, pas de l'activité du client —
+        // même exemption que la vague 6 pour tout ce qui mesure « ce que
+        // ce client a envoyé ».
+        tx.email.count({ where: { userId: id, system: false } }),
+        // Seuls les mouvements autres que le bonus de bienvenue bloquent :
+        // ce bonus est offert à la confirmation, jamais acheté ni consommé
+        // (vague 6-C) — il ne traduit aucune activité réelle du client.
+        tx.creditEntry.count({
+          where: { userId: id, reason: { not: CREDIT_REASON_WELCOME_BONUS } },
+        }),
         tx.topUpRequest.count({ where: { userId: id } }),
         // Restrict lui aussi (`AdminAction.adminId` est obligatoire) : un
         // compte ADMIN ayant déjà agi ne peut pas être supprimé sans violer
@@ -500,8 +529,8 @@ export class AdminUsersService {
       const blockers = this.buildDeleteBlockers({
         domainsCount,
         apiKeysCount,
-        emailsCount,
-        creditEntriesCount,
+        emailsCount: clientEmailsCount,
+        creditEntriesCount: nonWelcomeCreditEntriesCount,
         topUpRequestsCount,
         adminActionsPerformedCount,
       });
@@ -529,6 +558,37 @@ export class AdminUsersService {
         },
         select: { id: true },
       });
+
+      // `Email.userId` et `CreditEntry.userId` sont obligatoires
+      // (`Restrict`) : le hard delete du compte échouerait sur une
+      // contrainte Postgres tant que ces lignes existent. Les blockers
+      // ci-dessus garantissent qu'il ne peut rester, à ce stade, que des
+      // emails système et l'unique crédit de bienvenue — on les supprime
+      // donc explicitement, dans la même transaction, avant le compte.
+      await tx.email.deleteMany({ where: { userId: id, system: true } });
+      await tx.creditEntry.deleteMany({
+        where: { userId: id, reason: CREDIT_REASON_WELCOME_BONUS },
+      });
+
+      // Invariant : après la cascade ci-dessus, plus aucun `Email` ni
+      // `CreditEntry` ne doit référencer ce compte. Si c'est le cas, c'est
+      // que `buildDeleteBlockers` a un trou (une cause de blocage
+      // manquante) — on refuse explicitement plutôt que de laisser
+      // `user.delete` échouer sur une contrainte Postgres brute (500
+      // opaque), et surtout plutôt que de supprimer aveuglément une ligne
+      // qui aurait dû bloquer la suppression.
+      const [remainingEmailsCount, remainingCreditEntriesCount] =
+        await Promise.all([
+          tx.email.count({ where: { userId: id } }),
+          tx.creditEntry.count({ where: { userId: id } }),
+        ]);
+      if (remainingEmailsCount > 0 || remainingCreditEntriesCount > 0) {
+        throw new Error(
+          `Invariant violé lors de la suppression de ${id} : ` +
+            `${remainingEmailsCount} email(s) et ${remainingCreditEntriesCount} ` +
+            'mouvement(s) de crédit subsistent après la cascade — la règle de blocage a un trou.',
+        );
+      }
 
       await tx.user.delete({ where: { id } });
 
