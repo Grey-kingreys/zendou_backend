@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   HttpCode,
   HttpStatus,
@@ -22,6 +23,7 @@ import type {
   AdminCreditResult,
   AdminQuotaResult,
   AdminUserActionResult,
+  AdminUserDeleteResult,
   AdminUserDetail,
   PaginatedAdminUsers,
   RawAdminUsersQuery,
@@ -84,5 +86,20 @@ export class AdminUsersController {
     @CurrentUser() admin: AuthUser,
   ): Promise<AdminCreditResult> {
     return this.adminUsersService.grantCredits(admin.id, id, dto);
+  }
+
+  /**
+   * Suppression réelle du compte. `AdminUsersService.deleteUser` refuse en
+   * 409 tout compte qui possède encore des dépendances (domaines, clés API,
+   * emails, mouvements de crédit, demandes de recharge, ou des actions
+   * d'administration qu'il a lui-même effectuées) : cette route ne peut
+   * donc jamais réussir sur un vrai client actif.
+   */
+  @Delete(':id')
+  remove(
+    @Param('id') id: string,
+    @CurrentUser() admin: AuthUser,
+  ): Promise<AdminUserDeleteResult> {
+    return this.adminUsersService.deleteUser(admin.id, id);
   }
 }

@@ -10,12 +10,14 @@ import {
   UserRole,
   UserStatus,
 } from '@prisma/client';
+import { SessionService } from '../auth';
 import { PrismaService } from '../prisma/prisma.service';
 import { SENT_EMAIL_STATUSES } from '../reputation/reputation.constants';
 import { AdminUsersService } from './admin-users.service';
 import {
   CREDIT_REASON_ADMIN_GRANT,
   SELF_CREDIT_MESSAGE,
+  SELF_DELETE_MESSAGE,
   SELF_SUSPEND_MESSAGE,
   USER_ALREADY_ACTIVE_MESSAGE,
   USER_ALREADY_SUSPENDED_MESSAGE,
@@ -48,16 +50,22 @@ describe('AdminUsersService', () => {
   const userCount = jest.fn();
   const userFindUnique = jest.fn();
   const userUpdate = jest.fn();
+  const userDelete = jest.fn();
   const creditGroupBy = jest.fn();
   const creditAggregate = jest.fn();
   const creditCreate = jest.fn();
+  const creditEntryCount = jest.fn();
   const emailGroupBy = jest.fn();
   const emailCount = jest.fn();
   const domainGroupBy = jest.fn();
+  const domainCount = jest.fn();
   const apiKeyCount = jest.fn();
+  const topUpRequestCount = jest.fn();
   const actionCreate = jest.fn();
   const actionFindMany = jest.fn();
+  const actionCount = jest.fn();
   const $transaction = jest.fn();
+  const destroyAllForUser = jest.fn();
 
   /** Tous les appels Prisma du service, pour compter le coût d'une page. */
   const prismaCalls = [
@@ -65,15 +73,20 @@ describe('AdminUsersService', () => {
     userCount,
     userFindUnique,
     userUpdate,
+    userDelete,
     creditGroupBy,
     creditAggregate,
     creditCreate,
+    creditEntryCount,
     emailGroupBy,
     emailCount,
     domainGroupBy,
+    domainCount,
     apiKeyCount,
+    topUpRequestCount,
     actionCreate,
     actionFindMany,
+    actionCount,
   ];
 
   const totalPrismaCalls = (): number =>
@@ -85,18 +98,27 @@ describe('AdminUsersService', () => {
       count: userCount,
       findUnique: userFindUnique,
       update: userUpdate,
+      delete: userDelete,
     },
     creditEntry: {
       groupBy: creditGroupBy,
       aggregate: creditAggregate,
       create: creditCreate,
+      count: creditEntryCount,
     },
     email: { groupBy: emailGroupBy, count: emailCount },
-    domain: { groupBy: domainGroupBy },
+    domain: { groupBy: domainGroupBy, count: domainCount },
     apiKey: { count: apiKeyCount },
-    adminAction: { create: actionCreate, findMany: actionFindMany },
+    topUpRequest: { count: topUpRequestCount },
+    adminAction: {
+      create: actionCreate,
+      findMany: actionFindMany,
+      count: actionCount,
+    },
     $transaction,
   };
+
+  const sessionService = { destroyAllForUser };
 
   beforeAll(() => {
     jest.spyOn(Date, 'now').mockReturnValue(NOW.getTime());
@@ -113,12 +135,17 @@ describe('AdminUsersService', () => {
     userCount.mockResolvedValue(0);
     creditGroupBy.mockResolvedValue([]);
     creditAggregate.mockResolvedValue({ _sum: { delta: 0 } });
+    creditEntryCount.mockResolvedValue(0);
     emailGroupBy.mockResolvedValue([]);
     emailCount.mockResolvedValue(0);
     domainGroupBy.mockResolvedValue([]);
+    domainCount.mockResolvedValue(0);
     apiKeyCount.mockResolvedValue(0);
+    topUpRequestCount.mockResolvedValue(0);
     actionFindMany.mockResolvedValue([]);
     actionCreate.mockResolvedValue({ id: 'action_1' });
+    actionCount.mockResolvedValue(0);
+    destroyAllForUser.mockResolvedValue(undefined);
     $transaction.mockImplementation(
       (run: (tx: typeof prisma) => Promise<unknown>) => run(prisma),
     );
@@ -127,6 +154,7 @@ describe('AdminUsersService', () => {
       providers: [
         AdminUsersService,
         { provide: PrismaService, useValue: prisma },
+        { provide: SessionService, useValue: sessionService },
       ],
     }).compile();
 
@@ -616,6 +644,139 @@ describe('AdminUsersService', () => {
 
       expect(actionCreate).not.toHaveBeenCalled();
       expect(creditCreate).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('deleteUser', () => {
+    beforeEach(() => {
+      userFindUnique.mockResolvedValue({
+        id: 'u1',
+        email: 'jean@gmial.com',
+        name: 'Jean Camara',
+      });
+    });
+
+    it('deletes the account, audits it and revokes its sessions when nothing blocks', async () => {
+      const result = await service.deleteUser('admin_1', 'u1');
+
+      expect($transaction).toHaveBeenCalledTimes(1);
+
+      // La ligne d'audit est écrite AVANT le hard delete (targetUserId
+      // référence encore un compte existant à cet instant), et porte
+      // l'email et le nom en dur dans `details` — seule donnée qui survit
+      // une fois `targetUserId` mis à NULL par le SetNull de Postgres.
+      expect(actionCreate).toHaveBeenCalledWith({
+        data: {
+          adminId: 'admin_1',
+          targetUserId: 'u1',
+          type: AdminActionType.DELETE_USER,
+          details: {
+            deletedUserEmail: 'jean@gmial.com',
+            deletedUserName: 'Jean Camara',
+          },
+        },
+        select: { id: true },
+      });
+
+      expect(userDelete).toHaveBeenCalledWith({ where: { id: 'u1' } });
+
+      // L'ordre compte : la ligne d'audit doit exister avant la suppression.
+      const actionCreateOrder = actionCreate.mock.invocationCallOrder[0];
+      const userDeleteOrder = userDelete.mock.invocationCallOrder[0];
+      expect(actionCreateOrder).toBeLessThan(userDeleteOrder);
+
+      // Révocation Redis après le succès de la transaction, via l'index
+      // inverse posé pour le changement de mot de passe (T16).
+      expect(destroyAllForUser).toHaveBeenCalledWith('u1');
+
+      expect(result).toEqual({
+        id: 'u1',
+        email: 'jean@gmial.com',
+        actionId: 'action_1',
+      });
+    });
+
+    it('refuses an admin deleting themselves, before touching the database', async () => {
+      await expect(service.deleteUser('admin_1', 'admin_1')).rejects.toThrow(
+        new BadRequestException(SELF_DELETE_MESSAGE),
+      );
+
+      expect($transaction).not.toHaveBeenCalled();
+      expect(totalPrismaCalls()).toBe(0);
+      expect(destroyAllForUser).not.toHaveBeenCalled();
+    });
+
+    it('throws 404 for an unknown account', async () => {
+      userFindUnique.mockResolvedValue(null);
+
+      await expect(
+        service.deleteUser('admin_1', 'ghost'),
+      ).rejects.toBeInstanceOf(NotFoundException);
+
+      expect(actionCreate).not.toHaveBeenCalled();
+      expect(userDelete).not.toHaveBeenCalled();
+      expect(destroyAllForUser).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['a domain', () => domainCount.mockResolvedValue(2), '2 domaines'],
+      ['an API key', () => apiKeyCount.mockResolvedValue(1), '1 clé API'],
+      ['an email', () => emailCount.mockResolvedValue(14), '14 emails'],
+      [
+        'a credit entry',
+        () => creditEntryCount.mockResolvedValue(3),
+        '3 mouvements de crédit',
+      ],
+      [
+        'a top-up request',
+        () => topUpRequestCount.mockResolvedValue(1),
+        '1 demande de recharge',
+      ],
+      [
+        'an admin action performed by the account',
+        () => actionCount.mockResolvedValue(5),
+        "5 actions d'administration effectuées en tant qu'admin",
+      ],
+    ])(
+      'refuses with 409 when the account has %s, writing nothing',
+      async (_label, arrange, expectedFragment) => {
+        arrange();
+
+        await expect(service.deleteUser('admin_1', 'u1')).rejects.toThrow(
+          ConflictException,
+        );
+        await expect(service.deleteUser('admin_1', 'u1')).rejects.toThrow(
+          expectedFragment,
+        );
+
+        expect(actionCreate).not.toHaveBeenCalled();
+        expect(userDelete).not.toHaveBeenCalled();
+        expect(destroyAllForUser).not.toHaveBeenCalled();
+      },
+    );
+
+    it('combines every blocking cause with its count in a single message', async () => {
+      domainCount.mockResolvedValue(2);
+      apiKeyCount.mockResolvedValue(1);
+      emailCount.mockResolvedValue(14);
+
+      await expect(service.deleteUser('admin_1', 'u1')).rejects.toThrow(
+        new ConflictException(
+          'Suppression refusée : ce compte possède encore 2 domaines, 1 clé API, 14 emails. Suspendez le compte plutôt que de le supprimer.',
+        ),
+      );
+    });
+
+    /**
+     * `Email.system = true` (emails système reçus par le compte) n'est
+     * jamais exclu du décompte : `email.count` n'est appelé qu'avec
+     * `{ userId }`, sans filtre `system`, donc ces lignes bloquent la
+     * suppression exactement comme les envois du client.
+     */
+    it('counts emails without filtering out system ones', async () => {
+      await service.deleteUser('admin_1', 'u1');
+
+      expect(emailCount).toHaveBeenCalledWith({ where: { userId: 'u1' } });
     });
   });
 });
