@@ -157,6 +157,25 @@ export const SMTP_DEFAULT_MAX_MESSAGES_PER_CONNECTION = 100;
  */
 export const SMTP_DEFAULT_MAX_REFUSED_RECIPIENTS_PER_CONNECTION = 10;
 
+// ───────────────────────────────────────────────────────────────────────────
+// Pipeline SMTP (B6/S7 — §4.7 du plan)
+// ───────────────────────────────────────────────────────────────────────────
+
+/**
+ * Destinataires acceptés pour **un même message** (§4.7, A14 — arbitrage
+ * porteur B7 acté : éventail plafonné plutôt que parité stricte à 1). Le
+ * destinataire de trop reçoit `452 4.5.3` sur son `RCPT TO`.
+ *
+ * 10 : un `Cc:` est banal côté SMTP (facture au client + copie à la
+ * comptabilité), et fermer le canal à un seul destinataire obligerait les
+ * clients ERP/CRM visés à réécrire leur code — soit exactement l'audience pour
+ * laquelle le relais existe. Au-delà de la dizaine, en revanche, on n'est plus
+ * dans la copie de courtoisie mais dans l'envoi en masse, qui a ses propres
+ * règles (et son propre tarif) : chaque destinataire coûte **un crédit**,
+ * comme un appel API, et aucune règle n'est diluée par l'éventail.
+ */
+export const SMTP_DEFAULT_MAX_RECIPIENTS = 10;
+
 /**
  * Message d'avertissement émis au démarrage quand `SMTP_IP_LIMITS_ENABLED` est
  * faux (§5, dernier point ⚠️ + le piège Swarm du §1.3).

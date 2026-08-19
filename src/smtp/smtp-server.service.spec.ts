@@ -2,9 +2,14 @@ import { createServer, Server } from 'net';
 import { Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Test, TestingModule } from '@nestjs/testing';
+import { MAX_RAW_MESSAGE_BYTES } from '../emails/emails.constants';
 import { PrismaService } from '../prisma/prisma.service';
 import { SmtpAuthService } from './smtp-auth.service';
-import { SMTP_TLS_CERTIFICATE_REQUIRED_MESSAGE } from './smtp-relay.constants';
+import { SmtpPipelineService } from './smtp-pipeline.service';
+import {
+  SMTP_DEFAULT_MAX_RECIPIENTS,
+  SMTP_TLS_CERTIFICATE_REQUIRED_MESSAGE,
+} from './smtp-relay.constants';
 import { SmtpServerService } from './smtp-server.service';
 import { SmtpThrottleService } from './smtp-throttle.service';
 
@@ -32,6 +37,20 @@ const throttleDouble = () => ({
   recordAuthFailure: jest.fn().mockResolvedValue(undefined),
 });
 
+/**
+ * Double du pipeline (S7), pour la même raison que celui de l'anti-abus : ce
+ * fichier vérifie le démarrage du relais, aucune conversation n'y atteint
+ * `MAIL FROM`. Seul `maxMessageBytes` est réellement lu — c'est lui qui
+ * alimente l'option `size` du serveur.
+ */
+const pipelineDouble = () => ({
+  maxMessageBytes: MAX_RAW_MESSAGE_BYTES,
+  maxRecipients: SMTP_DEFAULT_MAX_RECIPIENTS,
+  mailFrom: jest.fn().mockResolvedValue(undefined),
+  rcptTo: jest.fn().mockResolvedValue(undefined),
+  data: jest.fn().mockResolvedValue(''),
+});
+
 async function buildService(
   config: Record<string, unknown>,
 ): Promise<{ moduleRef: TestingModule; service: SmtpServerService }> {
@@ -47,6 +66,7 @@ async function buildService(
         useValue: { authenticate: jest.fn() },
       },
       { provide: SmtpThrottleService, useValue: throttleDouble() },
+      { provide: SmtpPipelineService, useValue: pipelineDouble() },
       {
         provide: PrismaService,
         useValue: { smtpCredential: { findUnique: jest.fn() } },
@@ -91,6 +111,7 @@ describe('SmtpServerService — module inerte sans SMTP_RELAY_ENABLED', () => {
         },
         { provide: SmtpAuthService, useValue: { authenticate: jest.fn() } },
         { provide: SmtpThrottleService, useValue: throttleDouble() },
+        { provide: SmtpPipelineService, useValue: pipelineDouble() },
         {
           provide: PrismaService,
           useValue: { smtpCredential: { findUnique: jest.fn() } },

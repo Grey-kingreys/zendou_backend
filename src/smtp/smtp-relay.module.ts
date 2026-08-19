@@ -1,13 +1,15 @@
 import { Logger, Module } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import Redis from 'ioredis';
+import { EmailsCoreModule } from '../emails/emails-core.module';
 import { SmtpAuthService } from './smtp-auth.service';
+import { SmtpPipelineService } from './smtp-pipeline.service';
 import { SmtpServerService } from './smtp-server.service';
 import { SMTP_THROTTLE_REDIS } from './smtp-throttle.constants';
 import { SmtpThrottleService } from './smtp-throttle.service';
 
 /**
- * Relais SMTP entrant (B6/S5, étendu par S9).
+ * Relais SMTP entrant (B6/S5, étendu par S9 puis S7).
  *
  * Toujours importé par `AppModule`, mais **inerte par défaut** : c'est
  * `SmtpServerService.onModuleInit` qui décide, à la lecture de
@@ -26,7 +28,15 @@ import { SmtpThrottleService } from './smtp-throttle.service';
  * contexte applicatif autour de ce module.
  */
 @Module({
-  // `PrismaModule` et `ConfigModule` sont globaux : rien à importer ici.
+  // `PrismaModule` et `ConfigModule` sont globaux : rien à importer d'autre.
+  //
+  // `EmailsCoreModule` — et non `EmailsModule` — est ce qui donne au pipeline
+  // (S7) le point d'acceptation partagé : c'est `EmailsService` seul, avec sa
+  // file, sans contrôleur ni `ApiKeysModule`. Le relais n'appelle donc jamais
+  // l'API HTTP de Zendou sur elle-même ; il entre dans le **même** service, en
+  // processus, ce qui est précisément ce qui rend le contournement des règles
+  // impossible plutôt qu'improbable.
+  imports: [EmailsCoreModule],
   providers: [
     {
       provide: SMTP_THROTTLE_REDIS,
@@ -54,6 +64,7 @@ import { SmtpThrottleService } from './smtp-throttle.service';
     },
     SmtpThrottleService,
     SmtpAuthService,
+    SmtpPipelineService,
     SmtpServerService,
   ],
   exports: [SmtpServerService, SmtpThrottleService],

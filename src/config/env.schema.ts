@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { DEFAULT_WELCOME_CREDITS } from '../billing/billing.constants';
 import { parseEmailAddress } from '../emails/email-address';
+import { MAX_RAW_MESSAGE_BYTES } from '../emails/emails.constants';
 import {
   DEFAULT_TRUST_PROXY_HOPS,
   RATE_LIMIT_DEFAULTS,
@@ -15,6 +16,7 @@ import {
   SMTP_DEFAULT_MAX_CLIENTS,
   SMTP_DEFAULT_MAX_CONNECTIONS_PER_IP,
   SMTP_DEFAULT_MAX_MESSAGES_PER_CONNECTION,
+  SMTP_DEFAULT_MAX_RECIPIENTS,
   SMTP_DEFAULT_MAX_REFUSED_RECIPIENTS_PER_CONNECTION,
   SMTP_DEFAULT_PORTS_STARTTLS,
   SMTP_DEFAULT_PORTS_TLS,
@@ -375,6 +377,26 @@ const baseEnvSchema = z.object({
 
   /** Sursis accordé aux connexions en cours lors d'un arrêt gracieux. */
   SMTP_CLOSE_TIMEOUT_MS: positiveIntFromEnv(SMTP_DEFAULT_CLOSE_TIMEOUT_MS),
+
+  // ─── Pipeline du relais (B6/S7 — §4.5 et §4.7 du plan) ───
+
+  /**
+   * Taille maximale d'un message MIME reçu par le relais, en octets. Annoncée
+   * par la capacité `SIZE` de l'EHLO — le client sait donc **avant** d'envoyer
+   * — et appliquée pendant le flux `DATA`.
+   *
+   * Défaut : 10 Mo, `min(10 Mo, limite SES)` — voir `MAX_RAW_MESSAGE_BYTES`
+   * (`emails.constants.ts`) pour la source AWS et le raisonnement complet.
+   * Décision produit B4 du §8 : le porteur peut descendre sans toucher au code.
+   */
+  SMTP_MAX_MESSAGE_BYTES: positiveIntFromEnv(MAX_RAW_MESSAGE_BYTES),
+
+  /**
+   * Destinataires acceptés pour un même message (§4.7). Au-delà : `452 4.5.3`
+   * sur le `RCPT TO` excédentaire. Chaque destinataire est facturé un crédit,
+   * comme un appel API — ce plafond borne donc aussi le coût d'un seul message.
+   */
+  SMTP_MAX_RECIPIENTS: positiveIntFromEnv(SMTP_DEFAULT_MAX_RECIPIENTS),
 
   // ─── Anti-abus du relais SMTP (B6/S9 — §5 du plan) ───
 

@@ -48,9 +48,9 @@ export type EmailSendJobData = SimpleEmailSendJobData | RawEmailSendJobData;
 /**
  * Point d'entrée par lequel un envoi client est arrivé.
  *
- * Transite dans `AcceptEmailInput` sans être encore persisté : la colonne
- * `Email.channel` (enum Prisma `EmailChannel`) est ajoutée par une migration
- * séparée (B6/S2), et la persistance sera câblée à ce moment-là.
+ * Persisté sur `Email.channel` (enum Prisma `EmailChannel`, colonne ajoutée
+ * par B6/S2, câblée par B6/S7). Les valeurs sont volontairement celles de
+ * l'enum Prisma, à la casse près : aucune table de correspondance à tenir.
  */
 export type SendChannel = 'API' | 'SMTP';
 
@@ -60,9 +60,8 @@ export type SendChannel = 'API' | 'SMTP';
  * - `simple` : ce que porte l'API REST — `html` et/ou `text`, que le driver
  *   SES envoie en `Content.Simple`.
  * - `raw` : les octets MIME d'origine du client SMTP, transmis tels quels
- *   (pièces jointes, images en ligne, en-têtes personnalisés). **Non encore
- *   câblé** jusqu'au job ni jusqu'au driver : c'est le périmètre de B6/S3, qui
- *   ajoutera le discriminant à `EmailSendJobData` et à `SesSendPayload`.
+ *   (pièces jointes, images en ligne, en-têtes personnalisés) jusqu'au job
+ *   (`RawEmailSendJobData`) puis au driver (`Content.Raw`, B6/S3).
  */
 export type SendContent =
   | { kind: 'simple'; html?: string; text?: string }
@@ -86,6 +85,34 @@ export interface AcceptEmailInput {
   channel: SendChannel;
   /** Identifiant SMTP utilisé, quand l'envoi vient du relais (B6/S4). */
   smtpCredentialId?: string;
+}
+
+/**
+ * Entrée d'`EmailsService.acceptSmtp` — un destinataire du relais SMTP.
+ *
+ * Volontairement plus étroite qu'`AcceptEmailInput` : le canal et la forme du
+ * contenu ne sont pas des choix laissés à l'appelant SMTP (`channel: 'SMTP'`,
+ * `content.kind: 'raw'`, A8 — « le canal SMTP est Raw de bout en bout »), et
+ * `smtpCredentialId` y est **obligatoire** puisqu'aucun message ne peut
+ * arriver par ce canal sans identifiant authentifié (§5, pas d'open relay).
+ *
+ * `raw` est une **chaîne UTF-8, pas un `Buffer`** : le contrôle d'aller-retour
+ * qui garantit que ces octets survivront à la sérialisation JSON de BullMQ
+ * appartient au relais, en amont, où un contenu non convertible peut encore
+ * être refusé avec un code SMTP explicite (`554`). Le point d'acceptation, lui,
+ * n'a pas à connaître cette contrainte de transport.
+ */
+export interface AcceptSmtpInput {
+  /** Adresse d'expédition — l'en-tête `From:` du message, qui fait foi (§4.3). */
+  from: string;
+  /** Destinataire unique : l'éventail multi-destinataires appelle N fois. */
+  to: string;
+  /** Sujet destiné au journal, déjà décodé et tronqué par l'appelant (§4.6). */
+  subject: string;
+  /** Octets MIME réécrits (sans `Bcc:`…), tels qu'ils partiront chez SES. */
+  raw: string;
+  /** Identifiant SMTP de la session, tracé sur la ligne `Email` (§6, A15). */
+  smtpCredentialId: string;
 }
 
 /**
