@@ -7,17 +7,43 @@ export interface SendEmailResponse {
 }
 
 /**
+ * Job d'un message composé par Zendou (canal API et envois système).
+ *
+ * 🔴 `kind` est **optionnel, et c'est délibéré** : un job déjà en file au
+ * moment du déploiement qui introduit le canal Raw n'a pas ce champ. Un job
+ * sans `kind` est simple — c'était alors le seul contenu possible. Rendre ce
+ * champ obligatoire ferait perdre tous les emails en vol au redémarrage du
+ * worker.
+ */
+export interface SimpleEmailSendJobData {
+  emailId: string;
+  kind?: 'simple';
+  html?: string;
+  text?: string;
+}
+
+/**
+ * Job d'un message MIME déjà composé par le client (relais SMTP) : les octets
+ * d'origine sont transmis tels quels à SES, jamais recomposés.
+ *
+ * `raw` est une **chaîne et non un `Buffer`** : la charge utile BullMQ est
+ * sérialisée en JSON, et un `Buffer` n'y survivrait pas — il ressortirait du
+ * job en `{ type: 'Buffer', data: [...] }`.
+ */
+export interface RawEmailSendJobData {
+  emailId: string;
+  kind: 'raw';
+  raw: string;
+}
+
+/**
  * Charge utile du job BullMQ.
  *
  * `emailId` est l'identifiant interne de la ligne `Email` : le worker y
  * relit expéditeur, destinataire, sujet et statut. Le corps du message
  * voyage en revanche dans le job — le modèle `Email` ne le stocke pas.
  */
-export interface EmailSendJobData {
-  emailId: string;
-  html?: string;
-  text?: string;
-}
+export type EmailSendJobData = SimpleEmailSendJobData | RawEmailSendJobData;
 
 /**
  * Point d'entrée par lequel un envoi client est arrivé.

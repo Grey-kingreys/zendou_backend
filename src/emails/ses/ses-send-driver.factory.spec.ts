@@ -5,7 +5,8 @@ import { createSesSendDriver } from './ses-send-driver.factory';
 import {
   SesSendError,
   isPermanentSendError,
-  type SesSendPayload,
+  type SesSendRawPayload,
+  type SesSendSimplePayload,
 } from './ses-send-driver';
 import {
   SesSendSdkDriver,
@@ -21,12 +22,28 @@ function configWith(values: Record<string, string | undefined>): ConfigService {
   } as unknown as ConfigService;
 }
 
-function payload(overrides: Partial<SesSendPayload> = {}): SesSendPayload {
+function payload(
+  overrides: Partial<Omit<SesSendSimplePayload, 'kind'>> = {},
+): SesSendSimplePayload {
   return {
+    kind: 'simple',
     from: 'contact@boutique-awa.gn',
     to: 'client@exemple.gn',
     subject: 'Votre commande est prête',
     html: '<p>Bonjour</p>',
+    ...overrides,
+  };
+}
+
+function rawPayload(
+  overrides: Partial<Omit<SesSendRawPayload, 'kind'>> = {},
+): SesSendRawPayload {
+  return {
+    kind: 'raw',
+    from: 'contact@boutique-awa.gn',
+    to: 'client@exemple.gn',
+    subject: 'Votre commande est prête',
+    raw: 'From: contact@boutique-awa.gn\r\n\r\nBonjour',
     ...overrides,
   };
 }
@@ -112,6 +129,29 @@ describe('SendDevStubDriver', () => {
     expect(logged[0]).toContain('contact@boutique-awa.gn');
     expect(logged[0]).toContain('client@exemple.gn');
     expect(logged[0]).toContain(messageId);
+  });
+
+  // Le brut porte le corps composé par le client, pièces jointes comprises :
+  // les logs applicatifs ne sont pas l'endroit où le déverser.
+  it('describes a raw message by its byte size, never by its content', async () => {
+    const raw = 'From: contact@boutique-awa.gn\r\n\r\nRIB-CONFIDENTIEL';
+
+    await driver.send(rawPayload({ raw }));
+
+    expect(logged[0]).toContain(`raw ${Buffer.byteLength(raw)} o.`);
+    expect(logged[0]).not.toContain('RIB-CONFIDENTIEL');
+  });
+
+  it('counts the bytes of a Buffer payload, not its characters', async () => {
+    const text = 'From: a@b.gn\r\n\r\nBonjour à tous';
+    const raw = Buffer.from(text, 'utf8');
+
+    await driver.send(rawPayload({ raw }));
+
+    // 'à' pèse deux octets : la taille annoncée n'est pas `String.length`.
+    expect(text).toHaveLength(30);
+    expect(raw).toHaveLength(31);
+    expect(logged[0]).toContain('raw 31 o.');
   });
 });
 

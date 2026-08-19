@@ -1,18 +1,46 @@
 /** Token d'injection du driver d'envoi SES. */
 export const SES_SEND_DRIVER = 'SES_SEND_DRIVER';
 
-/** Message à remettre à SES. Un seul destinataire en v1. */
-export interface SesSendPayload {
+/**
+ * Enveloppe commune aux deux formes de message. Elle est toujours relue en
+ * base par le worker : c'est elle qui fait foi pour l'adressage remis à SES,
+ * jamais les en-têtes du message.
+ */
+interface SesSendEnvelope {
   /** Expéditeur, `adresse@domaine` ou `Nom <adresse@domaine>`. */
   from: string;
   /** Destinataire unique. */
   to: string;
   subject: string;
-  html?: string;
-  text?: string;
   /** Surcharge ponctuelle du configuration set du driver. */
   configurationSet?: string;
 }
+
+/**
+ * Message composé par Zendou : SES assemble le MIME à partir des variantes
+ * fournies. C'est la forme du canal API, et la seule forme d'avant le relais
+ * SMTP.
+ */
+export interface SesSendSimplePayload extends SesSendEnvelope {
+  kind: 'simple';
+  html?: string;
+  text?: string;
+}
+
+/**
+ * Message MIME déjà composé, transmis octet pour octet. C'est la forme du
+ * canal SMTP : on transmet ce que le client a envoyé, on ne recompose rien —
+ * seul le contenu Raw préserve pièces jointes, images en ligne (`cid:`) et
+ * en-têtes personnalisés.
+ */
+export interface SesSendRawPayload extends SesSendEnvelope {
+  kind: 'raw';
+  /** Octets MIME. Une chaîne est interprétée en UTF-8. */
+  raw: Buffer | string;
+}
+
+/** Message à remettre à SES. Un seul destinataire en v1. */
+export type SesSendPayload = SesSendSimplePayload | SesSendRawPayload;
 
 export interface SesSendResult {
   /** Identifiant SES du message accepté. */

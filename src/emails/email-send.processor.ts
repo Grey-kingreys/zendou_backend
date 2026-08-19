@@ -44,7 +44,7 @@ export class EmailSendProcessor extends WorkerHost {
   }
 
   async process(job: Job<EmailSendJobData>): Promise<void> {
-    const { emailId, html, text } = job.data;
+    const { emailId } = job.data;
 
     const email = await this.prisma.email.findUnique({
       where: { id: emailId },
@@ -78,13 +78,28 @@ export class EmailSendProcessor extends WorkerHost {
     }
 
     try {
-      const { messageId } = await this.driver.send({
+      // L'adressage vient toujours de la base, jamais du job ni des en-têtes
+      // du message : c'est lui qui sera remis à SES.
+      const envelope = {
         from: email.fromAddress,
         to: email.toAddress,
         subject: email.subject,
-        html,
-        text,
-      });
+      };
+
+      // 🔴 Compatibilité des jobs en vol : `kind` est absent des jobs mis en
+      // file avant l'introduction du canal Raw. Tout ce qui n'est pas
+      // explicitement `raw` est donc simple — sans ce repli, le déploiement
+      // perdrait les emails déjà en file.
+      const { messageId } = await this.driver.send(
+        job.data.kind === 'raw'
+          ? { ...envelope, kind: 'raw', raw: job.data.raw }
+          : {
+              ...envelope,
+              kind: 'simple',
+              html: job.data.html,
+              text: job.data.text,
+            },
+      );
 
       const now = new Date();
       await this.prisma.email.update({

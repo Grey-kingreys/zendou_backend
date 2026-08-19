@@ -33,8 +33,18 @@ export function stubMessageId(): string {
   return `stub-${randomBytes(STUB_MESSAGE_ID_BYTES).toString('hex')}`;
 }
 
-/** Résume les variantes de corps présentes, pour la ligne de log. */
+/**
+ * Résume le contenu pour la ligne de log.
+ *
+ * Un message brut est décrit par sa **taille en octets, jamais par son
+ * contenu** : il porte le corps composé par le client, pièces jointes
+ * comprises, et les logs applicatifs ne sont pas l'endroit où le déverser.
+ */
 function describeBody(payload: SesSendPayload): string {
+  if (payload.kind === 'raw') {
+    return `raw ${rawByteLength(payload.raw)} o.`;
+  }
+
   const parts: string[] = [];
 
   if (payload.html) {
@@ -46,4 +56,9 @@ function describeBody(payload: SesSendPayload): string {
   }
 
   return parts.length > 0 ? parts.join(' + ') : 'sans contenu';
+}
+
+/** Taille du message brut, cohérente avec ce qui partirait chez SES. */
+function rawByteLength(raw: Buffer | string): number {
+  return typeof raw === 'string' ? Buffer.byteLength(raw, 'utf8') : raw.length;
 }
