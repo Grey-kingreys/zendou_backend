@@ -1,3 +1,5 @@
+import { HttpStatus } from '@nestjs/common';
+import { HTTP_CODE_METADATA } from '@nestjs/common/constants';
 import { Test, TestingModule } from '@nestjs/testing';
 import { UserRole, UserStatus } from '@prisma/client';
 import type { AuthUser } from '../auth';
@@ -124,8 +126,21 @@ describe('AdminUsersController', () => {
       actionId: 'action_1',
     });
 
-    await controller.remove('u1', adminUser);
+    // Le résultat du service n'est pas renvoyé : la route répond 204 sans
+    // corps, quel que soit ce que `deleteUser` produit.
+    await expect(controller.remove('u1', adminUser)).resolves.toBeUndefined();
 
     expect(adminUsersService.deleteUser).toHaveBeenCalledWith('admin_1', 'u1');
+  });
+
+  it('DELETE /:id répond 204 (contrat figé, alignée sur les autres suppressions)', () => {
+    const handler = Object.getOwnPropertyDescriptor(
+      AdminUsersController.prototype,
+      'remove',
+    )?.value as (...args: unknown[]) => unknown;
+
+    expect(Reflect.getMetadata(HTTP_CODE_METADATA, handler)).toBe(
+      HttpStatus.NO_CONTENT,
+    );
   });
 });

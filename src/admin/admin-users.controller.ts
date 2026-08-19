@@ -23,7 +23,6 @@ import type {
   AdminCreditResult,
   AdminQuotaResult,
   AdminUserActionResult,
-  AdminUserDeleteResult,
   AdminUserDetail,
   PaginatedAdminUsers,
   RawAdminUsersQuery,
@@ -96,10 +95,11 @@ export class AdminUsersController {
    * donc jamais réussir sur un vrai client actif.
    */
   @Delete(':id')
-  remove(
+  @HttpCode(HttpStatus.NO_CONTENT)
+  async remove(
     @Param('id') id: string,
     @CurrentUser() admin: AuthUser,
-  ): Promise<AdminUserDeleteResult> {
-    return this.adminUsersService.deleteUser(admin.id, id);
+  ): Promise<void> {
+    await this.adminUsersService.deleteUser(admin.id, id);
   }
 }
