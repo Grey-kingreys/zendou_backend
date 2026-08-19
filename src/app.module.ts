@@ -6,6 +6,7 @@ import { PrismaModule } from './prisma/prisma.module';
 import { HealthModule } from './health/health.module';
 import { AuthModule } from './auth/auth.module';
 import { ApiKeysModule } from './api-keys/api-keys.module';
+import { SmtpCredentialsModule } from './smtp-credentials/smtp-credentials.module';
 import { EmailsLogModule } from './emails-log/emails-log.module';
 import { EmailsModule } from './emails/emails.module';
 import { DomainsModule } from './domains/domains.module';
@@ -37,6 +38,7 @@ import { EMAIL_SEND_QUEUE } from './queues/queues';
     HealthModule,
     AuthModule,
     ApiKeysModule,
+    SmtpCredentialsModule,
     EmailsLogModule,
     EmailsModule,
     DomainsModule,

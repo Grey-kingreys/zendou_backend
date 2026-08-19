@@ -452,15 +452,17 @@ export class AdminUsersService {
    * décompte des blocages ci-dessous, et supprimés en cascade avec le
    * compte (voir plus bas).
    *
-   * Bloquent réellement (409) : un domaine, une clé API, un email envoyé
-   * par le client (`system: false`), une demande de recharge, ou un
-   * mouvement de crédit qui n'est pas le bonus de bienvenue (recharge,
-   * geste d'admin, consommation…). Un compte jamais confirmé n'a, par
-   * construction, aucun de ces éléments — voir `EmailVerifiedGuard`. Le
-   * refus ci-dessous ne peut donc viser que de vrais comptes actifs, qu'il
-   * faut suspendre plutôt que supprimer — sans lui, la suppression
-   * échouerait de toute façon sur une contrainte `Restrict` Postgres brute
-   * (500 opaque) au lieu d'un message utile.
+   * Bloquent réellement (409) : un domaine, une clé API, un identifiant
+   * SMTP (V9 — même activité client qu'une clé API : les deux sont des
+   * moyens d'envoi que le compte s'est donnés), un email envoyé par le
+   * client (`system: false`), une demande de recharge, ou un mouvement de
+   * crédit qui n'est pas le bonus de bienvenue (recharge, geste d'admin,
+   * consommation…). Un compte jamais confirmé n'a, par construction, aucun
+   * de ces éléments — voir `EmailVerifiedGuard`. Le refus ci-dessous ne
+   * peut donc viser que de vrais comptes actifs, qu'il faut suspendre
+   * plutôt que supprimer — sans lui, la suppression échouerait de toute
+   * façon sur une contrainte `Restrict` Postgres brute (500 opaque) au lieu
+   * d'un message utile.
    *
    * Piège d'audit : `AdminAction.targetUserId` est optionnel donc en
    * `SetNull` — supprimer l'utilisateur met à NULL la cible de **toutes**
@@ -498,6 +500,7 @@ export class AdminUsersService {
       const [
         domainsCount,
         apiKeysCount,
+        smtpCredentialsCount,
         clientEmailsCount,
         nonWelcomeCreditEntriesCount,
         topUpRequestsCount,
@@ -505,6 +508,13 @@ export class AdminUsersService {
       ] = await Promise.all([
         tx.domain.count({ where: { userId: id } }),
         tx.apiKey.count({ where: { userId: id } }),
+        // V9 : un identifiant SMTP est de l'activité client au même titre
+        // qu'une clé API — même raisonnement, aucune exemption (contrairement
+        // aux emails système et au bonus de bienvenue ci-dessous). Sans ce
+        // blocage, la FK `Restrict` d'`Email.smtpCredentialId` (ou la
+        // suppression silencieuse d'identifiants encore valides) produirait
+        // soit un 500 Postgres brut, soit une suppression trompeuse.
+        tx.smtpCredential.count({ where: { userId: id } }),
         // Seuls les emails **envoyés par le client** bloquent. Un email
         // système (`system: true`, confirmation d'adresse) est un
         // sous-produit de l'inscription, pas de l'activité du client —
@@ -520,7 +530,7 @@ export class AdminUsersService {
         tx.topUpRequest.count({ where: { userId: id } }),
         // Restrict lui aussi (`AdminAction.adminId` est obligatoire) : un
         // compte ADMIN ayant déjà agi ne peut pas être supprimé sans violer
-        // cette contrainte. Cas distinct des cinq précédents (il ne s'agit
+        // cette contrainte. Cas distinct des six précédents (il ne s'agit
         // pas de ce que le compte *possède*, mais de ce qu'il a *fait* en
         // tant qu'admin), donc gardé et signalé séparément.
         tx.adminAction.count({ where: { adminId: id } }),
@@ -529,6 +539,7 @@ export class AdminUsersService {
       const blockers = this.buildDeleteBlockers({
         domainsCount,
         apiKeysCount,
+        smtpCredentialsCount,
         emailsCount: clientEmailsCount,
         creditEntriesCount: nonWelcomeCreditEntriesCount,
         topUpRequestsCount,
@@ -622,13 +633,14 @@ export class AdminUsersService {
   }
 
   /**
-   * Traduit les six compteurs de `deleteUser` en membres de phrase français,
-   * un par cause non nulle — ordre stable, celui de la consigne. Liste vide
-   * si rien ne bloque.
+   * Traduit les sept compteurs de `deleteUser` en membres de phrase
+   * français, un par cause non nulle — ordre stable, celui de la consigne.
+   * Liste vide si rien ne bloque.
    */
   private buildDeleteBlockers(counts: {
     domainsCount: number;
     apiKeysCount: number;
+    smtpCredentialsCount: number;
     emailsCount: number;
     creditEntriesCount: number;
     topUpRequestsCount: number;
@@ -641,6 +653,15 @@ export class AdminUsersService {
     }
     if (counts.apiKeysCount > 0) {
       parts.push(this.pluralize(counts.apiKeysCount, 'clé API', 'clés API'));
+    }
+    if (counts.smtpCredentialsCount > 0) {
+      parts.push(
+        this.pluralize(
+          counts.smtpCredentialsCount,
+          'identifiant SMTP',
+          'identifiants SMTP',
+        ),
+      );
     }
     if (counts.emailsCount > 0) {
       parts.push(this.pluralize(counts.emailsCount, 'email'));

@@ -22,16 +22,25 @@ export interface GeneratedApiKey {
 }
 
 /**
+ * Tire `length` caractères aléatoires base62 via un générateur
+ * cryptographiquement sûr. Factorisé hors de `generateApiKey` pour être
+ * réutilisé tel quel par `smtp-credential.utils.ts` (même mécanique, secret
+ * de forme différente) — voir §3.2 du plan B6.
+ */
+export function generateBase62Secret(length: number): string {
+  let random = '';
+  for (let i = 0; i < length; i++) {
+    random += BASE62_ALPHABET[randomInt(BASE62_ALPHABET.length)];
+  }
+  return random;
+}
+
+/**
  * Génère une nouvelle clé API au format `zd_live_` + 40 caractères
  * aléatoires base62, tirés via un générateur cryptographiquement sûr.
  */
 export function generateApiKey(): GeneratedApiKey {
-  let random = '';
-  for (let i = 0; i < RANDOM_PART_LENGTH; i++) {
-    random += BASE62_ALPHABET[randomInt(BASE62_ALPHABET.length)];
-  }
-
-  const key = `${API_KEY_PREFIX}${random}`;
+  const key = `${API_KEY_PREFIX}${generateBase62Secret(RANDOM_PART_LENGTH)}`;
 
   return {
     key,
