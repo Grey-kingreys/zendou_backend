@@ -15,6 +15,7 @@ import {
   type SMTPServerSession,
 } from 'smtp-server';
 import { SmtpAuthService } from './smtp-auth.service';
+import { SmtpPipelineService } from './smtp-pipeline.service';
 import {
   SMTP_IP_LIMITS_DISABLED_MESSAGE,
   SMTP_TLS_CERTIFICATE_REQUIRED_MESSAGE,
@@ -75,6 +76,7 @@ export class SmtpServerService implements OnModuleInit, OnModuleDestroy {
     private readonly configService: ConfigService,
     private readonly smtpAuthService: SmtpAuthService,
     private readonly smtpThrottleService: SmtpThrottleService,
+    private readonly smtpPipelineService: SmtpPipelineService,
   ) {}
 
   /**
@@ -153,6 +155,13 @@ export class SmtpServerService implements OnModuleInit, OnModuleDestroy {
       // `useXClient` / `useXForward` restent désactivés : ils laisseraient un
       // client réécrire `session.remoteAddress`, sur lequel S9 fonde toutes
       // ses limites par IP.
+
+      // §4.5 — le plafond de taille d'un message, annoncé et appliqué par la
+      // même option : `smtp-server` publie `SIZE <octets>` dans l'EHLO
+      // (RFC 1870), refuse un `SIZE=` annoncé trop grand dès le `MAIL FROM`,
+      // et lève `stream.sizeExceeded` si le client ment. Le client sait donc
+      // **avant** d'envoyer, et le relais ne dépend pas de sa parole.
+      size: this.smtpPipelineService.maxMessageBytes,
 
       maxClients: this.configService.get<number>('SMTP_MAX_CLIENTS'),
       socketTimeout: this.configService.get<number>('SMTP_SOCKET_TIMEOUT_MS'),
@@ -441,19 +450,26 @@ export class SmtpServerService implements OnModuleInit, OnModuleDestroy {
         );
       },
 
+      // Les trois étapes suivantes sont déléguées à `SmtpPipelineService`
+      // (S7) : ce fichier tient l'écoute, le TLS et la session, pas les règles
+      // d'envoi. La seule chose qu'il fait ici de son propre chef est
+      // l'assertion « pas d'open relay », qui doit précéder tout le reste.
       onMailFrom: (address, session, callback) => {
-        this.run('MAIL FROM', session, callback, () => {
-          this.requireAuthenticatedSession(session);
-          // S7 branche ici les contrôles anticipés du §4.8. Invariant à ne pas
-          // perdre : ils ne peuvent que **refuser**, jamais autoriser.
+        this.run('MAIL FROM', session, callback, async () => {
+          const user = this.requireAuthenticatedSession(session);
+
+          // §4.8 — invariant à ne pas perdre : ces contrôles ne peuvent que
+          // **refuser**, jamais autoriser. La décision qui fait foi tombe en
+          // fin de DATA, dans `EmailsService.accept()`.
+          await this.smtpPipelineService.mailFrom(address, session, user);
         });
       },
 
       onRcptTo: (address, session, callback) => {
-        this.run('RCPT TO', session, callback, () => {
-          this.requireAuthenticatedSession(session);
-          // S7 : destinataire analysable, plafond de destinataires, couverture
-          // crédits/quota.
+        this.run('RCPT TO', session, callback, async () => {
+          const user = this.requireAuthenticatedSession(session);
+
+          await this.smtpPipelineService.rcptTo(address, session, user);
         });
       },
 
@@ -463,20 +479,18 @@ export class SmtpServerService implements OnModuleInit, OnModuleDestroy {
         callback,
       ) => {
         this.run<string>('DATA', session, callback, async () => {
-          this.requireAuthenticatedSession(session);
+          const user = this.requireAuthenticatedSession(session);
 
-          // Le flux doit être consommé jusqu'au bout quoi qu'il arrive :
-          // `smtp-server` attend le point final pour reprendre la
-          // conversation, et un flux laissé en suspens gèle la connexion
-          // jusqu'au `socketTimeout`.
-          await drain(stream);
-
-          // Tant que S7 n'a pas branché le point d'acceptation partagé, le
-          // relais **refuse** en temporaire. Ne rien mettre ici serait bien
-          // pire qu'un refus : le handler par défaut de `smtp-server` répond
-          // `250` et jette le message — un client croirait avoir envoyé une
-          // facture qui n'existe nulle part.
-          throw smtpReplyToError(SMTP_REPLY_UNKNOWN_SERVER_ERROR);
+          // Le pipeline consomme le flux jusqu'au bout quoi qu'il arrive —
+          // y compris quand il refuse : `smtp-server` attend le point final
+          // pour reprendre la conversation, et un flux laissé en suspens
+          // gèle la connexion jusqu'au `socketTimeout`.
+          //
+          // La valeur rendue est le texte du `250` (§4.7, réponse agrégée) ;
+          // `smtp-server` y appose le code. Ne rien rendre serait pire qu'un
+          // refus : son texte par défaut ferait croire au client que le
+          // message est parti alors qu'aucune ligne n'existerait.
+          return this.smtpPipelineService.data(stream, session, user);
         });
       },
 
@@ -498,11 +512,23 @@ export class SmtpServerService implements OnModuleInit, OnModuleDestroy {
    * `MAIL FROM` d'une session anonyme sans jamais appeler nos handlers. Deux
    * verrous plutôt qu'un : celui de la bibliothèque dépend de son option
    * `authOptional`, celui-ci ne dépend que de nous.
+   *
+   * Rend l'utilisateur authentifié plutôt que rien : c'est ce qui permet au
+   * pipeline (S7) de le recevoir en argument au lieu de le relire de la
+   * session. Il n'existe donc aucun chemin par lequel une étape du pipeline
+   * s'exécuterait sans utilisateur — la garantie « pas d'open relay » est
+   * portée par le type, pas par la discipline de l'appelant.
    */
-  private requireAuthenticatedSession(session: SMTPServerSession): void {
-    if (!smtpSessionUser(session)) {
+  private requireAuthenticatedSession(
+    session: SMTPServerSession,
+  ): SmtpSessionUser {
+    const user = smtpSessionUser(session);
+
+    if (!user) {
       throw smtpReplyToError(SMTP_REPLY_MAIL_FROM_REQUIRES_AUTH);
     }
+
+    return user;
   }
 
   /**
@@ -657,13 +683,4 @@ function isAuthCredentialFailure(error: unknown): boolean {
     isSmtpReplyError(error) &&
     error.smtpReply === SMTP_REPLY_AUTH_INVALID_CREDENTIALS
   );
-}
-
-/** Consomme un flux `DATA` jusqu'à son terme, sans rien conserver. */
-function drain(stream: SMTPServerDataStream): Promise<void> {
-  return new Promise<void>((resolve, reject) => {
-    stream.on('data', () => undefined);
-    stream.once('end', () => resolve());
-    stream.once('error', (error: Error) => reject(error));
-  });
 }

@@ -7,6 +7,35 @@ export const SUBJECT_MAX_LENGTH = 300;
  */
 export const MAX_BODY_BYTES = 500 * 1024;
 
+/**
+ * Taille maximale d'un **message MIME entier** reçu par le relais SMTP
+ * (B6 §4.5) : 10 Mo. Annoncée aux clients par la capacité `SIZE` de l'EHLO et
+ * appliquée pendant le flux `DATA`.
+ *
+ * Distincte de {@link MAX_BODY_BYTES}, et pas seulement par sa valeur :
+ * celle-là est une limite **par corps** (`html`, `text`), mesurée sur des
+ * chaînes, qui ne peut pas servir de plafond à un message complet — une
+ * facture PDF de 400 Ko pèse ~550 Ko une fois encodée en base64, avant même
+ * les corps.
+ *
+ * **Valeur choisie : `min(10 Mo, limite réelle de SES)`** — l'hypothèse n°4 du
+ * plan exigeait de lire la limite AWS plutôt que de la deviner. Elle est de
+ * **40 Mo par message (après encodage base64)** pour l'API SES v2, celle
+ * qu'utilise le driver (`@aws-sdk/client-sesv2`, `SendEmail`), contre 10 Mo
+ * pour l'API v1 — source : « Service quotas in Amazon SES », section *Message
+ * quotas* (https://docs.aws.amazon.com/ses/latest/dg/quotas.html), non
+ * ajustable. La même page ajoute que « les messages de plus de 10 Mo sont
+ * soumis à une limitation de bande passante » : 10 Mo est donc aussi le point
+ * où SES cesse de livrer à pleine vitesse. Deux raisons de plus de s'y tenir :
+ * le message brut voyage dans la charge utile BullMQ, donc en mémoire Redis
+ * (A13), et il transite par l'event loop partagé avec l'API (§1.1).
+ *
+ * Réglable par `SMTP_MAX_MESSAGE_BYTES` : le porteur peut descendre (décision
+ * B4 du §8) sans toucher au code. Monter au-delà de 40 Mo ne servirait à rien,
+ * SES refuserait.
+ */
+export const MAX_RAW_MESSAGE_BYTES = 10 * 1024 * 1024;
+
 /** Nombre de crédits consommés par email accepté. */
 export const CREDITS_PER_EMAIL = 1;
 

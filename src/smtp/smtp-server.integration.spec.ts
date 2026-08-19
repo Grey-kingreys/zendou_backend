@@ -3,9 +3,12 @@ import { ConfigService } from '@nestjs/config';
 import { Test, TestingModule } from '@nestjs/testing';
 import { UserRole, UserStatus } from '@prisma/client';
 import { createTransport } from 'nodemailer';
+import { MAX_RAW_MESSAGE_BYTES } from '../emails/emails.constants';
 import { PrismaService } from '../prisma/prisma.service';
 import { generateSmtpCredentialSecret } from '../smtp-credentials';
 import { SmtpAuthService } from './smtp-auth.service';
+import { SmtpPipelineService } from './smtp-pipeline.service';
+import { SMTP_DEFAULT_MAX_RECIPIENTS } from './smtp-relay.constants';
 import {
   SMTP_REPLY_AUTH_INVALID_CREDENTIALS,
   SMTP_REPLY_MAIL_FROM_REQUIRES_AUTH,
@@ -87,6 +90,20 @@ const throttleDouble = () => ({
   registerConnection: jest.fn().mockResolvedValue(undefined),
   releaseConnection: jest.fn(),
   recordAuthFailure: jest.fn().mockResolvedValue(undefined),
+});
+
+/**
+ * Double du pipeline (S7). Cette suite exerce la session et l'AUTH ; la seule
+ * conversation qui va au-delà est le `MAIL FROM` anonyme, refusé en `530`
+ * **avant** que le pipeline ne soit sollicité. Le tout est vérifié de bout en
+ * bout, point d'acceptation compris, par `smtp-pipeline.integration.spec.ts`.
+ */
+const pipelineDouble = () => ({
+  maxMessageBytes: MAX_RAW_MESSAGE_BYTES,
+  maxRecipients: SMTP_DEFAULT_MAX_RECIPIENTS,
+  mailFrom: jest.fn().mockResolvedValue(undefined),
+  rcptTo: jest.fn().mockResolvedValue(undefined),
+  data: jest.fn().mockResolvedValue(''),
 });
 
 /**
@@ -224,6 +241,7 @@ describe('Relais SMTP en processus — session et AUTH (B6/S5)', () => {
           useValue: { get: (key: string) => config[key] },
         },
         { provide: SmtpThrottleService, useValue: throttleDouble() },
+        { provide: SmtpPipelineService, useValue: pipelineDouble() },
         { provide: PrismaService, useValue: { smtpCredential: store } },
       ],
     }).compile();
@@ -409,6 +427,7 @@ describe('Relais SMTP hors test — AUTH refusée sur canal en clair (§3.3)', (
           useValue: { get: (key: string) => config[key] },
         },
         { provide: SmtpThrottleService, useValue: throttleDouble() },
+        { provide: SmtpPipelineService, useValue: pipelineDouble() },
         {
           provide: PrismaService,
           useValue: {

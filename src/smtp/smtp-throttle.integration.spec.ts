@@ -3,6 +3,7 @@ import { Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Test, TestingModule } from '@nestjs/testing';
 import { UserRole, UserStatus } from '@prisma/client';
+import { MAX_RAW_MESSAGE_BYTES } from '../emails/emails.constants';
 import { PrismaService } from '../prisma/prisma.service';
 import { generateSmtpCredentialSecret } from '../smtp-credentials';
 import { FakeThrottleRedis } from './fixtures/fake-throttle-redis';
@@ -13,6 +14,7 @@ import {
 } from './smtp-reply';
 import { formatSmtpReplyLine } from './smtp-reply.adapter';
 import { SmtpAuthService } from './smtp-auth.service';
+import { SmtpPipelineService } from './smtp-pipeline.service';
 import { SmtpServerService } from './smtp-server.service';
 import {
   SMTP_REPLY_TOO_MANY_AUTH_FAILURES,
@@ -213,6 +215,18 @@ async function startRelay(
       SmtpAuthService,
       SmtpThrottleService,
       { provide: SMTP_THROTTLE_REDIS, useValue: redis.asRedis() },
+      // Double du pipeline (S7) : cette suite mesure les compteurs de la
+      // connexion et de l'AUTH, aucune conversation n'atteint `MAIL FROM`.
+      // Seul `maxMessageBytes` est lu, pour l'option `size` du serveur.
+      {
+        provide: SmtpPipelineService,
+        useValue: {
+          maxMessageBytes: MAX_RAW_MESSAGE_BYTES,
+          mailFrom: jest.fn().mockResolvedValue(undefined),
+          rcptTo: jest.fn().mockResolvedValue(undefined),
+          data: jest.fn().mockResolvedValue(''),
+        },
+      },
       {
         provide: ConfigService,
         useValue: { get: (key: string) => config[key] },
