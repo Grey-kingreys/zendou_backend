@@ -5,6 +5,16 @@ import {
   DEFAULT_TRUST_PROXY_HOPS,
   RATE_LIMIT_DEFAULTS,
 } from '../rate-limit/rate-limit.constants';
+import {
+  SMTP_DEFAULT_BIND_ADDRESS,
+  SMTP_DEFAULT_CLOSE_TIMEOUT_MS,
+  SMTP_DEFAULT_MAX_CLIENTS,
+  SMTP_DEFAULT_PORTS_STARTTLS,
+  SMTP_DEFAULT_PORTS_TLS,
+  SMTP_DEFAULT_SOCKET_TIMEOUT_MS,
+  SMTP_NO_LISTENING_PORT_MESSAGE,
+  SMTP_TLS_CERTIFICATE_REQUIRED_MESSAGE,
+} from '../smtp/smtp-relay.constants';
 
 /** `true`, `1`, `yes`, `on` (insensible à la casse) valent vrai ; tout le reste faux. */
 const TRUTHY_VALUES = ['1', 'true', 'yes', 'on'];
@@ -46,6 +56,56 @@ const nonNegativeIntFromEnv = (defaultValue: number) =>
   z
     .preprocess(emptyToUndefined, z.coerce.number().int().min(0).optional())
     .default(defaultValue);
+
+/**
+ * Liste de ports TCP séparés par des virgules (`« 587,2525 »` → `[587, 2525]`).
+ *
+ * **Seule variable du fichier où une chaîne vide n'équivaut pas à « absente »**,
+ * et c'est délibéré : `SMTP_PORTS_TLS=` doit pouvoir vouloir dire « ne pas
+ * écouter en TLS implicite », ce qu'`emptyToUndefined` rendrait inexprimable
+ * puisqu'il ferait retomber sur le défaut `465`. Le raisonnement qui fonde la
+ * convention maison — « vide ne doit jamais dégrader silencieusement » — est
+ * préservé autrement : le `refine` plus bas refuse le démarrage si le relais
+ * est activé alors que **les deux** listes sont vides. On peut donc renoncer à
+ * une famille de ports, jamais à toutes, et jamais en silence.
+ */
+const portListFromEnv = (defaultValue: string) =>
+  z
+    .string()
+    .default(defaultValue)
+    .transform((raw, ctx) => {
+      const ports: number[] = [];
+
+      for (const entry of raw.split(',')) {
+        const trimmed = entry.trim();
+
+        if (trimmed === '') {
+          continue;
+        }
+
+        const port = Number(trimmed);
+
+        if (!Number.isInteger(port) || port < 1 || port > 65535) {
+          ctx.addIssue({
+            code: 'custom',
+            message: `« ${trimmed} » n'est pas un port TCP valide (entier de 1 à 65535)`,
+          });
+          continue;
+        }
+
+        if (ports.includes(port)) {
+          ctx.addIssue({
+            code: 'custom',
+            message: `le port ${port} est indiqué plusieurs fois`,
+          });
+          continue;
+        }
+
+        ports.push(port);
+      }
+
+      return ports;
+    });
 
 const baseEnvSchema = z.object({
   NODE_ENV: z
@@ -234,6 +294,68 @@ const baseEnvSchema = z.object({
       })
       .optional(),
   ),
+
+  // ─── Relais SMTP entrant (B6 — voir docs/plans/B6-RELAIS-SMTP.md) ───
+
+  /**
+   * Interrupteur général du relais SMTP. **Faux par défaut**, donc inerte dans
+   * tous les environnements existants, production comprise : le module
+   * n'ouvre aucun port, ne lit aucun fichier et ne pose aucun observateur tant
+   * que cette variable n'est pas explicitement activée. Le jour de la mise en
+   * service, ce sera un ajout de variable et une republication de ports (S14),
+   * pas un déploiement de code.
+   */
+  SMTP_RELAY_ENABLED: booleanFromEnv,
+
+  /**
+   * Ports écoutés en STARTTLS (§1.2). Défaut `587,2525` : 587 est le port de
+   * soumission que tous les clients tentent en premier, 2525 un alias de repli
+   * gratuit si un FAI guinéen filtre 587. Le port 25 n'a pas sa place ici
+   * (A6) : c'est du transit MX, pas de la soumission.
+   */
+  SMTP_PORTS_STARTTLS: portListFromEnv(SMTP_DEFAULT_PORTS_STARTTLS),
+
+  /** Ports écoutés en TLS implicite (§1.2). Défaut `465` (RFC 8314). */
+  SMTP_PORTS_TLS: portListFromEnv(SMTP_DEFAULT_PORTS_TLS),
+
+  /**
+   * Interface d'écoute. Toutes par défaut — sous Dokploy c'est la publication
+   * de port en `mode: host` qui décide de l'exposition (A18). Les tests
+   * d'intégration s'en servent pour n'écouter que sur la boucle locale.
+   */
+  SMTP_BIND_ADDRESS: z
+    .preprocess(emptyToUndefined, z.string().trim().min(1).optional())
+    .default(SMTP_DEFAULT_BIND_ADDRESS),
+
+  /**
+   * Chemins du certificat et de la clé privée du relais (§1.4). Fichiers
+   * produits par certbot/lego sur l'hôte et montés en lecture seule : Traefik
+   * garde les siens dans un `acme.json` qu'il n'expose pas. **Obligatoires en
+   * production dès que le relais est activé** — voir le `refine` plus bas.
+   * Absents hors production, `smtp-server` sert son certificat auto-signé
+   * intégré, ce qui suffit au développement et n'est jamais toléré ailleurs.
+   */
+  SMTP_TLS_CERT_PATH: z.preprocess(
+    emptyToUndefined,
+    z.string().trim().min(1).optional(),
+  ),
+  SMTP_TLS_KEY_PATH: z.preprocess(
+    emptyToUndefined,
+    z.string().trim().min(1).optional(),
+  ),
+
+  /**
+   * Connexions simultanées par instance `SMTPServer`. Plafond global qui
+   * protège l'event loop partagé avec l'API (§1.1) ; le plafond **par IP**,
+   * lui, relève de S9.
+   */
+  SMTP_MAX_CLIENTS: positiveIntFromEnv(SMTP_DEFAULT_MAX_CLIENTS),
+
+  /** Inactivité tolérée sur une connexion avant fermeture (§5). */
+  SMTP_SOCKET_TIMEOUT_MS: positiveIntFromEnv(SMTP_DEFAULT_SOCKET_TIMEOUT_MS),
+
+  /** Sursis accordé aux connexions en cours lors d'un arrêt gracieux. */
+  SMTP_CLOSE_TIMEOUT_MS: positiveIntFromEnv(SMTP_DEFAULT_CLOSE_TIMEOUT_MS),
 });
 
 export const envSchema = baseEnvSchema
@@ -262,6 +384,35 @@ export const envSchema = baseEnvSchema
       path: ['SYSTEM_EMAIL_FROM'],
       message:
         'est obligatoire quand NODE_ENV=production (sans elle, aucun email de confirmation ne peut partir et aucun compte créé ne peut être confirmé)',
+    },
+  )
+  // §1.4 / A19 — règle dure et testable : en production, un relais SMTP activé
+  // sans certificat ne démarre pas. Un serveur de soumission qui accepterait
+  // des identifiants en clair sur Internet est un incident, pas une
+  // dégradation ; mieux vaut un déploiement qui échoue bruyamment.
+  .refine(
+    (env) =>
+      !(
+        env.NODE_ENV === 'production' &&
+        env.SMTP_RELAY_ENABLED &&
+        !(env.SMTP_TLS_CERT_PATH && env.SMTP_TLS_KEY_PATH)
+      ),
+    {
+      path: ['SMTP_TLS_CERT_PATH'],
+      message: SMTP_TLS_CERTIFICATE_REQUIRED_MESSAGE,
+    },
+  )
+  // §6 / A16 — « un relais silencieusement mort est le pire des états ». Une
+  // configuration qui active le relais en vidant les deux listes de ports
+  // produirait exactement cela : le service démarre, les journaux sont calmes,
+  // et pas une seule connexion n'est jamais acceptée.
+  .refine(
+    (env) =>
+      !env.SMTP_RELAY_ENABLED ||
+      env.SMTP_PORTS_STARTTLS.length + env.SMTP_PORTS_TLS.length > 0,
+    {
+      path: ['SMTP_PORTS_STARTTLS'],
+      message: SMTP_NO_LISTENING_PORT_MESSAGE,
     },
   );
 
