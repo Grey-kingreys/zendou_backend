@@ -6,9 +6,16 @@ import {
   RATE_LIMIT_DEFAULTS,
 } from '../rate-limit/rate-limit.constants';
 import {
+  SMTP_DEFAULT_AUTH_FAILURE_WINDOW_MS,
+  SMTP_DEFAULT_AUTH_STUFFING_USERNAME_THRESHOLD,
   SMTP_DEFAULT_BIND_ADDRESS,
   SMTP_DEFAULT_CLOSE_TIMEOUT_MS,
+  SMTP_DEFAULT_CONNECTION_WINDOW_MS,
+  SMTP_DEFAULT_MAX_AUTH_FAILURES_PER_CONNECTION,
   SMTP_DEFAULT_MAX_CLIENTS,
+  SMTP_DEFAULT_MAX_CONNECTIONS_PER_IP,
+  SMTP_DEFAULT_MAX_MESSAGES_PER_CONNECTION,
+  SMTP_DEFAULT_MAX_REFUSED_RECIPIENTS_PER_CONNECTION,
   SMTP_DEFAULT_PORTS_STARTTLS,
   SMTP_DEFAULT_PORTS_TLS,
   SMTP_DEFAULT_SOCKET_TIMEOUT_MS,
@@ -26,14 +33,26 @@ export const DEFAULT_ADMIN_NAME = 'Administrateur Zendou';
 const emptyToUndefined = (value: unknown): unknown =>
   typeof value === 'string' && value.trim() === '' ? undefined : value;
 
-const booleanFromEnv = z
-  .union([z.boolean(), z.string()])
-  .default(false)
-  .transform((value) =>
-    typeof value === 'boolean'
-      ? value
-      : TRUTHY_VALUES.includes(value.trim().toLowerCase()),
-  );
+/**
+ * Booléen lu depuis l'environnement, avec défaut explicite.
+ *
+ * `emptyToUndefined` est appliqué en amont pour que `VARIABLE=` (laissée vide
+ * dans un `.env`) vaille « absente », donc le défaut — la convention maison du
+ * fichier. Sans lui, une variable dont le défaut est **vrai** basculerait à
+ * faux au premier `.env` mal recopié, ce qui désarmerait une protection en
+ * silence.
+ */
+const booleanFromEnv = (defaultValue: boolean) =>
+  z
+    .preprocess(
+      emptyToUndefined,
+      z.union([z.boolean(), z.string()]).default(defaultValue),
+    )
+    .transform((value) =>
+      typeof value === 'boolean'
+        ? value
+        : TRUTHY_VALUES.includes(value.trim().toLowerCase()),
+    );
 
 /**
  * Entier positif lu depuis l'environnement, avec défaut. Une variable laissée
@@ -177,7 +196,7 @@ const baseEnvSchema = z.object({
   // Contournement de la vérification de signature SNS (tests locaux / démo).
   // Interdit en production : sans signature, n'importe qui peut forger un
   // bounce et faire suppressor des adresses arbitraires.
-  SNS_SKIP_SIGNATURE_VALIDATION: booleanFromEnv,
+  SNS_SKIP_SIGNATURE_VALIDATION: booleanFromEnv(false),
 
   /**
    * Clé secrète Cloudflare Turnstile (`POST /v1/auth/register` uniquement).
@@ -305,7 +324,7 @@ const baseEnvSchema = z.object({
    * service, ce sera un ajout de variable et une republication de ports (S14),
    * pas un déploiement de code.
    */
-  SMTP_RELAY_ENABLED: booleanFromEnv,
+  SMTP_RELAY_ENABLED: booleanFromEnv(false),
 
   /**
    * Ports écoutés en STARTTLS (§1.2). Défaut `587,2525` : 587 est le port de
@@ -356,6 +375,94 @@ const baseEnvSchema = z.object({
 
   /** Sursis accordé aux connexions en cours lors d'un arrêt gracieux. */
   SMTP_CLOSE_TIMEOUT_MS: positiveIntFromEnv(SMTP_DEFAULT_CLOSE_TIMEOUT_MS),
+
+  // ─── Anti-abus du relais SMTP (B6/S9 — §5 du plan) ───
+
+  /**
+   * Les limites **par IP** (connexions, échecs d'authentification) sont-elles
+   * appliquées ? **Vraie par défaut** — c'est une protection, on ne l'éteint
+   * pas par omission.
+   *
+   * À passer à `false` **uniquement** si l'IP source n'arrive pas intacte
+   * jusqu'au processus. C'est le piège du §1.3 : Dokploy s'appuie sur Docker
+   * Swarm, et en mode `ingress` le *routing mesh* réécrit l'adresse source —
+   * toutes les connexions SMTP arriveraient avec celle de la passerelle. Les
+   * limites par IP s'effondreraient alors en **un compteur unique partagé par
+   * tout Internet**, où le premier client à saturer ferait taire tous les
+   * autres. Le §5 tranche : « une limite qui compte tout le monde ensemble est
+   * pire qu'une limite absente » — on la désactive franchement, avec un
+   * avertissement au démarrage, plutôt que de la laisser à faux.
+   *
+   * La bonne correction reste de publier les ports en `mode: host` (A18) pour
+   * que `session.remoteAddress` soit la vraie IP ; cette variable est le
+   * garde-fou en attendant, pas la solution. Les limites **par utilisateur**
+   * et **par connexion** ne dépendent pas de l'IP et restent actives.
+   */
+  SMTP_IP_LIMITS_ENABLED: booleanFromEnv(true),
+
+  /** Connexions acceptées depuis une même IP par `SMTP_CONNECTION_WINDOW_MS`. */
+  SMTP_MAX_CONNECTIONS_PER_IP: positiveIntFromEnv(
+    SMTP_DEFAULT_MAX_CONNECTIONS_PER_IP,
+  ),
+
+  /** Fenêtre du compteur de connexions par IP (défaut : une minute). */
+  SMTP_CONNECTION_WINDOW_MS: positiveIntFromEnv(
+    SMTP_DEFAULT_CONNECTION_WINDOW_MS,
+  ),
+
+  /**
+   * Échecs d'authentification tolérés sur **une même connexion** ; le suivant
+   * reçoit `421 4.7.0` et voit son socket fermé (§4.4).
+   */
+  SMTP_MAX_AUTH_FAILURES_PER_CONNECTION: positiveIntFromEnv(
+    SMTP_DEFAULT_MAX_AUTH_FAILURES_PER_CONNECTION,
+  ),
+
+  /**
+   * Fenêtre des compteurs d'échecs d'AUTH par IP et par nom d'utilisateur.
+   * Ces compteurs **ne bloquent pas** : ils alimentent l'observation et la
+   * détection de bourrinage (§5, « pas de verrouillage de compte »).
+   */
+  SMTP_AUTH_FAILURE_WINDOW_MS: positiveIntFromEnv(
+    SMTP_DEFAULT_AUTH_FAILURE_WINDOW_MS,
+  ),
+
+  /**
+   * Noms d'utilisateur distincts ratés par une même IP, dans la fenêtre
+   * ci-dessus, avant la ligne d'alerte « bourrinage d'identifiants » (§5).
+   */
+  SMTP_AUTH_STUFFING_USERNAME_THRESHOLD: positiveIntFromEnv(
+    SMTP_DEFAULT_AUTH_STUFFING_USERNAME_THRESHOLD,
+  ),
+
+  /**
+   * Protection de rafale du canal SMTP, comptée **par utilisateur** — jamais
+   * par IP : en Guinée les abonnés mobiles partagent les mêmes IP publiques
+   * (NAT opérateur), le raisonnement de `rate-limit.constants.ts` s'applique
+   * mot pour mot (§5).
+   *
+   * Le défaut est **la même valeur** que `RATE_LIMIT_EMAILS_PER_MINUTE`, lue
+   * dans la même constante : les deux canaux doivent offrir la même tolérance.
+   * Ce sont en revanche deux budgets **séparés**, à dessein — un client qui
+   * utilise l'API et le relais ne doit pas voir chaque canal amputé par
+   * l'autre.
+   */
+  SMTP_EMAILS_PER_MINUTE: positiveIntFromEnv(
+    RATE_LIMIT_DEFAULTS.EMAILS_PER_MINUTE,
+  ),
+
+  /** Messages acceptés sur une même connexion avant `421` + fermeture (§5). */
+  SMTP_MAX_MESSAGES_PER_CONNECTION: positiveIntFromEnv(
+    SMTP_DEFAULT_MAX_MESSAGES_PER_CONNECTION,
+  ),
+
+  /**
+   * Destinataires **refusés** tolérés sur une même connexion avant `421` +
+   * fermeture — anti-moissonnage d'adresses (§5).
+   */
+  SMTP_MAX_REFUSED_RECIPIENTS_PER_CONNECTION: positiveIntFromEnv(
+    SMTP_DEFAULT_MAX_REFUSED_RECIPIENTS_PER_CONNECTION,
+  ),
 });
 
 export const envSchema = baseEnvSchema

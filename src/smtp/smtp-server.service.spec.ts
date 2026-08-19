@@ -6,6 +6,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { SmtpAuthService } from './smtp-auth.service';
 import { SMTP_TLS_CERTIFICATE_REQUIRED_MESSAGE } from './smtp-relay.constants';
 import { SmtpServerService } from './smtp-server.service';
+import { SmtpThrottleService } from './smtp-throttle.service';
 
 /**
  * Comportements de démarrage du relais : inertie par défaut, refus de démarrer
@@ -17,6 +18,19 @@ import { SmtpServerService } from './smtp-server.service';
 jest.setTimeout(30_000);
 
 const HOST = '127.0.0.1';
+
+/**
+ * Double permissif de l'anti-abus (S9) : ce fichier vérifie le **démarrage**
+ * du relais, pas ses compteurs — ceux-ci ont leurs propres suites
+ * (`smtp-throttle.service.spec.ts`, `smtp-throttle.integration.spec.ts`).
+ * Le double garde ces tests exactement dans l'état où S5 les a écrits.
+ */
+const throttleDouble = () => ({
+  ipLimitsEnabled: true,
+  registerConnection: jest.fn().mockResolvedValue(undefined),
+  releaseConnection: jest.fn(),
+  recordAuthFailure: jest.fn().mockResolvedValue(undefined),
+});
 
 async function buildService(
   config: Record<string, unknown>,
@@ -32,6 +46,7 @@ async function buildService(
         provide: SmtpAuthService,
         useValue: { authenticate: jest.fn() },
       },
+      { provide: SmtpThrottleService, useValue: throttleDouble() },
       {
         provide: PrismaService,
         useValue: { smtpCredential: { findUnique: jest.fn() } },
@@ -75,6 +90,7 @@ describe('SmtpServerService — module inerte sans SMTP_RELAY_ENABLED', () => {
           },
         },
         { provide: SmtpAuthService, useValue: { authenticate: jest.fn() } },
+        { provide: SmtpThrottleService, useValue: throttleDouble() },
         {
           provide: PrismaService,
           useValue: { smtpCredential: { findUnique: jest.fn() } },

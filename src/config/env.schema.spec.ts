@@ -1,5 +1,13 @@
+import { RATE_LIMIT_DEFAULTS } from '../rate-limit/rate-limit.constants';
 import {
+  SMTP_DEFAULT_AUTH_FAILURE_WINDOW_MS,
+  SMTP_DEFAULT_AUTH_STUFFING_USERNAME_THRESHOLD,
+  SMTP_DEFAULT_CONNECTION_WINDOW_MS,
+  SMTP_DEFAULT_MAX_AUTH_FAILURES_PER_CONNECTION,
   SMTP_DEFAULT_MAX_CLIENTS,
+  SMTP_DEFAULT_MAX_CONNECTIONS_PER_IP,
+  SMTP_DEFAULT_MAX_MESSAGES_PER_CONNECTION,
+  SMTP_DEFAULT_MAX_REFUSED_RECIPIENTS_PER_CONNECTION,
   SMTP_DEFAULT_SOCKET_TIMEOUT_MS,
   SMTP_NO_LISTENING_PORT_MESSAGE,
   SMTP_TLS_CERTIFICATE_REQUIRED_MESSAGE,
@@ -329,5 +337,101 @@ describe('validateEnv — relais SMTP (B6/S5)', () => {
       validateEnv({ ...BASE_ENV, SMTP_SOCKET_TIMEOUT_MS: '' })
         .SMTP_SOCKET_TIMEOUT_MS,
     ).toBe(SMTP_DEFAULT_SOCKET_TIMEOUT_MS);
+  });
+});
+
+describe('validateEnv — anti-abus du relais SMTP (B6/S9)', () => {
+  it('keeps per-IP limits on by default — a protection is never disarmed by omission', () => {
+    expect(validateEnv({ ...BASE_ENV }).SMTP_IP_LIMITS_ENABLED).toBe(true);
+  });
+
+  it('treats an empty value as absent, not as false', () => {
+    // Le piège que cette convention évite : `SMTP_IP_LIMITS_ENABLED=` recopié
+    // dans un `.env` couperait silencieusement toutes les limites par IP.
+    expect(
+      validateEnv({ ...BASE_ENV, SMTP_IP_LIMITS_ENABLED: '' })
+        .SMTP_IP_LIMITS_ENABLED,
+    ).toBe(true);
+    expect(
+      validateEnv({ ...BASE_ENV, SMTP_IP_LIMITS_ENABLED: '   ' })
+        .SMTP_IP_LIMITS_ENABLED,
+    ).toBe(true);
+  });
+
+  it.each([['false'], ['0'], ['no'], ['off'], ['anything else']])(
+    'disables per-IP limits on an explicit %s',
+    (value) => {
+      expect(
+        validateEnv({ ...BASE_ENV, SMTP_IP_LIMITS_ENABLED: value })
+          .SMTP_IP_LIMITS_ENABLED,
+      ).toBe(false);
+    },
+  );
+
+  it.each([['true'], ['1'], ['yes'], ['ON']])(
+    'keeps per-IP limits on for %s',
+    (value) => {
+      expect(
+        validateEnv({ ...BASE_ENV, SMTP_IP_LIMITS_ENABLED: value })
+          .SMTP_IP_LIMITS_ENABLED,
+      ).toBe(true);
+    },
+  );
+
+  it('applies the documented anti-abuse defaults', () => {
+    const env = validateEnv({ ...BASE_ENV });
+
+    expect(env.SMTP_MAX_CONNECTIONS_PER_IP).toBe(
+      SMTP_DEFAULT_MAX_CONNECTIONS_PER_IP,
+    );
+    expect(env.SMTP_CONNECTION_WINDOW_MS).toBe(
+      SMTP_DEFAULT_CONNECTION_WINDOW_MS,
+    );
+    expect(env.SMTP_MAX_AUTH_FAILURES_PER_CONNECTION).toBe(
+      SMTP_DEFAULT_MAX_AUTH_FAILURES_PER_CONNECTION,
+    );
+    expect(env.SMTP_AUTH_FAILURE_WINDOW_MS).toBe(
+      SMTP_DEFAULT_AUTH_FAILURE_WINDOW_MS,
+    );
+    expect(env.SMTP_AUTH_STUFFING_USERNAME_THRESHOLD).toBe(
+      SMTP_DEFAULT_AUTH_STUFFING_USERNAME_THRESHOLD,
+    );
+    expect(env.SMTP_MAX_MESSAGES_PER_CONNECTION).toBe(
+      SMTP_DEFAULT_MAX_MESSAGES_PER_CONNECTION,
+    );
+    expect(env.SMTP_MAX_REFUSED_RECIPIENTS_PER_CONNECTION).toBe(
+      SMTP_DEFAULT_MAX_REFUSED_RECIPIENTS_PER_CONNECTION,
+    );
+  });
+
+  it('gives the SMTP burst limit the same default as the HTTP one, on a separate budget', () => {
+    const env = validateEnv({ ...BASE_ENV });
+
+    // §5 : « équivalent SMTP de RATE_LIMIT_EMAILS_PER_MINUTE ». Même
+    // tolérance, deux compteurs — un client qui utilise les deux canaux ne
+    // doit pas voir chacun amputé par l'autre.
+    expect(env.SMTP_EMAILS_PER_MINUTE).toBe(
+      RATE_LIMIT_DEFAULTS.EMAILS_PER_MINUTE,
+    );
+    expect(env.RATE_LIMIT_EMAILS_PER_MINUTE).toBe(env.SMTP_EMAILS_PER_MINUTE);
+
+    const tuned = validateEnv({ ...BASE_ENV, SMTP_EMAILS_PER_MINUTE: '10' });
+    expect(tuned.SMTP_EMAILS_PER_MINUTE).toBe(10);
+    expect(tuned.RATE_LIMIT_EMAILS_PER_MINUTE).toBe(
+      RATE_LIMIT_DEFAULTS.EMAILS_PER_MINUTE,
+    );
+  });
+
+  it('reads overrides and treats an empty value as absent', () => {
+    expect(
+      validateEnv({ ...BASE_ENV, SMTP_MAX_CONNECTIONS_PER_IP: '5' })
+        .SMTP_MAX_CONNECTIONS_PER_IP,
+    ).toBe(5);
+    // Convention maison : vide vaut « absente », jamais zéro — une limite
+    // tombée à 0 refuserait toutes les connexions.
+    expect(
+      validateEnv({ ...BASE_ENV, SMTP_MAX_CONNECTIONS_PER_IP: '' })
+        .SMTP_MAX_CONNECTIONS_PER_IP,
+    ).toBe(SMTP_DEFAULT_MAX_CONNECTIONS_PER_IP);
   });
 });
