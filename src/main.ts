@@ -11,6 +11,14 @@ async function bootstrap() {
   const app = await NestFactory.create<NestExpressApplication>(AppModule);
   const configService = app.get(ConfigService);
 
+  // Sans ceci, Nest n'appelle jamais `onModuleDestroy`/`onApplicationShutdown`
+  // sur SIGTERM — le relais SMTP (B6/S5) ne fermerait donc jamais ses
+  // serveurs à l'arrêt du conteneur, laissant des connexions en cours se
+  // faire trancher par SIGKILL plutôt que de recevoir un `421` propre.
+  // Effet global assumé (A17) : Prisma, Redis et BullMQ s'arrêtent désormais
+  // eux aussi sur SIGTERM — vérifié qu'aucun de ces hooks existants ne jette.
+  app.enableShutdownHooks();
+
   // Derrière le proxy Dokploy/Traefik, Express voit par défaut l'IP du proxy
   // et non celle du client : tous les clients partageraient alors un unique
   // compteur de limitation de débit, et le premier bourrin bloquerait tout le
