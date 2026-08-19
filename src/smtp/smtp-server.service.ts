@@ -88,6 +88,26 @@ export class SmtpServerService implements OnModuleInit, OnModuleDestroy {
     return this.ports;
   }
 
+  /**
+   * Vrai si au moins une instance a démarré et que **toutes** celles
+   * démarrées sont encore effectivement en écoute (`net.Server#listening`).
+   *
+   * Diffère de `listeningPorts.length > 0` : ce tableau n'est mis à jour qu'au
+   * démarrage et à l'arrêt gracieux (`shutdown`), il resterait donc « plein »
+   * si une instance cessait d'écouter d'elle-même entre les deux (crash du
+   * socket sous-jacent, fermeture externe). `/health` (S10, A16) interroge
+   * cette propriété-ci pour distinguer un relais réellement mort d'un relais
+   * simplement désactivé — c'est à l'appelant de savoir lequel des deux cas
+   * il observe (`SMTP_RELAY_ENABLED`), cette propriété ne fait que rapporter
+   * l'état de socket brut.
+   */
+  get isListening(): boolean {
+    return (
+      this.servers.length > 0 &&
+      this.servers.every((server) => server.server.listening)
+    );
+  }
+
   async onModuleInit(): Promise<void> {
     if (!this.configService.get<boolean>('SMTP_RELAY_ENABLED')) {
       this.logger.log(

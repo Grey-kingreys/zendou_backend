@@ -22,17 +22,35 @@ describe('HealthController', () => {
     expect(controller).toBeDefined();
   });
 
-  it('returns the health payload when db and redis are ok', async () => {
+  it('returns the health payload when db, redis and smtp are ok', async () => {
     healthService.check.mockResolvedValue({
       status: 'ok',
       db: 'ok',
       redis: 'ok',
+      smtp: 'ok',
     });
 
     await expect(controller.check()).resolves.toEqual({
       status: 'ok',
       db: 'ok',
       redis: 'ok',
+      smtp: 'ok',
+    });
+  });
+
+  it('returns 200 when the SMTP relay is disabled (default state everywhere)', async () => {
+    healthService.check.mockResolvedValue({
+      status: 'ok',
+      db: 'ok',
+      redis: 'ok',
+      smtp: 'disabled',
+    });
+
+    await expect(controller.check()).resolves.toEqual({
+      status: 'ok',
+      db: 'ok',
+      redis: 'ok',
+      smtp: 'disabled',
     });
   });
 
@@ -41,11 +59,12 @@ describe('HealthController', () => {
       status: 'error',
       db: 'down',
       redis: 'ok',
+      smtp: 'disabled',
     });
 
     await expect(controller.check()).rejects.toMatchObject(
       new HttpException(
-        { status: 'error', db: 'down', redis: 'ok' },
+        { status: 'error', db: 'down', redis: 'ok', smtp: 'disabled' },
         HttpStatus.SERVICE_UNAVAILABLE,
       ),
     );
@@ -56,11 +75,28 @@ describe('HealthController', () => {
       status: 'error',
       db: 'ok',
       redis: 'down',
+      smtp: 'disabled',
     });
 
     await expect(controller.check()).rejects.toMatchObject(
       new HttpException(
-        { status: 'error', db: 'ok', redis: 'down' },
+        { status: 'error', db: 'ok', redis: 'down', smtp: 'disabled' },
+        HttpStatus.SERVICE_UNAVAILABLE,
+      ),
+    );
+  });
+
+  it('throws a 503 HttpException when the SMTP relay is enabled but not listening (A16 — a silently dead relay is the worst state)', async () => {
+    healthService.check.mockResolvedValue({
+      status: 'error',
+      db: 'ok',
+      redis: 'ok',
+      smtp: 'down',
+    });
+
+    await expect(controller.check()).rejects.toMatchObject(
+      new HttpException(
+        { status: 'error', db: 'ok', redis: 'ok', smtp: 'down' },
         HttpStatus.SERVICE_UNAVAILABLE,
       ),
     );
