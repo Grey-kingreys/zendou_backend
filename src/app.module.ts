@@ -7,6 +7,7 @@ import { HealthModule } from './health/health.module';
 import { AuthModule } from './auth/auth.module';
 import { ApiKeysModule } from './api-keys/api-keys.module';
 import { SmtpCredentialsModule } from './smtp-credentials/smtp-credentials.module';
+import { SmtpRelayModule } from './smtp/smtp-relay.module';
 import { EmailsLogModule } from './emails-log/emails-log.module';
 import { EmailsModule } from './emails/emails.module';
 import { DomainsModule } from './domains/domains.module';
@@ -39,6 +40,8 @@ import { EMAIL_SEND_QUEUE } from './queues/queues';
     AuthModule,
     ApiKeysModule,
     SmtpCredentialsModule,
+    // Inerte tant que `SMTP_RELAY_ENABLED` n'est pas activée (B6/S5).
+    SmtpRelayModule,
     EmailsLogModule,
     EmailsModule,
     DomainsModule,
