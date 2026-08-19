@@ -94,11 +94,12 @@ model User {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  apiKeys       ApiKey[]
-  domains       Domain[]
-  emails        Email[]
-  creditEntries CreditEntry[]
-  topUpRequests TopUpRequest[]
+  apiKeys         ApiKey[]
+  smtpCredentials SmtpCredential[]
+  domains         Domain[]
+  emails          Email[]
+  creditEntries   CreditEntry[]
+  topUpRequests   TopUpRequest[]
 
   adminActionsPerformed AdminAction[] @relation("AdminActionsPerformed")
   adminActionsReceived  AdminAction[] @relation("AdminActionsReceived")
@@ -119,6 +120,40 @@ model ApiKey {
   @@index([userId])
 }
 
+/// Identifiants d'authentification du relais SMTP (B6), distincts des
+/// `ApiKey` : un secret `zd_smtp_…` collé dans un `wp-config.php` ou un
+/// `.env` d'ERP tiers doit pouvoir être révoqué sans casser les intégrations
+/// API du même compte. Cycle de vie calqué ligne à ligne sur `ApiKey`.
+model SmtpCredential {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id])
+  name   String
+
+  /// Identifiant opaque et généré (ex. `zdu_` + 16 hex), jamais l'adresse
+  /// email du compte : il finit dans des fichiers de config tiers et sert au
+  /// lookup d'authentification SMTP (`AUTH PLAIN`/`AUTH LOGIN`).
+  username String @unique
+
+  /// 12 premiers caractères du secret `zd_smtp_…`, affichés dans l'UI pour
+  /// distinguer les identifiants sans jamais réafficher le secret complet —
+  /// même rôle que `ApiKey.prefix`.
+  prefix String
+
+  /// SHA-256 (hex) du secret présenté à `AUTH` — jamais le secret en clair,
+  /// même mécanique que `ApiKey.keyHash` (`hashApiKey`, réutilisée telle
+  /// quelle).
+  secretHash String    @unique
+  lastUsedAt DateTime?
+  revokedAt  DateTime?
+  rotatedAt  DateTime?
+  createdAt  DateTime  @default(now())
+
+  emails Email[]
+
+  @@index([userId])
+}
+
 model Domain {
   id         String       @id @default(cuid())
   userId     String
@@ -130,6 +165,11 @@ model Domain {
   createdAt  DateTime     @default(now())
 
   @@index([userId])
+}
+
+enum EmailChannel {
+  API
+  SMTP
 }
 
 model Email {
@@ -148,6 +188,21 @@ model Email {
   sentAt       DateTime?
   deliveredAt  DateTime?
   lastEventAt  DateTime?
+
+  /// Canal d'entrée de l'envoi (B6) : `API` pour `POST /v1/emails`, `SMTP`
+  /// pour le relais SMTP. Colonne additive avec défaut — n'affecte aucune
+  /// ligne existante.
+  channel EmailChannel @default(API)
+
+  /// Identifiant SMTP ayant expédié cet envoi (canal SMTP uniquement) —
+  /// traçabilité « quel identifiant a envoyé quoi ». `null` pour le canal API.
+  smtpCredentialId String?
+
+  /// `onDelete: SetNull`, volontairement : la suppression d'un identifiant
+  /// SMTP (révocation, purge) ne doit jamais entraîner la suppression des
+  /// lignes `Email` déjà journalisées — le journal d'envoi est append-only et
+  /// doit survivre à la suppression de l'identifiant qui l'a produit.
+  smtpCredential SmtpCredential? @relation(fields: [smtpCredentialId], references: [id], onDelete: SetNull)
 
   /// Envoi émis par Zendou lui-même (confirmation d'adresse…) et non par le
   /// client. `userId` désigne alors le **destinataire**, pas l'expéditeur.
