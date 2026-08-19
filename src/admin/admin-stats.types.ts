@@ -1,4 +1,4 @@
-import type { EmailStatus } from '@prisma/client';
+import type { EmailChannel, EmailStatus } from '@prisma/client';
 
 /**
  * Compteur ventilé système / client. `all` est toujours la somme des deux —
@@ -18,6 +18,14 @@ export interface PlatformCounts {
  */
 export type StatusBreakdown = Record<EmailStatus, number>;
 
+/**
+ * Répartition du total **plateforme** (système inclus) par canal d'entrée
+ * (B6), sur toute l'histoire — même périmètre que `byStatus` : pas de
+ * fenêtre `queuedAt`, toutes les valeurs de l'enum `EmailChannel` présentes
+ * même à zéro. Invariant : `API + SMTP === total.all`.
+ */
+export type ChannelBreakdown = Record<EmailChannel, number>;
+
 /** Réponse de `GET /v1/admin/stats/emails`. */
 export interface AdminEmailStats {
   total: PlatformCounts;
@@ -25,5 +33,6 @@ export interface AdminEmailStats {
   last7d: PlatformCounts;
   last30d: PlatformCounts;
   byStatus: StatusBreakdown;
+  byChannel: ChannelBreakdown;
   generatedAt: Date;
 }

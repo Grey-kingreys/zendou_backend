@@ -3,7 +3,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { EmailStatus, Prisma } from '@prisma/client';
+import { EmailChannel, EmailStatus, Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import type {
   EmailDetail,
@@ -22,6 +22,7 @@ const EMAIL_LIST_SELECT = {
   toAddress: true,
   subject: true,
   status: true,
+  channel: true,
   queuedAt: true,
   sentAt: true,
   deliveredAt: true,
@@ -32,6 +33,7 @@ const EMAIL_DETAIL_SELECT = {
   ...EMAIL_LIST_SELECT,
   errorMessage: true,
   sesMessageId: true,
+  smtpCredentialId: true,
 } satisfies Record<keyof EmailDetail, true>;
 
 /**
@@ -47,6 +49,7 @@ export class EmailsLogService {
     query: RawEmailsListQuery,
   ): Promise<PaginatedEmails> {
     const status = this.parseStatus(query.status);
+    const channel = this.parseChannel(query.channel);
     const page = this.parsePositiveInt(query.page, 'page', DEFAULT_PAGE);
     const limit = this.parsePositiveInt(
       query.limit,
@@ -63,6 +66,10 @@ export class EmailsLogService {
 
     if (status) {
       where.status = status;
+    }
+
+    if (channel) {
+      where.channel = channel;
     }
 
     if (from || to) {
@@ -128,6 +135,19 @@ export class EmailsLogService {
     }
 
     return raw as EmailStatus;
+  }
+
+  private parseChannel(raw: string | undefined): EmailChannel | undefined {
+    if (raw === undefined || raw === '') {
+      return undefined;
+    }
+
+    const values = Object.values(EmailChannel) as string[];
+    if (!values.includes(raw)) {
+      throw new BadRequestException(`Canal inconnu : ${raw}`);
+    }
+
+    return raw as EmailChannel;
   }
 
   private parsePositiveInt(

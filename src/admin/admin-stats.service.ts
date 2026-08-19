@@ -1,8 +1,9 @@
 import { Injectable } from '@nestjs/common';
-import { EmailStatus } from '@prisma/client';
+import { EmailChannel, EmailStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import type {
   AdminEmailStats,
+  ChannelBreakdown,
   PlatformCounts,
   StatusBreakdown,
 } from './admin-stats.types';
@@ -11,9 +12,11 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 
 /** Ordre d'affichage stable, indépendant de l'ordre de déclaration Prisma. */
 const ALL_STATUSES = Object.values(EmailStatus);
+const ALL_CHANNELS = Object.values(EmailChannel);
 
 type SystemGroup = { system: boolean; _count: { _all: number } };
 type StatusGroup = { status: EmailStatus; _count: { _all: number } };
+type ChannelGroup = { channel: EmailChannel; _count: { _all: number } };
 
 /**
  * Statistiques d'envoi de **toute la plateforme** (B13) : compteurs
@@ -42,7 +45,7 @@ export class AdminStatsService {
     const last7dStart = new Date(now.getTime() - 7 * DAY_MS);
     const last30dStart = new Date(now.getTime() - 30 * DAY_MS);
 
-    // Cinq requêtes groupées, en parallèle : le coût ne dépend ni du nombre
+    // Six requêtes groupées, en parallèle : le coût ne dépend ni du nombre
     // de comptes ni du nombre d'emails. Pas de `COUNT(*)` répété par
     // fenêtre — un seul `groupBy(['system'])` par fenêtre donne à la fois le
     // total et la part système.
@@ -52,6 +55,7 @@ export class AdminStatsService {
       last7dBySystem,
       last30dBySystem,
       statusGroups,
+      channelGroups,
     ] = await Promise.all([
       this.prisma.email.groupBy({
         by: ['system'],
@@ -78,6 +82,12 @@ export class AdminStatsService {
         by: ['status'],
         _count: { _all: true },
       }),
+      // Répartition par canal d'entrée (B6) sur toute l'histoire, système
+      // inclus : même périmètre que `byStatus` — pas de filtre `queuedAt`.
+      this.prisma.email.groupBy({
+        by: ['channel'],
+        _count: { _all: true },
+      }),
     ]);
 
     return {
@@ -86,6 +96,7 @@ export class AdminStatsService {
       last7d: this.toPlatformCounts(last7dBySystem),
       last30d: this.toPlatformCounts(last30dBySystem),
       byStatus: this.toStatusBreakdown(statusGroups),
+      byChannel: this.toChannelBreakdown(channelGroups),
       generatedAt: now,
     };
   }
@@ -110,5 +121,19 @@ export class AdminStatsService {
     return Object.fromEntries(
       ALL_STATUSES.map((status) => [status, counts.get(status) ?? 0]),
     ) as StatusBreakdown;
+  }
+
+  /**
+   * Toutes les valeurs de `EmailChannel`, y compris celles absentes des
+   * lignes. Même construction que `toStatusBreakdown` : `API + SMTP` est
+   * garanti égal à `total.all` puisque les deux proviennent du même
+   * périmètre (toute l'histoire, système inclus).
+   */
+  private toChannelBreakdown(rows: ChannelGroup[]): ChannelBreakdown {
+    const counts = new Map(rows.map((row) => [row.channel, row._count._all]));
+
+    return Object.fromEntries(
+      ALL_CHANNELS.map((channel) => [channel, counts.get(channel) ?? 0]),
+    ) as ChannelBreakdown;
   }
 }

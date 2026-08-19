@@ -1,4 +1,4 @@
-import type { EmailStatus } from '@prisma/client';
+import type { EmailChannel, EmailStatus } from '@prisma/client';
 
 /**
  * Query brute reçue par le contrôleur (tous les champs arrivent en string
@@ -7,6 +7,7 @@ import type { EmailStatus } from '@prisma/client';
  */
 export interface RawEmailsListQuery {
   status?: string;
+  channel?: string;
   page?: string;
   limit?: string;
   from?: string;
@@ -21,16 +22,23 @@ export interface EmailListItem {
   toAddress: string;
   subject: string;
   status: EmailStatus;
+  channel: EmailChannel;
   queuedAt: Date;
   sentAt: Date | null;
   deliveredAt: Date | null;
   lastEventAt: Date | null;
 }
 
-/** Détail complet d'un envoi (jamais l'id interne cuid ni le userId). */
+/**
+ * Détail complet d'un envoi (jamais l'id interne cuid ni le userId).
+ * `smtpCredentialId` : quel identifiant SMTP a expédié cet envoi (`null`
+ * pour le canal API, ou pour un envoi SMTP dont l'identifiant a depuis été
+ * révoqué/purgé — voir `Email.smtpCredential` en base, `onDelete: SetNull`).
+ */
 export interface EmailDetail extends EmailListItem {
   errorMessage: string | null;
   sesMessageId: string | null;
+  smtpCredentialId: string | null;
 }
 
 export interface PaginatedEmails {

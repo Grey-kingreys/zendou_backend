@@ -1,5 +1,10 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { EmailStatus, UserRole, UserStatus } from '@prisma/client';
+import {
+  EmailChannel,
+  EmailStatus,
+  UserRole,
+  UserStatus,
+} from '@prisma/client';
 import { SessionAuthGuard } from '../auth';
 import type { AuthUser } from '../auth';
 import { EmailsLogController } from './emails-log.controller';
@@ -65,8 +70,10 @@ describe('EmailsLogController', () => {
       toAddress: 'aissatou@example.com',
       subject: 'Bienvenue',
       status: EmailStatus.SENT,
+      channel: EmailChannel.API,
       errorMessage: null,
       sesMessageId: 'ses_1',
+      smtpCredentialId: null,
       queuedAt: new Date('2026-01-01T00:00:00.000Z'),
       sentAt: null,
       deliveredAt: null,

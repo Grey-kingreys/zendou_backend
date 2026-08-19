@@ -1,6 +1,6 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { BadRequestException, NotFoundException } from '@nestjs/common';
-import { EmailStatus } from '@prisma/client';
+import { EmailChannel, EmailStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { EmailsLogService } from './emails-log.service';
 import type { EmailDetail } from './emails-log.types';
@@ -13,6 +13,7 @@ const EMAIL_LIST_SELECT = {
   toAddress: true,
   subject: true,
   status: true,
+  channel: true,
   queuedAt: true,
   sentAt: true,
   deliveredAt: true,
@@ -23,6 +24,7 @@ const EMAIL_DETAIL_SELECT = {
   ...EMAIL_LIST_SELECT,
   errorMessage: true,
   sesMessageId: true,
+  smtpCredentialId: true,
 };
 
 describe('EmailsLogService', () => {
@@ -143,6 +145,37 @@ describe('EmailsLogService', () => {
       expect(findMany).not.toHaveBeenCalled();
     });
 
+    it('filters by channel when provided', async () => {
+      findMany.mockResolvedValue([]);
+      count.mockResolvedValue(0);
+
+      await service.list('user_1', { channel: EmailChannel.SMTP });
+
+      expect(findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: {
+            userId: 'user_1',
+            system: false,
+            channel: EmailChannel.SMTP,
+          },
+        }),
+      );
+      expect(count).toHaveBeenCalledWith({
+        where: {
+          userId: 'user_1',
+          system: false,
+          channel: EmailChannel.SMTP,
+        },
+      });
+    });
+
+    it('rejects an unknown channel with a 400', async () => {
+      await expect(
+        service.list('user_1', { channel: 'NOT_A_CHANNEL' }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      expect(findMany).not.toHaveBeenCalled();
+    });
+
     it('filters on the queuedAt range with from and to', async () => {
       findMany.mockResolvedValue([]);
       count.mockResolvedValue(0);
@@ -239,8 +272,10 @@ describe('EmailsLogService', () => {
       toAddress: 'aissatou@example.com',
       subject: 'Bienvenue',
       status: EmailStatus.SENT,
+      channel: EmailChannel.API,
       errorMessage: null,
       sesMessageId: 'ses_1',
+      smtpCredentialId: null,
       queuedAt: new Date('2026-01-01T00:00:00.000Z'),
       sentAt: new Date('2026-01-01T00:00:01.000Z'),
       deliveredAt: null,
