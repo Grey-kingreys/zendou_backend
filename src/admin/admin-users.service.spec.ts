@@ -63,6 +63,7 @@ describe('AdminUsersService', () => {
   const domainGroupBy = jest.fn();
   const domainCount = jest.fn();
   const apiKeyCount = jest.fn();
+  const smtpCredentialCount = jest.fn();
   const topUpRequestCount = jest.fn();
   const actionCreate = jest.fn();
   const actionFindMany = jest.fn();
@@ -88,6 +89,7 @@ describe('AdminUsersService', () => {
     domainGroupBy,
     domainCount,
     apiKeyCount,
+    smtpCredentialCount,
     topUpRequestCount,
     actionCreate,
     actionFindMany,
@@ -119,6 +121,7 @@ describe('AdminUsersService', () => {
     },
     domain: { groupBy: domainGroupBy, count: domainCount },
     apiKey: { count: apiKeyCount },
+    smtpCredential: { count: smtpCredentialCount },
     topUpRequest: { count: topUpRequestCount },
     adminAction: {
       create: actionCreate,
@@ -151,6 +154,7 @@ describe('AdminUsersService', () => {
     domainGroupBy.mockResolvedValue([]);
     domainCount.mockResolvedValue(0);
     apiKeyCount.mockResolvedValue(0);
+    smtpCredentialCount.mockResolvedValue(0);
     topUpRequestCount.mockResolvedValue(0);
     actionFindMany.mockResolvedValue([]);
     actionCreate.mockResolvedValue({ id: 'action_1' });
@@ -781,6 +785,11 @@ describe('AdminUsersService', () => {
       ['a domain', () => domainCount.mockResolvedValue(2), '2 domaines'],
       ['an API key', () => apiKeyCount.mockResolvedValue(1), '1 clé API'],
       [
+        'an SMTP credential',
+        () => smtpCredentialCount.mockResolvedValue(1),
+        '1 identifiant SMTP',
+      ],
+      [
         'a client email (system: false)',
         () => emailCount.mockResolvedValue(14),
         '14 emails',
@@ -830,6 +839,26 @@ describe('AdminUsersService', () => {
           'Suppression refusée : ce compte possède encore 2 domaines, 1 clé API, 14 emails. Suspendez le compte plutôt que de le supprimer.',
         ),
       );
+    });
+
+    /**
+     * V9 : l'identifiant SMTP bloque au même titre qu'une clé API — placé
+     * juste après elle dans le message (les deux sont des moyens d'envoi
+     * que le compte s'est donnés). Vérifie aussi l'accord pluriel
+     * (« identifiants SMTP », pas « identifiant SMTPs »).
+     */
+    it('places the SMTP credential blocker right after the API key blocker, with correct plural agreement', async () => {
+      apiKeyCount.mockResolvedValue(1);
+      smtpCredentialCount.mockResolvedValue(3);
+
+      await expect(service.deleteUser('admin_1', 'u1')).rejects.toThrow(
+        new ConflictException(
+          'Suppression refusée : ce compte possède encore 1 clé API, 3 identifiants SMTP. Suspendez le compte plutôt que de le supprimer.',
+        ),
+      );
+
+      expect(actionCreate).not.toHaveBeenCalled();
+      expect(userDelete).not.toHaveBeenCalled();
     });
 
     // --- Cœur du correctif V9-A --------------------------------------

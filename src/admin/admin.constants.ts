@@ -35,7 +35,7 @@ export const SELF_DELETE_MESSAGE =
  * Encadrent la liste des compteurs dans le message 409 de
  * `AdminUsersService.deleteUser` — voir `buildDeleteBlockers`. Un seul
  * message concaténé plutôt que des constantes par cause : le nombre et
- * l'ordre des causes possibles ne sont pas fixes (de 1 à 6 items).
+ * l'ordre des causes possibles ne sont pas fixes (de 1 à 7 items).
  */
 export const DELETE_BLOCKED_MESSAGE_PREFIX =
   'Suppression refusée : ce compte possède encore ';
