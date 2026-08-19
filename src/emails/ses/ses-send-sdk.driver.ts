@@ -2,6 +2,7 @@ import {
   SendEmailCommand,
   SESv2Client,
   type Body as SesBody,
+  type EmailContent as SesEmailContent,
 } from '@aws-sdk/client-sesv2';
 import {
   SesSendError,
@@ -9,10 +10,14 @@ import {
   type SesSendErrorKind,
   type SesSendPayload,
   type SesSendResult,
+  type SesSendSimplePayload,
 } from './ses-send-driver';
 
 /** Jeu de caractères déclaré à SES pour le sujet et le corps. */
 const CHARSET = 'UTF-8';
+
+/** Encodage retenu pour un message brut fourni sous forme de chaîne. */
+const RAW_ENCODING = 'utf8';
 
 /**
  * Exceptions SES définitives : l'appel est rejeté pour une raison qui ne
@@ -63,8 +68,8 @@ export interface SesSendSdkDriverOptions {
 
 /**
  * Implémentation réelle sur l'API Amazon SES v2 (`SendEmail`, contenu
- * `Simple`). Toute erreur remontée est convertie en `SesSendError` pour
- * que le worker sache s'il doit retenter ou abandonner.
+ * `Simple` ou `Raw`). Toute erreur remontée est convertie en `SesSendError`
+ * pour que le worker sache s'il doit retenter ou abandonner.
  */
 export class SesSendSdkDriver implements SesSendDriver {
   private readonly client: SESv2Client;
@@ -88,13 +93,12 @@ export class SesSendSdkDriver implements SesSendDriver {
       const response = await this.client.send(
         new SendEmailCommand({
           FromEmailAddress: payload.from,
+          // `Destination` est fourni sur les DEUX chemins, avec la seule
+          // adresse de la ligne `Email` traitée. C'est ce qui rend l'éventail
+          // multi-destinataires exact et la fuite d'un `Bcc:` resté dans les
+          // octets bruts structurellement impossible : SES ne livre qu'ici.
           Destination: { ToAddresses: [payload.to] },
-          Content: {
-            Simple: {
-              Subject: { Data: payload.subject, Charset: CHARSET },
-              Body: buildBody(payload),
-            },
-          },
+          Content: buildContent(payload),
           ...(configurationSet
             ? { ConfigurationSetName: configurationSet }
             : {}),
@@ -117,8 +121,32 @@ export class SesSendSdkDriver implements SesSendDriver {
   }
 }
 
+/**
+ * Construit le contenu SES selon la forme du message. Le chemin `simple` est
+ * exactement celui d'avant l'introduction du canal Raw — sujet et corps
+ * assemblés par SES ; le chemin `raw` remet les octets tels quels, le SDK se
+ * chargeant de leur encodage base64 sur le fil.
+ */
+export function buildContent(payload: SesSendPayload): SesEmailContent {
+  if (payload.kind === 'raw') {
+    return { Raw: { Data: toRawBytes(payload.raw) } };
+  }
+
+  return {
+    Simple: {
+      Subject: { Data: payload.subject, Charset: CHARSET },
+      Body: buildBody(payload),
+    },
+  };
+}
+
+/** Octets MIME à remettre à SES, sans réécriture ni recomposition. */
+export function toRawBytes(raw: Buffer | string): Uint8Array {
+  return typeof raw === 'string' ? Buffer.from(raw, RAW_ENCODING) : raw;
+}
+
 /** Construit le corps SES à partir des variantes fournies. */
-export function buildBody(payload: SesSendPayload): SesBody {
+export function buildBody(payload: SesSendSimplePayload): SesBody {
   const body: SesBody = {};
 
   if (payload.html) {

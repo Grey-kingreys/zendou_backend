@@ -94,6 +94,7 @@ describe('EmailSendProcessor', () => {
       from: storedEmail.fromAddress,
       to: storedEmail.toAddress,
       subject: storedEmail.subject,
+      kind: 'simple',
       html: '<p>Bonjour</p>',
       text: 'Bonjour',
     });
