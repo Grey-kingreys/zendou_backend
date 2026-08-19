@@ -1,5 +1,5 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { EmailStatus } from '@prisma/client';
+import { EmailChannel, EmailStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { AdminStatsService } from './admin-stats.service';
 
@@ -38,10 +38,10 @@ describe('AdminStatsService', () => {
     service = module.get<AdminStatsService>(AdminStatsService);
   });
 
-  it('costs exactly 5 grouped Prisma queries, run in parallel (no N+1)', async () => {
+  it('costs exactly 6 grouped Prisma queries, run in parallel (no N+1)', async () => {
     await service.emailStats();
 
-    expect(emailGroupBy).toHaveBeenCalledTimes(5);
+    expect(emailGroupBy).toHaveBeenCalledTimes(6);
   });
 
   /**
@@ -124,6 +124,54 @@ describe('AdminStatsService', () => {
     );
   });
 
+  it('fills every EmailChannel value, including the ones absent from the rows', async () => {
+    emailGroupBy
+      .mockResolvedValueOnce([]) // total
+      .mockResolvedValueOnce([]) // today
+      .mockResolvedValueOnce([]) // last7d
+      .mockResolvedValueOnce([]) // last30d
+      .mockResolvedValueOnce([]) // byStatus
+      .mockResolvedValueOnce([
+        { channel: EmailChannel.SMTP, _count: { _all: 7 } },
+      ]); // byChannel: no API row at all
+
+    const stats = await service.emailStats();
+
+    expect(stats.byChannel).toEqual({ API: 0, SMTP: 7 });
+    expect(Object.keys(stats.byChannel).sort()).toEqual(
+      Object.values(EmailChannel).sort(),
+    );
+  });
+
+  /**
+   * Le cœur du contrat de `byChannel` : la somme des canaux ne peut jamais
+   * diverger de `total.all`, puisque les deux groupBy partagent le même
+   * périmètre (toute l'histoire, système inclus, sans filtre `queuedAt`).
+   * Vérifié sur un jeu où `total` mélange système et client pour prouver
+   * que l'invariant tient même quand `total.all` n'est pas une simple
+   * addition triviale.
+   */
+  it('enforces byChannel.API + byChannel.SMTP === total.all', async () => {
+    emailGroupBy
+      .mockResolvedValueOnce([
+        { system: true, _count: { _all: 30 } },
+        { system: false, _count: { _all: 970 } },
+      ]) // total: all = 1000
+      .mockResolvedValueOnce([]) // today
+      .mockResolvedValueOnce([]) // last7d
+      .mockResolvedValueOnce([]) // last30d
+      .mockResolvedValueOnce([]) // byStatus
+      .mockResolvedValueOnce([
+        { channel: EmailChannel.API, _count: { _all: 750 } },
+        { channel: EmailChannel.SMTP, _count: { _all: 250 } },
+      ]); // byChannel: 750 + 250 = 1000
+
+    const stats = await service.emailStats();
+
+    expect(stats.byChannel).toEqual({ API: 750, SMTP: 250 });
+    expect(stats.byChannel.API + stats.byChannel.SMTP).toBe(stats.total.all);
+  });
+
   it('queries today from UTC midnight (Guinée = UTC+0, sans heure d’été)', async () => {
     await service.emailStats();
 
@@ -153,14 +201,16 @@ describe('AdminStatsService', () => {
     );
   });
 
-  it('does not filter total or byStatus by queuedAt (all-time)', async () => {
+  it('does not filter total, byStatus or byChannel by queuedAt (all-time)', async () => {
     await service.emailStats();
 
     const totalCall = emailGroupBy.mock.calls[0] as [{ where?: unknown }];
     const statusCall = emailGroupBy.mock.calls[4] as [{ where?: unknown }];
+    const channelCall = emailGroupBy.mock.calls[5] as [{ where?: unknown }];
 
     expect(totalCall[0].where).toBeUndefined();
     expect(statusCall[0].where).toBeUndefined();
+    expect(channelCall[0].where).toBeUndefined();
   });
 
   it('stamps generatedAt with the current time', async () => {
