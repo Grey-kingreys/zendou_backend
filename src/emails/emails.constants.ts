@@ -94,3 +94,73 @@ export const INSUFFICIENT_CREDITS_MESSAGE =
 /** Message renvoyé quand le quota journalier du compte est atteint. */
 export const DAILY_LIMIT_REACHED_MESSAGE =
   'Limite journalière atteinte : réessayez demain ou demandez une augmentation de quota.';
+
+/**
+ * 403 — le compte est suspendu (T12) et ne peut plus envoyer.
+ *
+ * Texte volontairement **identique** à `API_KEY_OWNER_SUSPENDED_MESSAGE`
+ * (`api-keys.constants.ts`), que renvoie déjà `ApiKeyAuthGuard` : le contrôle
+ * vit désormais aussi dans le point d'acceptation, pour fermer la règle à tout
+ * appelant non-HTTP, et les deux surfaces doivent dire exactement la même
+ * chose. La constante est dupliquée plutôt qu'importée pour ne pas faire
+ * dépendre le service d'envoi du module des clés API.
+ */
+export const ACCOUNT_SUSPENDED_MESSAGE = 'Ce compte est suspendu';
+
+/**
+ * Motifs de refus du point d'acceptation (`EmailsService.accept`).
+ *
+ * Le point d'acceptation continue de lever des `HttpException` : c'est le
+ * contrat de `POST /v1/emails` et il ne bouge pas. Mais un appelant non-HTTP
+ * — le relais SMTP de B6 — doit choisir un code de réponse à partir du
+ * **motif**, jamais d'un statut HTTP ni d'un message français :
+ *
+ * - plusieurs motifs partagent le même 403 (domaine non vérifié, compte
+ *   suspendu, adresse non confirmée, restriction du bac à sable) ;
+ * - deux motifs appellent des réponses SMTP opposées alors que rien ne les
+ *   distingue côté HTTP : « crédits épuisés » est temporaire (`450 4.7.0`,
+ *   le MTA du client relivrera après recharge) là où « domaine non vérifié »
+ *   est définitif (`550 5.7.1`).
+ *
+ * Le motif est attaché à l'exception levée (`sendRefusalReason`,
+ * `emails.service.ts`) : classe, statut et message des exceptions existantes
+ * restent rigoureusement inchangés.
+ */
+export const SEND_REFUSAL = {
+  /** Compte suspendu par la surveillance de réputation (T12). */
+  ACCOUNT_SUSPENDED: 'ACCOUNT_SUSPENDED',
+  /** Adresse email du compte non confirmée. */
+  EMAIL_NOT_VERIFIED: 'EMAIL_NOT_VERIFIED',
+  /** Adresse d'expédition illisible. */
+  INVALID_FROM: 'INVALID_FROM',
+  /** Adresse de destinataire illisible. */
+  INVALID_TO: 'INVALID_TO',
+  /** Ni `html` ni `text` fourni (contenu simple). */
+  MISSING_BODY: 'MISSING_BODY',
+  /** Un corps dépasse `MAX_BODY_BYTES` (contenu simple). */
+  BODY_TOO_LARGE: 'BODY_TOO_LARGE',
+  /** Domaine d'expédition absent, non vérifié, ou appartenant à un tiers. */
+  DOMAIN_NOT_VERIFIED: 'DOMAIN_NOT_VERIFIED',
+  /** Mode bac à sable : le domaine de `TEST_EMAIL_FROM` n'est pas vérifié. */
+  TEST_SENDER_UNAVAILABLE: 'TEST_SENDER_UNAVAILABLE',
+  /** Mode bac à sable : destinataire autre que l'adresse du compte. */
+  TEST_SENDER_RECIPIENT_RESTRICTED: 'TEST_SENDER_RECIPIENT_RESTRICTED',
+  /** Solde de crédits insuffisant. */
+  INSUFFICIENT_CREDITS: 'INSUFFICIENT_CREDITS',
+  /** Quota journalier du compte atteint. */
+  DAILY_LIMIT_REACHED: 'DAILY_LIMIT_REACHED',
+} as const;
+
+/** Motif de refus du point d'acceptation, exploitable hors HTTP. */
+export type SendRefusalReason =
+  (typeof SEND_REFUSAL)[keyof typeof SEND_REFUSAL];
+
+/**
+ * Clé sous laquelle le motif est porté par l'exception levée.
+ *
+ * Un symbole, posé en propriété **non énumérable** : le motif ne doit
+ * apparaître ni dans une sérialisation JSON, ni dans une comparaison
+ * structurelle d'exception. Une `ForbiddenException` refusée reste, pour tout
+ * code existant, exactement la `ForbiddenException` d'avant.
+ */
+export const SEND_REFUSAL_REASON = Symbol('zendou.send.refusalReason');

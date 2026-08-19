@@ -8,6 +8,24 @@ import type { AuthenticatedRequest } from './auth.types';
 import { EMAIL_NOT_VERIFIED_MESSAGE } from './email-confirmation.constants';
 
 /**
+ * Prédicat de la règle « l'adresse de ce compte est confirmée ».
+ *
+ * Extrait du garde pour que le point d'acceptation des envois
+ * (`EmailsService.accept`) applique **la même règle hors HTTP** : un garde ne
+ * protège qu'une route, pas un appel direct au service — c'est précisément le
+ * trou qu'ouvrirait un second point d'entrée comme le relais SMTP (B6/S1).
+ *
+ * Le paramètre est la colonne `User.emailVerifiedAt` elle-même : `null` tant
+ * que l'adresse n'est pas confirmée, horodatée ensuite. C'est la seule source
+ * de vérité. Un appelant qui, lui, lit un objet assemblé ailleurs (le garde
+ * ci-dessous et son `request.user`) normalise l'absence en `null` avant
+ * d'appeler : en cas de doute, on ferme.
+ */
+export function isEmailConfirmed(emailVerifiedAt: Date | null): boolean {
+  return emailVerifiedAt !== null;
+}
+
+/**
  * Ferme une route aux comptes dont l'adresse email n'est pas confirmée.
  *
  * À poser **après** un garde d'authentification (`SessionAuthGuard` ou
@@ -29,7 +47,10 @@ export class EmailVerifiedGuard implements CanActivate {
   canActivate(context: ExecutionContext): boolean {
     const request = context.switchToHttp().getRequest<AuthenticatedRequest>();
 
-    if (!request.user?.emailVerifiedAt) {
+    // `?? null` : `request.user` est assemblé par le garde d'authentification
+    // en amont et peut être partiel (fixture, appelant qui n'aurait pas utilisé
+    // `AUTH_USER_SELECT`). Un champ absent n'est pas une confirmation.
+    if (!isEmailConfirmed(request.user?.emailVerifiedAt ?? null)) {
       throw new ForbiddenException(EMAIL_NOT_VERIFIED_MESSAGE);
     }
 

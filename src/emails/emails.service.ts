@@ -10,8 +10,10 @@ import {
 } from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bullmq';
 import { ConfigService } from '@nestjs/config';
-import { DomainStatus, EmailStatus } from '@prisma/client';
+import { DomainStatus, EmailStatus, UserStatus } from '@prisma/client';
 import type { Queue } from 'bullmq';
+import { EMAIL_NOT_VERIFIED_MESSAGE } from '../auth/email-confirmation.constants';
+import { isEmailConfirmed } from '../auth/email-verified.guard';
 import { PrismaService } from '../prisma/prisma.service';
 import { EMAIL_SEND_QUEUE } from '../queues/queues';
 import {
@@ -20,6 +22,7 @@ import {
   parseEmailAddress,
 } from './email-address';
 import {
+  ACCOUNT_SUSPENDED_MESSAGE,
   BODY_TOO_LARGE_MESSAGE,
   CREDITS_PER_EMAIL,
   CREDIT_REASON_SEND,
@@ -35,11 +38,15 @@ import {
   MISSING_BODY_MESSAGE,
   SEND_JOB_ATTEMPTS,
   SEND_JOB_BACKOFF_DELAY_MS,
+  SEND_REFUSAL,
+  SEND_REFUSAL_REASON,
   SYSTEM_SENDER_UNAVAILABLE_MESSAGE,
   TEST_SENDER_RECIPIENT_RESTRICTED_MESSAGE,
   TEST_SENDER_UNAVAILABLE_MESSAGE,
 } from './emails.constants';
+import type { SendRefusalReason } from './emails.constants';
 import type {
+  AcceptEmailInput,
   EmailSendJobData,
   SendEmailResponse,
   SystemEmailPayload,
@@ -76,30 +83,98 @@ export class EmailsService {
    * Accepte un email : valide la requête, contrôle le domaine, la liste de
    * suppression, le solde et le quota, débite un crédit puis met le job en
    * file. L'envoi lui-même est fait par `EmailSendProcessor`.
+   *
+   * Simple appelant du point d'acceptation partagé : **aucune règle ne vit
+   * ici**. C'est ce qui garantit qu'un second point d'entrée (relais SMTP, B6)
+   * subit exactement les mêmes contrôles, sans les dupliquer.
    */
   async send(userId: string, dto: SendEmailDto): Promise<SendEmailResponse> {
-    const from = parseEmailAddress(dto.from);
+    return this.accept(userId, {
+      from: dto.from,
+      to: dto.to,
+      subject: dto.subject,
+      content: { kind: 'simple', html: dto.html, text: dto.text },
+      channel: 'API',
+    });
+  }
+
+  /**
+   * **Point d'acceptation unique** : la seule fonction qui décide qu'un email
+   * est accepté, le trace, débite son crédit et le met en file. Une règle
+   * d'envoi ajoutée ici vaut pour tous les points d'entrée ; une règle ajoutée
+   * ailleurs — dans un garde HTTP, dans un futur handler SMTP — est un
+   * contournement en puissance pour tous les autres.
+   *
+   * Ordre des contrôles, inchangé depuis la version couplée à HTTP hormis les
+   * deux premiers, qui viennent d'y être rapatriés :
+   * 1. compte non suspendu, adresse du compte confirmée
+   *    (`assertAccountMaySend`) ;
+   * 2. `from` analysable, `to` normalisable ;
+   * 3. corps présent et sous la limite — contenu `simple` uniquement ;
+   * 4. mode bac à sable **ou** domaine vérifié et possédé ;
+   * 5. liste de suppression → ligne `SUPPRESSED`, sans débit ni mise en file ;
+   * 6. solde de crédits, puis quota journalier ;
+   * 7. transaction `Email` + `CreditEntry`, puis mise en file avec
+   *    `jobId = publicId`.
+   *
+   * Les refus restent des `HttpException` — le contrat de `POST /v1/emails` ne
+   * bouge pas — mais portent en plus un motif symbolique (`SEND_REFUSAL`),
+   * lisible par `sendRefusalReason`, pour qu'un appelant non-HTTP déduise sa
+   * propre réponse du motif plutôt que d'un statut ou d'un message français.
+   */
+  private async accept(
+    userId: string,
+    input: AcceptEmailInput,
+  ): Promise<SendEmailResponse> {
+    await this.assertAccountMaySend(userId);
+
+    const from = parseEmailAddress(input.from);
 
     if (!from) {
-      throw new BadRequestException(INVALID_FROM_MESSAGE);
+      throw refuse(
+        SEND_REFUSAL.INVALID_FROM,
+        new BadRequestException(INVALID_FROM_MESSAGE),
+      );
     }
 
     // Un seul destinataire en v1, et sous forme d'adresse nue.
-    const toAddress = normalizeEmailAddress(dto.to);
+    const toAddress = normalizeEmailAddress(input.to);
 
     if (!toAddress) {
-      throw new BadRequestException(INVALID_TO_MESSAGE);
+      throw refuse(
+        SEND_REFUSAL.INVALID_TO,
+        new BadRequestException(INVALID_TO_MESSAGE),
+      );
     }
 
-    const html = blankToUndefined(dto.html);
-    const text = blankToUndefined(dto.text);
+    // Présence et taille du corps ne concernent que le contenu simple :
+    // `MAX_BODY_BYTES` est une limite **par corps**, mesurée sur des chaînes,
+    // et ne peut pas servir de plafond à un message MIME entier (une pièce
+    // jointe la dépasserait à elle seule). Le plafond du contenu `raw` est le
+    // périmètre de B6/S3.
+    const html =
+      input.content.kind === 'simple'
+        ? blankToUndefined(input.content.html)
+        : undefined;
+    const text =
+      input.content.kind === 'simple'
+        ? blankToUndefined(input.content.text)
+        : undefined;
 
-    if (!html && !text) {
-      throw new BadRequestException(MISSING_BODY_MESSAGE);
-    }
+    if (input.content.kind === 'simple') {
+      if (!html && !text) {
+        throw refuse(
+          SEND_REFUSAL.MISSING_BODY,
+          new BadRequestException(MISSING_BODY_MESSAGE),
+        );
+      }
 
-    if (exceedsMaxBody(html) || exceedsMaxBody(text)) {
-      throw new BadRequestException(BODY_TOO_LARGE_MESSAGE);
+      if (exceedsMaxBody(html) || exceedsMaxBody(text)) {
+        throw refuse(
+          SEND_REFUSAL.BODY_TOO_LARGE,
+          new BadRequestException(BODY_TOO_LARGE_MESSAGE),
+        );
+      }
     }
 
     // Mode bac à sable (B20) : reconnu au seul rapprochement d'adresse, sans
@@ -126,7 +201,13 @@ export class EmailsService {
       domainId,
       fromAddress,
       toAddress,
-      subject: dto.subject,
+      subject: input.subject,
+      // `input.channel` et `input.smtpCredentialId` ne sont pas écrits ici :
+      // les colonnes `Email.channel` et `Email.smtpCredentialId` sont ajoutées
+      // par une migration séparée (B6/S2). Ils transitent déjà dans la
+      // signature pour que le câblage soit une seule ligne à ajouter, sans
+      // retoucher les appelants.
+      //
       // Explicite (plutôt que de compter sur le défaut du schéma) : un envoi
       // de test reste un envoi **client** ordinaire — compté dans la
       // réputation, le quota journalier, le journal et les KPI — jamais
@@ -178,6 +259,13 @@ export class EmailsService {
 
     // Après commit seulement : un job déposé sur une transaction annulée
     // pointerait sur un email inexistant.
+    //
+    // Seul le contenu `simple` voyage dans le job aujourd'hui — le modèle
+    // `Email` ne stocke aucun corps. Le contenu `raw` n'est pas encore câblé
+    // jusqu'au job ni jusqu'au driver : c'est le périmètre de B6/S3, qui
+    // ajoutera le discriminant à `EmailSendJobData` et à `SesSendPayload`.
+    // Aucun appelant n'en produit à ce stade — `accept` est privée et `send`
+    // est son unique appelant.
     await this.queue.add(
       EMAIL_SEND_JOB,
       { emailId: email.id, html, text },
@@ -320,6 +408,50 @@ export class EmailsService {
   }
 
   /**
+   * État du compte : deux règles qui, jusqu'ici, ne vivaient que dans des
+   * gardes HTTP — `ApiKeyAuthGuard` pour la suspension, `EmailVerifiedGuard`
+   * pour la confirmation d'adresse.
+   *
+   * Un garde ne protège qu'une route. Tant que ces deux règles vivaient là,
+   * tout appelant du service qui ne passait pas par Express — un relais SMTP,
+   * une tâche planifiée, un script d'exploitation — laissait envoyer un compte
+   * suspendu par T12 ou un compte jamais confirmé. Les gardes restent en
+   * place, ils donnent le bon statut au bon moment ; le contrôle qui **fait
+   * foi** est celui-ci.
+   *
+   * Rien ne change pour l'API : les gardes refusent déjà plus tôt, en 403, et
+   * ce contrôle ne peut donc jamais s'y déclencher.
+   */
+  private async assertAccountMaySend(userId: string): Promise<void> {
+    const account = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { status: true, emailVerifiedAt: true },
+    });
+
+    if (account?.status === UserStatus.SUSPENDED) {
+      throw refuse(
+        SEND_REFUSAL.ACCOUNT_SUSPENDED,
+        new ForbiddenException(ACCOUNT_SUSPENDED_MESSAGE),
+      );
+    }
+
+    // `account.emailVerifiedAt` est la colonne elle-même : `null` tant que
+    // l'adresse n'est pas confirmée. Rien à normaliser ici, contrairement au
+    // garde HTTP qui lit un `request.user` assemblé en amont, potentiellement
+    // partiel — c'est lui qui referme sur l'absence, pas le prédicat.
+    //
+    // Un `userId` sans ligne `User` n'est pas traité comme un refus : ce cas
+    // ne peut pas venir d'un appelant authentifié, et la contrainte de clé
+    // étrangère de `Email.userId` l'arrête déjà — comportement inchangé.
+    if (account && !isEmailConfirmed(account.emailVerifiedAt)) {
+      throw refuse(
+        SEND_REFUSAL.EMAIL_NOT_VERIFIED,
+        new ForbiddenException(EMAIL_NOT_VERIFIED_MESSAGE),
+      );
+    }
+  }
+
+  /**
    * Vérifie que le domaine de l'expéditeur appartient au client et qu'il
    * est vérifié. Un domaine appartenant à un tiers donne la même réponse
    * qu'un domaine inconnu : pas d'oracle sur les domaines des autres.
@@ -334,7 +466,10 @@ export class EmailsService {
     });
 
     if (!domain) {
-      throw new ForbiddenException(DOMAIN_NOT_VERIFIED_MESSAGE);
+      throw refuse(
+        SEND_REFUSAL.DOMAIN_NOT_VERIFIED,
+        new ForbiddenException(DOMAIN_NOT_VERIFIED_MESSAGE),
+      );
     }
 
     return domain.id;
@@ -387,7 +522,10 @@ export class EmailsService {
       this.logger.error(
         `Mode bac à sable indisponible : domaine ${name} (TEST_EMAIL_FROM) absent ou non VERIFIED dans Zendou`,
       );
-      throw new ServiceUnavailableException(TEST_SENDER_UNAVAILABLE_MESSAGE);
+      throw refuse(
+        SEND_REFUSAL.TEST_SENDER_UNAVAILABLE,
+        new ServiceUnavailableException(TEST_SENDER_UNAVAILABLE_MESSAGE),
+      );
     }
   }
 
@@ -426,7 +564,10 @@ export class EmailsService {
     const ownAddress = user ? normalizeEmailAddress(user.email) : null;
 
     if (!ownAddress || ownAddress !== toAddress) {
-      throw new ForbiddenException(TEST_SENDER_RECIPIENT_RESTRICTED_MESSAGE);
+      throw refuse(
+        SEND_REFUSAL.TEST_SENDER_RECIPIENT_RESTRICTED,
+        new ForbiddenException(TEST_SENDER_RECIPIENT_RESTRICTED_MESSAGE),
+      );
     }
 
     return null;
@@ -440,9 +581,12 @@ export class EmailsService {
     });
 
     if ((_sum.delta ?? 0) < CREDITS_PER_EMAIL) {
-      throw new HttpException(
-        INSUFFICIENT_CREDITS_MESSAGE,
-        HttpStatus.PAYMENT_REQUIRED,
+      throw refuse(
+        SEND_REFUSAL.INSUFFICIENT_CREDITS,
+        new HttpException(
+          INSUFFICIENT_CREDITS_MESSAGE,
+          HttpStatus.PAYMENT_REQUIRED,
+        ),
       );
     }
   }
@@ -467,12 +611,57 @@ export class EmailsService {
     ]);
 
     if (user && today >= user.dailySendLimit) {
-      throw new HttpException(
-        DAILY_LIMIT_REACHED_MESSAGE,
-        HttpStatus.TOO_MANY_REQUESTS,
+      throw refuse(
+        SEND_REFUSAL.DAILY_LIMIT_REACHED,
+        new HttpException(
+          DAILY_LIMIT_REACHED_MESSAGE,
+          HttpStatus.TOO_MANY_REQUESTS,
+        ),
       );
     }
   }
+}
+
+/** Exception d'acceptation vue sous l'angle du motif qu'elle transporte. */
+interface SendRefusalCarrier {
+  [SEND_REFUSAL_REASON]?: SendRefusalReason;
+}
+
+/**
+ * Marque une exception de refus avec son motif, et la renvoie pour être levée.
+ *
+ * L'exception elle-même est celle d'avant — même classe, même statut, même
+ * message : le contrat HTTP est intact, `instanceof ForbiddenException` tient
+ * toujours. Le motif est posé en propriété non énumérable sous une clé
+ * symbole, donc invisible d'une sérialisation ou d'une comparaison
+ * structurelle.
+ */
+function refuse<E extends HttpException>(
+  reason: SendRefusalReason,
+  exception: E,
+): E {
+  Object.defineProperty(exception, SEND_REFUSAL_REASON, {
+    value: reason,
+    enumerable: false,
+  });
+
+  return exception;
+}
+
+/**
+ * Motif de refus porté par une exception du point d'acceptation, `null` si
+ * l'erreur ne vient pas de là (panne base, Redis, bug).
+ *
+ * C'est le seul discriminant que doit lire un appelant non-HTTP : un statut ne
+ * suffit pas — quatre motifs partagent le 403 — et un message français encore
+ * moins. Voir `SEND_REFUSAL` (`emails.constants.ts`).
+ */
+export function sendRefusalReason(error: unknown): SendRefusalReason | null {
+  if (typeof error !== 'object' || error === null) {
+    return null;
+  }
+
+  return (error as SendRefusalCarrier)[SEND_REFUSAL_REASON] ?? null;
 }
 
 /** Identifiant public d'un email : `e_` suivi de 12 caractères hex. */
