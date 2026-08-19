@@ -16,16 +16,19 @@ import {
 } from 'smtp-server';
 import { SmtpAuthService } from './smtp-auth.service';
 import {
+  SMTP_IP_LIMITS_DISABLED_MESSAGE,
   SMTP_TLS_CERTIFICATE_REQUIRED_MESSAGE,
   SMTP_TLS_RELOAD_DEBOUNCE_MS,
 } from './smtp-relay.constants';
 import {
+  SMTP_REPLY_AUTH_INVALID_CREDENTIALS,
   SMTP_REPLY_AUTH_REQUIRES_TLS,
   SMTP_REPLY_MAIL_FROM_REQUIRES_AUTH,
   SMTP_REPLY_UNKNOWN_SERVER_ERROR,
 } from './smtp-reply';
 import { isSmtpReplyError, smtpReplyToError } from './smtp-reply.adapter';
-import { smtpSessionUser } from './smtp-session';
+import { smtpSessionUser, type SmtpSessionUser } from './smtp-session';
+import { SmtpThrottleService } from './smtp-throttle.service';
 import { readSmtpTlsMaterial, type SmtpTlsMaterial } from './smtp-tls';
 
 /** Sous-ensemble de `SMTPServerOptions` que toutes les instances partagent. */
@@ -71,6 +74,7 @@ export class SmtpServerService implements OnModuleInit, OnModuleDestroy {
   constructor(
     private readonly configService: ConfigService,
     private readonly smtpAuthService: SmtpAuthService,
+    private readonly smtpThrottleService: SmtpThrottleService,
   ) {}
 
   /**
@@ -180,6 +184,15 @@ export class SmtpServerService implements OnModuleInit, OnModuleDestroy {
       `Relais SMTP à l'écoute sur ${host} — ports ${this.ports.join(', ')}` +
         (tls ? ' (certificat fourni)' : ' (aucun certificat fourni)'),
     );
+
+    // §5 / §1.3 (S9) — désactiver les limites par IP est un choix légitime
+    // quand l'IP source n'arrive pas intacte, mais il retire une protection :
+    // il doit se voir dans les journaux de démarrage, une fois, au même
+    // endroit que les ports. Un exploitant qui lit « à l'écoute sur … » doit
+    // lire aussi ce qui n'est pas gardé.
+    if (!this.smtpThrottleService.ipLimitsEnabled) {
+      this.logger.warn(SMTP_IP_LIMITS_DISABLED_MESSAGE);
+    }
   }
 
   private async startInstance(
@@ -359,12 +372,15 @@ export class SmtpServerService implements OnModuleInit, OnModuleDestroy {
   private createHandlers(requireTlsForAuth: boolean): SmtpRelayHandlers {
     return {
       onConnect: (session, callback) => {
-        this.run('CONNECT', session, callback, () => {
+        this.run('CONNECT', session, callback, async () => {
           this.logger.debug?.(
             `Connexion SMTP ${session.id} depuis ${session.remoteAddress}`,
           );
-          // S9 branche ici le plafond de connexions par IP
-          // (`SMTP_REPLY_TOO_MANY_CONNECTIONS`, 421 + fermeture).
+
+          // S9 : ouvre les compteurs de la connexion et applique le plafond
+          // par IP. Un dépassement lève `421 4.7.0`, que `smtp-server` envoie
+          // **à la place de la bannière 220** avant de fermer le socket.
+          await this.smtpThrottleService.registerConnection(session);
         });
       },
 
@@ -388,11 +404,33 @@ export class SmtpServerService implements OnModuleInit, OnModuleDestroy {
               throw smtpReplyToError(SMTP_REPLY_AUTH_REQUIRES_TLS);
             }
 
-            const user = await this.smtpAuthService.authenticate(
-              auth.username,
-              auth.password,
-              session.remoteAddress,
-            );
+            let user: SmtpSessionUser;
+
+            try {
+              user = await this.smtpAuthService.authenticate(
+                auth.username,
+                auth.password,
+                session.remoteAddress,
+              );
+            } catch (error: unknown) {
+              // S9 : ne comptent que les **vrais** échecs d'identifiants —
+              // ceux qui portent la constante `535` de S5. Une panne de base
+              // (`451`) est notre faute, pas une tentative de bourrinage : la
+              // compter fermerait la connexion d'un client irréprochable
+              // pendant un incident, et pourrirait l'alerte de stuffing.
+              if (isAuthCredentialFailure(error)) {
+                // Peut lever `421` + fermeture, qui remplace alors le `535` :
+                // c'est la ligne « Trop d'échecs AUTH sur la connexion » du
+                // §4.4. Le mot de passe présenté n'est pas transmis — il ne
+                // peut donc pas être journalisé (§5).
+                await this.smtpThrottleService.recordAuthFailure(
+                  session,
+                  auth.username,
+                );
+              }
+
+              throw error;
+            }
 
             this.logger.log(
               `Session SMTP ${session.id} authentifiée : identifiant ${user.credentialId} (${user.username}) depuis ${session.remoteAddress}`,
@@ -444,6 +482,12 @@ export class SmtpServerService implements OnModuleInit, OnModuleDestroy {
 
       onClose: (session) => {
         this.logger.debug?.(`Session SMTP ${session.id} fermée`);
+
+        // S9 : libère les compteurs de la connexion. `smtp-server` émet
+        // `onClose` pour **toute** session, y compris celle qu'on vient de
+        // refuser en `421` à l'ouverture — sans quoi la table des compteurs
+        // grandirait au rythme des tentatives d'abus.
+        this.smtpThrottleService.releaseConnection(session);
       },
     };
   }
@@ -595,6 +639,24 @@ function close(server: SMTPServer): Promise<void> {
       resolve();
     });
   });
+}
+
+/**
+ * Vrai si l'erreur est le refus d'identifiants de S5 — et lui seul.
+ *
+ * La comparaison porte sur **l'identité de la constante**, pas sur son code :
+ * `535` pourrait un jour désigner autre chose, alors que
+ * `SMTP_REPLY_AUTH_INVALID_CREDENTIALS` ne désigne que « identifiant inconnu,
+ * révoqué, ou secret faux ». C'est exactement l'ensemble d'événements qui doit
+ * nourrir les compteurs anti-bourrinage : ni le `538` d'une AUTH en clair (le
+ * client n'a présenté aucun secret), ni le `451` d'une panne de base (la faute
+ * est la nôtre).
+ */
+function isAuthCredentialFailure(error: unknown): boolean {
+  return (
+    isSmtpReplyError(error) &&
+    error.smtpReply === SMTP_REPLY_AUTH_INVALID_CREDENTIALS
+  );
 }
 
 /** Consomme un flux `DATA` jusqu'à son terme, sans rien conserver. */

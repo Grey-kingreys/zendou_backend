@@ -13,6 +13,7 @@ import {
 } from './smtp-reply';
 import { formatSmtpReplyLine } from './smtp-reply.adapter';
 import { SmtpServerService } from './smtp-server.service';
+import { SmtpThrottleService } from './smtp-throttle.service';
 
 /**
  * Relais SMTP de bout en bout, **dans le processus de test**, sur un port
@@ -72,6 +73,21 @@ function makeUser(id: string, status: UserStatus): CredentialRow['user'] {
 
 /** Nom d'utilisateur dont le lookup simule une panne de base de données. */
 const BROKEN_USERNAME = 'zdu_panne_de_base';
+
+/**
+ * Double permissif de l'anti-abus (S9). Cette suite exerce la conversation
+ * SMTP de S5 — authentification, oracle d'énumération, open relay — et ouvre
+ * une dizaine de connexions dont plusieurs échouent volontairement : la
+ * soumettre en plus aux plafonds de S9 mêlerait deux sujets et la rendrait
+ * fragile. Les compteurs sont vérifiés par `smtp-throttle.integration.spec.ts`,
+ * qui fait tourner le vrai service contre un Redis en mémoire.
+ */
+const throttleDouble = () => ({
+  ipLimitsEnabled: true,
+  registerConnection: jest.fn().mockResolvedValue(undefined),
+  releaseConnection: jest.fn(),
+  recordAuthFailure: jest.fn().mockResolvedValue(undefined),
+});
 
 /**
  * Double en mémoire de `PrismaService.smtpCredential`, à sémantique de requête
@@ -207,6 +223,7 @@ describe('Relais SMTP en processus — session et AUTH (B6/S5)', () => {
           provide: ConfigService,
           useValue: { get: (key: string) => config[key] },
         },
+        { provide: SmtpThrottleService, useValue: throttleDouble() },
         { provide: PrismaService, useValue: { smtpCredential: store } },
       ],
     }).compile();
@@ -391,6 +408,7 @@ describe('Relais SMTP hors test — AUTH refusée sur canal en clair (§3.3)', (
           provide: ConfigService,
           useValue: { get: (key: string) => config[key] },
         },
+        { provide: SmtpThrottleService, useValue: throttleDouble() },
         {
           provide: PrismaService,
           useValue: {
