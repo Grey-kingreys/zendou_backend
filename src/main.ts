@@ -4,6 +4,7 @@ import { ConfigService } from '@nestjs/config';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import cookieParser from 'cookie-parser';
 import { AppModule } from './app.module';
+import { AllExceptionsFilter } from './common/http-exception.filter';
 import { DEFAULT_TRUST_PROXY_HOPS } from './rate-limit/rate-limit.constants';
 import { trustProxySetting } from './rate-limit/rate-limit.identity';
 
@@ -47,6 +48,13 @@ async function bootstrap() {
       whitelist: true,
     }),
   );
+
+  // Uniformise le corps de toutes les réponses d'erreur : `message` toujours
+  // une chaîne, `errors` toujours un tableau non vide. Sans lui, un échec
+  // class-validator (agrégé en tableau par le pipe ci-dessus) et un
+  // `throw new BadRequestException("…")` rendaient la même phrase métier sous
+  // deux types différents — voir `common/http-exception.filter.ts`.
+  app.useGlobalFilters(new AllExceptionsFilter());
 
   app.enableCors({
     origin: configService.get<string>('FRONTEND_ORIGIN'),
