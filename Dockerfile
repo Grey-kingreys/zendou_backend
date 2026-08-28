@@ -89,6 +89,8 @@ RUN chown -R nodejs:nodejs /app
 USER nodejs
 
 EXPOSE 4000
+# 587/465/2525 : relais SMTP entrant (B6), inertes tant que SMTP_RELAY_ENABLED n'est pas "true"
+EXPOSE 587 465 2525
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
   CMD node -e "require('http').get({host:'127.0.0.1',port:process.env.PORT||4000,path:'/health',timeout:4000},(res)=>{process.exit(res.statusCode===200?0:1)}).on('error',()=>process.exit(1))"
