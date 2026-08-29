@@ -228,6 +228,23 @@ const baseEnvSchema = z.object({
     .preprocess(emptyToUndefined, z.string().trim().optional())
     .default(DEFAULT_ADMIN_NAME),
 
+  /**
+   * Destinataire des alertes d'exploitation — aujourd'hui l'expiration du
+   * certificat TLS du relais SMTP (B6/H1). **Optionnelle** : absente, on
+   * retombe sur `ADMIN_EMAIL` ; absentes toutes les deux, la surveillance se
+   * contente de journaliser et le démarrage émet un avertissement.
+   *
+   * Distincte d'`ADMIN_EMAIL` parce que les deux rôles n'ont pas de raison de
+   * coïncider : l'un ouvre le tableau de bord d'administration, l'autre reçoit
+   * les alertes techniques (et pourrait être une liste de diffusion). Le
+   * compte destinataire doit exister dans Zendou — `sendSystem` trace la ligne
+   * `Email` sur un compte, comme tout envoi.
+   */
+  ALERTS_EMAIL_TO: z.preprocess(
+    emptyToUndefined,
+    z.string().trim().email('doit être une adresse email valide').optional(),
+  ),
+
   // ─── Emails système (confirmation d'adresse) ───
 
   /**
