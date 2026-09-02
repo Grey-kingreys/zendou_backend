@@ -253,8 +253,14 @@ export class SmtpPipelineService {
       ? formatEmailAddress(analysis.from)
       : (session.envelope.mailFrom || { address: '' }).address;
 
+    // L'en-tête `Reply-To:` est passé tel quel au point d'acceptation, qui lui
+    // applique la règle du `From:`. **Aucun en-tête n'est réécrit** : une
+    // adresse de réponse interdite refuse le message entier plutôt que d'être
+    // silencieusement retirée - le client doit apprendre que son message n'est
+    // pas parti, pas le voir partir amputé.
     return this.fanOut(session, user, {
       from,
+      replyTo: analysis.replyTo,
       subject: storedSubject(analysis.subject),
       raw,
     });
@@ -285,7 +291,12 @@ export class SmtpPipelineService {
   private async fanOut(
     session: SMTPServerSession,
     user: SmtpSessionUser,
-    message: { from: string; subject: string; raw: string },
+    message: {
+      from: string;
+      replyTo?: string[];
+      subject: string;
+      raw: string;
+    },
   ): Promise<string> {
     const outcomes: SmtpRecipientOutcome[] = [];
     let firstRefusal: unknown = null;
@@ -295,6 +306,7 @@ export class SmtpPipelineService {
         const accepted = await this.emailsService.acceptSmtp(user.user.id, {
           from: message.from,
           to: recipient.address,
+          replyTo: message.replyTo,
           subject: message.subject,
           raw: message.raw,
           smtpCredentialId: user.credentialId,

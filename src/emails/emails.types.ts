@@ -20,6 +20,15 @@ export interface SimpleEmailSendJobData {
   kind?: 'simple';
   html?: string;
   text?: string;
+  /**
+   * Adresse de réponse déjà normalisée et **déjà validée** par le point
+   * d'acceptation (domaine vérifié et possédé, comme le `From:`). Elle voyage
+   * dans le job comme les corps : le modèle `Email` ne la stocke pas.
+   *
+   * Absente du contenu `raw` : là, l'en-tête `Reply-To:` est déjà dans les
+   * octets MIME du client, et ces octets partent tels quels.
+   */
+  replyTo?: string;
 }
 
 /**
@@ -81,6 +90,16 @@ export interface AcceptEmailInput {
   to: string;
   /** Sujet, tel qu'il sera tracé sur la ligne `Email`. */
   subject: string;
+  /**
+   * Adresses de réponse demandées, dans leur forme brute (`adresse@domaine` ou
+   * « Nom <adresse> »), avant toute validation.
+   *
+   * Une liste, et non une adresse unique : l'API n'en accepte qu'une, mais un
+   * en-tête `Reply-To:` reçu par le relais SMTP peut en porter plusieurs
+   * (RFC 5322). Chacune subit exactement la règle du `From:` - la première qui
+   * échoue refuse tout le message.
+   */
+  replyTo?: string[];
   content: SendContent;
   channel: SendChannel;
   /** Identifiant SMTP utilisé, quand l'envoi vient du relais (B6/S4). */
@@ -109,6 +128,12 @@ export interface AcceptSmtpInput {
   to: string;
   /** Sujet destiné au journal, déjà décodé et tronqué par l'appelant (§4.6). */
   subject: string;
+  /**
+   * Boîtes aux lettres de l'en-tête `Reply-To:`, telles que l'analyse MIME les
+   * a découpées - non validées. Le point d'acceptation leur applique la règle
+   * du `From:` : aucun en-tête n'est réécrit, on refuse le message entier.
+   */
+  replyTo?: string[];
   /** Octets MIME réécrits (sans `Bcc:`…), tels qu'ils partiront chez SES. */
   raw: string;
   /** Identifiant SMTP de la session, tracé sur la ligne `Email` (§6, A15). */

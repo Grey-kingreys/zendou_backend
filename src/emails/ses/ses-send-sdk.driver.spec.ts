@@ -124,6 +124,24 @@ describe('SesSendSdkDriver', () => {
 
       expect(lastInput().ConfigurationSetName).toBe('zendou-test');
     });
+
+    // ─── (e) adresse de réponse (E1) ──────────────────────────────────────
+    it('pose ReplyToAddresses quand une adresse de réponse accompagne l’envoi', async () => {
+      await driverWith().send(
+        simplePayload({ replyTo: 'SAV Awa <sav@boutique-awa.gn>' }),
+      );
+
+      expect(lastInput().ReplyToAddresses).toEqual([
+        'SAV Awa <sav@boutique-awa.gn>',
+      ]);
+    });
+
+    it('n’envoie aucun ReplyToAddresses quand aucune adresse de réponse n’est fournie', async () => {
+      await driverWith().send(simplePayload());
+
+      expect(lastInput().ReplyToAddresses).toBeUndefined();
+      expect(Object.keys(lastInput())).not.toContain('ReplyToAddresses');
+    });
   });
 
   describe('contenu Raw', () => {
@@ -179,6 +197,21 @@ describe('SesSendSdkDriver', () => {
       await driverWith('zendou').send(rawPayload());
 
       expect(lastInput().ConfigurationSetName).toBe('zendou');
+    });
+
+    /**
+     * En Raw, l'en-tête `Reply-To:` est déjà dans les octets du client, et ces
+     * octets partent tels quels : poser `ReplyToAddresses` ici ferait un
+     * second en-tête dans le message livré.
+     */
+    it('ne pose jamais ReplyToAddresses - l’en-tête est déjà dans les octets', async () => {
+      await driverWith().send(
+        rawPayload({
+          raw: 'Reply-To: sav@boutique-awa.gn\r\nSubject: Facture\r\n\r\nMerci',
+        }),
+      );
+
+      expect(lastInput().ReplyToAddresses).toBeUndefined();
     });
 
     it('returns the SES message id', async () => {

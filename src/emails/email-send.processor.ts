@@ -98,6 +98,9 @@ export class EmailSendProcessor extends WorkerHost {
               kind: 'simple',
               html: job.data.html,
               text: job.data.text,
+              // Déjà validée à l'acceptation (domaine vérifié et possédé) :
+              // le worker ne fait que la transmettre, comme les corps.
+              replyTo: job.data.replyTo,
             },
       );
 

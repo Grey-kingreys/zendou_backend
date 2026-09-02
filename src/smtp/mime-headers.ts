@@ -96,6 +96,18 @@ export const MIME_REFUSAL = {
    * (B6 §4.3).
    */
   MULTIPLE_FROM: 'MULTIPLE_FROM',
+  /**
+   * Deux en-têtes `Reply-To:` - même traitement que le double `From:`, et pour
+   * la même raison : l'ambiguïté est exploitable. Le contrôle de domaine du
+   * point d'acceptation porte sur ce que nous lisons ; si le destinataire, lui,
+   * lit l'autre en-tête, la protection est contournée. On refuse plutôt que de
+   * choisir.
+   *
+   * Plusieurs adresses **dans un même** en-tête restent acceptées - la RFC 5322
+   * l'autorise et rien n'y est ambigu : chacune est validée, la première qui
+   * échoue refuse tout le message.
+   */
+  MULTIPLE_REPLY_TO: 'MULTIPLE_REPLY_TO',
   /** `From:` présent mais illisible. */
   INVALID_FROM: 'INVALID_FROM',
 } as const;
@@ -152,6 +164,19 @@ export interface MimeHeaderAnalysis {
    * `From:` : l'appelant injecte alors celui de l'enveloppe.
    */
   from?: ParsedAddress;
+  /**
+   * Boîtes aux lettres de l'en-tête `Reply-To:`, découpées mais **non
+   * validées** : ce module ne sait rien du compte ni de ses domaines.
+   *
+   * Rendues telles que le client les a écrites (dépliées et débarrassées de
+   * leurs blancs de bord), pour que le point d'acceptation leur applique
+   * exactement le validateur du `From:` - une adresse illisible y devient un
+   * refus explicite, pas un silence ici.
+   *
+   * **Absent** quand le message n'a pas de `Reply-To:` ; tableau vide quand
+   * l'en-tête est présent mais ne contient aucune boîte aux lettres.
+   */
+  replyTo?: string[];
   /**
    * `Subject:` décodé (RFC 2047), **non tronqué** : la troncature à
    * `SUBJECT_MAX_LENGTH` est un choix de stockage de l'appelant (B6 §4.6), et
@@ -376,6 +401,17 @@ export function analyzeRawMessage(raw: Buffer): MimeHeaderResult {
     from = decodeDisplayName(parsed);
   }
 
+  // `Reply-To:` en double : refusé comme le `From:` en double. Là où le sujet
+  // dupliqué n'est que du bruit - le message part avec ses octets d'origine et
+  // personne n'en tire de décision -, le reply-to en fait prendre une : nous
+  // validons le domaine de celui que nous lisons, et le destinataire pourrait
+  // répondre à l'autre.
+  const replyToFields = fields.filter((field) => field.key === 'reply-to');
+
+  if (replyToFields.length > 1) {
+    return { ok: false, reason: MIME_REFUSAL.MULTIPLE_REPLY_TO };
+  }
+
   // Un second `Subject:` est du bruit d'injection d'en-tête : on retient le
   // premier, comme le fait tout agent de messagerie, et le message part avec
   // ses octets d'origine de toute façon.
@@ -385,6 +421,10 @@ export function analyzeRawMessage(raw: Buffer): MimeHeaderResult {
   return {
     ok: true,
     from,
+    replyTo:
+      replyToFields.length === 1
+        ? splitMailboxList(replyToFields[0].value)
+        : undefined,
     subject: subjectField ? decodeEncodedWords(subjectField.value) : undefined,
     raw: rewritten,
     strippedHeaders: stripped,

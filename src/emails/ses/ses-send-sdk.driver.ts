@@ -99,6 +99,13 @@ export class SesSendSdkDriver implements SesSendDriver {
           // octets bruts structurellement impossible : SES ne livre qu'ici.
           Destination: { ToAddresses: [payload.to] },
           Content: buildContent(payload),
+          // Contenu `Simple` seulement : c'est SES qui compose le MIME, donc
+          // lui qui doit poser l'en-tête `Reply-To:`. En `Raw`, l'en-tête est
+          // déjà dans les octets du client - le lui ajouter ici en créerait un
+          // second.
+          ...(payload.kind === 'simple' && payload.replyTo
+            ? { ReplyToAddresses: [payload.replyTo] }
+            : {}),
           ...(configurationSet
             ? { ConfigurationSetName: configurationSet }
             : {}),

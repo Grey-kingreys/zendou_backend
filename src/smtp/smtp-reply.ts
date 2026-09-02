@@ -6,7 +6,9 @@ import {
   DOMAIN_NOT_VERIFIED_MESSAGE,
   INSUFFICIENT_CREDITS_MESSAGE,
   INVALID_FROM_MESSAGE,
+  INVALID_REPLY_TO_MESSAGE,
   INVALID_TO_MESSAGE,
+  REPLY_TO_NOT_VERIFIED_MESSAGE,
   SEND_REFUSAL,
   TEST_SENDER_RECIPIENT_RESTRICTED_MESSAGE,
   TEST_SENDER_UNAVAILABLE_MESSAGE,
@@ -75,6 +77,36 @@ export const SMTP_REPLY_RCPT_TO_UNREADABLE: SmtpReply = {
   code: 501,
   enhancedStatus: '5.1.3',
   message: INVALID_TO_MESSAGE,
+};
+
+/**
+ * « `Reply-To:` illisible » - fin DATA - 501 5.1.7, syntaxe.
+ *
+ * Même code et même statut étendu que {@link SMTP_REPLY_MAIL_FROM_UNREADABLE},
+ * et pour la même raison : c'est le même validateur d'adresse qui a refusé, sur
+ * un en-tête au lieu d'une enveloppe. Message distinct, en revanche - le client
+ * doit savoir **laquelle** de ses adresses il doit corriger.
+ */
+export const SMTP_REPLY_REPLY_TO_UNREADABLE: SmtpReply = {
+  code: 501,
+  enhancedStatus: '5.1.7',
+  message: INVALID_REPLY_TO_MESSAGE,
+};
+
+/**
+ * « Domaine du `Reply-To:` non vérifié ou non possédé » - fin DATA -
+ * 550 5.7.1, définitif.
+ *
+ * Même famille que {@link SMTP_REPLY_DOMAIN_NOT_VERIFIED}, dont c'est la règle
+ * appliquée à l'adresse de réponse : sans elle, un client expédie depuis son
+ * propre domaine et fait atterrir la conversation chez un tiers, sous notre
+ * signature DKIM. Définitif : ce n'est pas une indisponibilité, c'est un
+ * domaine que le client doit ajouter et vérifier.
+ */
+export const SMTP_REPLY_REPLY_TO_NOT_VERIFIED: SmtpReply = {
+  code: 550,
+  enhancedStatus: '5.7.1',
+  message: REPLY_TO_NOT_VERIFIED_MESSAGE,
 };
 
 /**
@@ -169,6 +201,8 @@ export const SEND_REFUSAL_SMTP_REPLY: Record<SendRefusalReason, SmtpReply> = {
   [SEND_REFUSAL.EMAIL_NOT_VERIFIED]: SMTP_REPLY_EMAIL_NOT_VERIFIED,
   [SEND_REFUSAL.INVALID_FROM]: SMTP_REPLY_MAIL_FROM_UNREADABLE,
   [SEND_REFUSAL.INVALID_TO]: SMTP_REPLY_RCPT_TO_UNREADABLE,
+  [SEND_REFUSAL.INVALID_REPLY_TO]: SMTP_REPLY_REPLY_TO_UNREADABLE,
+  [SEND_REFUSAL.REPLY_TO_NOT_VERIFIED]: SMTP_REPLY_REPLY_TO_NOT_VERIFIED,
   [SEND_REFUSAL.MISSING_BODY]: SMTP_REPLY_MISSING_BODY,
   [SEND_REFUSAL.BODY_TOO_LARGE]: SMTP_REPLY_BODY_TOO_LARGE,
   [SEND_REFUSAL.DOMAIN_NOT_VERIFIED]: SMTP_REPLY_DOMAIN_NOT_VERIFIED,

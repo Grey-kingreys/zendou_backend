@@ -19,6 +19,8 @@ import {
   SMTP_REPLY_MIME_INVALID,
   SMTP_REPLY_MISSING_BODY,
   SMTP_REPLY_RCPT_TO_UNREADABLE,
+  SMTP_REPLY_REPLY_TO_NOT_VERIFIED,
+  SMTP_REPLY_REPLY_TO_UNREADABLE,
   SMTP_REPLY_SIZE_EXCEEDED,
   SMTP_REPLY_TEST_SENDER_RECIPIENT_RESTRICTED,
   SMTP_REPLY_TEST_SENDER_UNAVAILABLE,
@@ -65,10 +67,11 @@ describe('SEND_REFUSAL_SMTP_REPLY — exhaustivité', () => {
     const reasons = Object.values(SEND_REFUSAL) as SendRefusalReason[];
 
     // Preuve que le test porte bien sur quelque chose : `SEND_REFUSAL`
-    // compte aujourd'hui 11 motifs (S1). S'il en gagne un nouveau sans
-    // entrée dans la table, l'assertion ci-dessous échoue à l'exécution —
-    // la preuve « cassant » exigée par la done-condition.
-    expect(reasons.length).toBe(11);
+    // compte aujourd'hui 13 motifs (11 de S1, plus les deux du reply-to
+    // ajoutés en E1). S'il en gagne un nouveau sans entrée dans la table,
+    // l'assertion ci-dessous échoue à l'exécution - la preuve « cassant »
+    // exigée par la done-condition.
+    expect(reasons.length).toBe(13);
 
     for (const reason of reasons) {
       expect(SEND_REFUSAL_SMTP_REPLY[reason]).toBeDefined();
@@ -94,6 +97,16 @@ describe('smtpReplyForError — motifs SEND_REFUSAL (accept())', () => {
       SMTP_REPLY_MAIL_FROM_UNREADABLE,
     ],
     ['INVALID_TO', SEND_REFUSAL.INVALID_TO, SMTP_REPLY_RCPT_TO_UNREADABLE],
+    [
+      'INVALID_REPLY_TO',
+      SEND_REFUSAL.INVALID_REPLY_TO,
+      SMTP_REPLY_REPLY_TO_UNREADABLE,
+    ],
+    [
+      'REPLY_TO_NOT_VERIFIED',
+      SEND_REFUSAL.REPLY_TO_NOT_VERIFIED,
+      SMTP_REPLY_REPLY_TO_NOT_VERIFIED,
+    ],
     ['MISSING_BODY', SEND_REFUSAL.MISSING_BODY, SMTP_REPLY_MISSING_BODY],
     ['BODY_TOO_LARGE', SEND_REFUSAL.BODY_TOO_LARGE, SMTP_REPLY_BODY_TOO_LARGE],
     [
@@ -198,6 +211,27 @@ describe('§4.4 — une ligne du tableau par test', () => {
 
   it('Trop de destinataires (RCPT TO) → 452 4.5.3', () => {
     expectWellFormedReply(SMTP_REPLY_TOO_MANY_RECIPIENTS, 452, '4.5.3');
+  });
+
+  it('Reply-To illisible (fin DATA) → 501 5.1.7', () => {
+    expectWellFormedReply(SMTP_REPLY_REPLY_TO_UNREADABLE, 501, '5.1.7');
+    expect(smtpReplyForError(refusalError(SEND_REFUSAL.INVALID_REPLY_TO))).toBe(
+      SMTP_REPLY_REPLY_TO_UNREADABLE,
+    );
+  });
+
+  it('Domaine du Reply-To non vérifié ou non possédé (fin DATA) → 550 5.7.1, définitif', () => {
+    expectWellFormedReply(
+      smtpReplyForError(refusalError(SEND_REFUSAL.REPLY_TO_NOT_VERIFIED)),
+      550,
+      '5.7.1',
+    );
+    // Le message dit **quelle** adresse corriger : le même 550 que le domaine
+    // du `From:` serait indéchiffrable pour le client s'il portait le même
+    // texte.
+    expect(SMTP_REPLY_REPLY_TO_NOT_VERIFIED.message).not.toBe(
+      SMTP_REPLY_DOMAIN_NOT_VERIFIED.message,
+    );
   });
 
   it('Message supérieur au plafond, constaté pendant DATA → 552 5.3.4 (même constante que SIZE=)', () => {
