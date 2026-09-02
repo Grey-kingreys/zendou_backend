@@ -8,6 +8,7 @@ import type {
 import type { RateLimitPolicyService } from './rate-limit-policy.service';
 import type { RateLimitTrackerService } from './rate-limit-tracker.service';
 import {
+  DAY_WINDOW_MS,
   HOUR_WINDOW_MS,
   MINUTE_WINDOW_MS,
   RATE_LIMIT_DEFAULTS,
@@ -20,7 +21,7 @@ import type { RateLimitRequest, RateLimitWindowName } from './rate-limit.types';
 type TrackerRole = 'primary' | 'secondary';
 
 /**
- * Assemble les quatre compteurs déclarés à `@nestjs/throttler`.
+ * Assemble les six compteurs déclarés à `@nestjs/throttler`.
  *
  * Chaque compteur est *conditionnel* : `skipIf` le désactive sur toute route
  * dont la politique ne prévoit pas cette fenêtre. Une route ne subit donc que
@@ -66,6 +67,8 @@ export function buildThrottlerOptions(
       counter(RATE_LIMIT_WINDOW.MINUTE_ALT, MINUTE_WINDOW_MS, 'secondary'),
       counter(RATE_LIMIT_WINDOW.HOUR, HOUR_WINDOW_MS, 'primary'),
       counter(RATE_LIMIT_WINDOW.HOUR_ALT, HOUR_WINDOW_MS, 'secondary'),
+      counter(RATE_LIMIT_WINDOW.DAY, DAY_WINDOW_MS, 'primary'),
+      counter(RATE_LIMIT_WINDOW.DAY_ALT, DAY_WINDOW_MS, 'secondary'),
     ],
   };
 }

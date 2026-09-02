@@ -10,6 +10,7 @@ import {
   buildRateLimitPolicies,
 } from './rate-limit-policy.service';
 import {
+  DAY_WINDOW_MS,
   HOUR_WINDOW_MS,
   MINUTE_WINDOW_MS,
   RATE_LIMIT_DEFAULTS,
@@ -73,11 +74,23 @@ describe('buildRateLimitPolicies', () => {
       },
     });
 
-    expect(
-      policies[RATE_LIMIT_POLICY.REGISTER].windows[RATE_LIMIT_WINDOW.HOUR],
-    ).toEqual({
-      limit: RATE_LIMIT_DEFAULTS.REGISTER_PER_HOUR,
-      ttl: HOUR_WINDOW_MS,
+    expect(policies[RATE_LIMIT_POLICY.REGISTER].windows).toEqual({
+      [RATE_LIMIT_WINDOW.HOUR]: {
+        limit: RATE_LIMIT_DEFAULTS.REGISTER_PER_HOUR,
+        ttl: HOUR_WINDOW_MS,
+      },
+      [RATE_LIMIT_WINDOW.HOUR_ALT]: {
+        limit: RATE_LIMIT_DEFAULTS.REGISTER_PER_HOUR,
+        ttl: HOUR_WINDOW_MS,
+      },
+      [RATE_LIMIT_WINDOW.DAY]: {
+        limit: RATE_LIMIT_DEFAULTS.REGISTER_PER_DAY,
+        ttl: DAY_WINDOW_MS,
+      },
+      [RATE_LIMIT_WINDOW.DAY_ALT]: {
+        limit: RATE_LIMIT_DEFAULTS.REGISTER_PER_DAY,
+        ttl: DAY_WINDOW_MS,
+      },
     });
 
     expect(
@@ -126,6 +139,45 @@ describe('buildRateLimitPolicies', () => {
     );
   });
 
+  it("plafonne l'inscription sur 24 h, pas seulement sur une heure", () => {
+    // Le trou que cette fenêtre bouche : 3 comptes par heure font 72 comptes
+    // par jour pour un robot qui sait attendre.
+    const jour =
+      policies[RATE_LIMIT_POLICY.REGISTER].windows[RATE_LIMIT_WINDOW.DAY];
+
+    expect(jour).toEqual({
+      limit: RATE_LIMIT_DEFAULTS.REGISTER_PER_DAY,
+      ttl: DAY_WINDOW_MS,
+    });
+    expect(jour!.limit).toBeLessThan(
+      RATE_LIMIT_DEFAULTS.REGISTER_PER_HOUR * 24,
+    );
+
+    // Compté aussi par adresse visée : changer d'IP ne suffit pas à rejouer
+    // indéfiniment la même adresse.
+    expect(
+      policies[RATE_LIMIT_POLICY.REGISTER].windows[RATE_LIMIT_WINDOW.DAY_ALT],
+    ).toEqual(jour);
+  });
+
+  it('laisse la fenêtre journalière au-dessus de la fenêtre horaire', () => {
+    // Sinon la fenêtre horaire deviendrait inatteignable et le message de
+    // refus mentirait sur la raison du blocage.
+    expect(RATE_LIMIT_DEFAULTS.REGISTER_PER_DAY).toBeGreaterThan(
+      RATE_LIMIT_DEFAULTS.REGISTER_PER_HOUR,
+    );
+  });
+
+  it("n'impose la fenêtre journalière à aucune autre politique", () => {
+    // Une fenêtre de 24 h sur une route ordinaire punirait un client
+    // légitime bien au-delà de l'incident qui l'a déclenchée.
+    const avecJour = Object.values(policies)
+      .filter((policy) => policy.windows[RATE_LIMIT_WINDOW.DAY] !== undefined)
+      .map((policy) => policy.id);
+
+    expect(avecJour).toEqual([RATE_LIMIT_POLICY.REGISTER]);
+  });
+
   it('exempte totalement la politique EXEMPT', () => {
     expect(policies[RATE_LIMIT_POLICY.EXEMPT].exempt).toBe(true);
     expect(policies[RATE_LIMIT_POLICY.EXEMPT].windows).toEqual({});
@@ -166,6 +218,7 @@ describe('buildRateLimitPolicies', () => {
       'RATE_LIMIT_EMAILS_PER_MINUTE',
       'RATE_LIMIT_LOGIN_PER_HOUR',
       'RATE_LIMIT_LOGIN_PER_MINUTE',
+      'RATE_LIMIT_REGISTER_PER_DAY',
       'RATE_LIMIT_REGISTER_PER_HOUR',
       'RATE_LIMIT_RESEND_CONFIRMATION_PER_HOUR',
       'RATE_LIMIT_SNS_PER_MINUTE',
@@ -248,6 +301,12 @@ describe('RateLimitPolicyService', () => {
     expect(resolver.windowFor(register, RATE_LIMIT_WINDOW.HOUR)?.limit).toBe(
       RATE_LIMIT_DEFAULTS.REGISTER_PER_HOUR,
     );
+    expect(resolver.windowFor(register, RATE_LIMIT_WINDOW.DAY)?.limit).toBe(
+      RATE_LIMIT_DEFAULTS.REGISTER_PER_DAY,
+    );
+    // La connexion, elle, n'a pas de fenêtre journalière : c'est le
+    // verrouillage progressif qui prend le relais dans la durée.
+    expect(resolver.windowFor(login, RATE_LIMIT_WINDOW.DAY)).toBeUndefined();
   });
 
   it("honore les variables d'environnement", () => {

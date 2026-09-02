@@ -1,6 +1,7 @@
 import { Injectable, type ExecutionContext } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import {
+  DAY_WINDOW_MS,
   HOUR_WINDOW_MS,
   MINUTE_WINDOW_MS,
   RATE_LIMIT_DEFAULTS,
@@ -29,6 +30,11 @@ const perHour = (limit: number): RateLimitWindow => ({
   ttl: HOUR_WINDOW_MS,
 });
 
+const perDay = (limit: number): RateLimitWindow => ({
+  limit,
+  ttl: DAY_WINDOW_MS,
+});
+
 /**
  * Construit la table complète des politiques à partir de l'environnement.
  *
@@ -48,6 +54,10 @@ export function buildRateLimitPolicies(
   const registerPerHour = read(
     'RATE_LIMIT_REGISTER_PER_HOUR',
     RATE_LIMIT_DEFAULTS.REGISTER_PER_HOUR,
+  );
+  const registerPerDay = read(
+    'RATE_LIMIT_REGISTER_PER_DAY',
+    RATE_LIMIT_DEFAULTS.REGISTER_PER_DAY,
   );
 
   return {
@@ -82,6 +92,10 @@ export function buildRateLimitPolicies(
     // Inscription : le compteur qui compte vraiment est celui par IP (un
     // attaquant change d'email à chaque tentative). Le compteur par email est
     // conservé pour le cas de la même adresse rejouée en boucle.
+    //
+    // La fenêtre journalière (E2) ferme la porte laissée ouverte par la seule
+    // fenêtre horaire : 3 comptes par heure, c'est 72 par jour pour qui sait
+    // attendre. Voir `REGISTER_PER_DAY`.
     [RATE_LIMIT_POLICY.REGISTER]: {
       id: RATE_LIMIT_POLICY.REGISTER,
       tracker: TRACKER_KIND.IP_AND_EMAIL,
@@ -89,6 +103,8 @@ export function buildRateLimitPolicies(
       windows: {
         [RATE_LIMIT_WINDOW.HOUR]: perHour(registerPerHour),
         [RATE_LIMIT_WINDOW.HOUR_ALT]: perHour(registerPerHour),
+        [RATE_LIMIT_WINDOW.DAY]: perDay(registerPerDay),
+        [RATE_LIMIT_WINDOW.DAY_ALT]: perDay(registerPerDay),
       },
     },
 

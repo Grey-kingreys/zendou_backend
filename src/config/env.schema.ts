@@ -166,6 +166,15 @@ const baseEnvSchema = z.object({
   RATE_LIMIT_REGISTER_PER_HOUR: positiveIntFromEnv(
     RATE_LIMIT_DEFAULTS.REGISTER_PER_HOUR,
   ),
+  /**
+   * Plafond journalier de l'inscription (E2), par IP et par adresse visée.
+   * La fenêtre horaire seule laisse créer 72 comptes par jour depuis une même
+   * IP à qui sait attendre - voir `REGISTER_PER_DAY` dans
+   * `rate-limit.constants.ts`.
+   */
+  RATE_LIMIT_REGISTER_PER_DAY: positiveIntFromEnv(
+    RATE_LIMIT_DEFAULTS.REGISTER_PER_DAY,
+  ),
   RATE_LIMIT_CHANGE_PASSWORD_PER_HOUR: positiveIntFromEnv(
     RATE_LIMIT_DEFAULTS.CHANGE_PASSWORD_PER_HOUR,
   ),

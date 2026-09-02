@@ -13,13 +13,17 @@ export const MINUTE_WINDOW_MS = 60_000;
 /** Durée d'une fenêtre « heure », en millisecondes. */
 export const HOUR_WINDOW_MS = 3_600_000;
 
+/** Durée d'une fenêtre « jour », en millisecondes. */
+export const DAY_WINDOW_MS = 86_400_000;
+
 /**
  * Noms des compteurs (« throttlers » au sens de `@nestjs/throttler`).
  *
  * Deux familles :
- * - `MINUTE` / `HOUR` comptent sur l'identifiant **principal** de la requête
- *   (utilisateur, clé API, ou IP selon la route) ;
- * - `MINUTE_ALT` / `HOUR_ALT` comptent sur un identifiant **secondaire**, et
+ * - `MINUTE` / `HOUR` / `DAY` comptent sur l'identifiant **principal** de la
+ *   requête (utilisateur, clé API, ou IP selon la route) ;
+ * - `MINUTE_ALT` / `HOUR_ALT` / `DAY_ALT` comptent sur un identifiant
+ *   **secondaire**, et
  *   ne servent aujourd'hui qu'aux routes non authentifiées, où l'on compte
  *   aussi par identifiant visé (l'email). Les deux compteurs s'appliquent
  *   simultanément : c'est le plus restrictif qui déclenche le 429.
@@ -27,8 +31,10 @@ export const HOUR_WINDOW_MS = 3_600_000;
 export const RATE_LIMIT_WINDOW = {
   MINUTE: 'minute',
   HOUR: 'hour',
+  DAY: 'day',
   MINUTE_ALT: 'minute-alt',
   HOUR_ALT: 'hour-alt',
+  DAY_ALT: 'day-alt',
 } as const;
 
 /**
@@ -91,6 +97,22 @@ export const RATE_LIMIT_DEFAULTS = {
   LOGIN_PER_HOUR: 20,
   /** `RATE_LIMIT_REGISTER_PER_HOUR` — création de comptes en masse. */
   REGISTER_PER_HOUR: 3,
+  /**
+   * `RATE_LIMIT_REGISTER_PER_DAY` (E2) - plafond **journalier** de
+   * l'inscription, par IP et par adresse visée.
+   *
+   * La fenêtre horaire seule laisse un robot patient créer 72 comptes par
+   * jour depuis une même IP : il lui suffit d'attendre. Or plusieurs comptes
+   * gratuits ouverts depuis une même adresse en 24 h est la signature d'un
+   * spammeur qui vient chercher des crédits de bienvenue, pas d'un client.
+   *
+   * 10 par jour reste largement au-dessus de ce qu'un partage d'IP légitime
+   * produit : un cybercafé de Conakry ou le NAT d'un opérateur guinéen voit
+   * passer beaucoup de trafic, mais très peu d'inscriptions - s'inscrire est
+   * un geste rare, contrairement à consulter. Le compteur par email visé,
+   * lui, borne le rejeu de la même adresse.
+   */
+  REGISTER_PER_DAY: 10,
   /** `RATE_LIMIT_CHANGE_PASSWORD_PER_HOUR` — par utilisateur, pas par IP. */
   CHANGE_PASSWORD_PER_HOUR: 5,
   /**
