@@ -128,6 +128,32 @@ const portListFromEnv = (defaultValue: string) =>
       return ports;
     });
 
+/**
+ * Nom de domaine nu : suite de libellés alphanumériques séparés par des
+ * points. Ni schéma (`https://`), ni port (`:443`), ni chemin - un `Domain=`
+ * de cookie n'accepte rien de tout cela, et un navigateur qui reçoit une
+ * valeur mal formée ignore le cookie **en silence**, ce qui déconnecterait
+ * tout le monde sans une ligne d'erreur nulle part.
+ */
+const COOKIE_DOMAIN_PATTERN =
+  /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$/;
+
+/**
+ * Normalise `SESSION_COOKIE_DOMAIN` : espaces retirés, minuscules (les noms de
+ * domaine sont insensibles à la casse), point initial toléré et retiré
+ * (`.zendou.app` est la notation RFC 2109, que la RFC 6265 a remplacée par la
+ * forme nue), et vide traité comme absent selon la convention du fichier.
+ */
+const normalizeCookieDomain = (value: unknown): unknown => {
+  if (typeof value !== 'string') {
+    return value;
+  }
+
+  const normalized = value.trim().toLowerCase().replace(/^\./, '');
+
+  return normalized === '' ? undefined : normalized;
+};
+
 const baseEnvSchema = z.object({
   NODE_ENV: z
     .enum(['development', 'test', 'production'])
@@ -136,6 +162,31 @@ const baseEnvSchema = z.object({
   DATABASE_URL: z.string().url(),
   REDIS_URL: z.string().url(),
   FRONTEND_ORIGIN: z.string().url(),
+
+  /**
+   * Domaine porté par le cookie de session (`Domain=zendou.app`).
+   *
+   * **Optionnelle.** Absente, le cookie reste *hôte-seul* : seul l'hôte qui l'a
+   * posé (`api.zendou.app`) le reçoit - le comportement historique. Renseignée
+   * avec le domaine parent, le cookie est envoyé à `zendou.app` **et** à
+   * `api.zendou.app`, ce qui est la seule façon pour le proxy Next servi sur
+   * `zendou.app` de lire la session. En production, son absence est signalée
+   * par un avertissement au démarrage du contrôleur d'authentification.
+   *
+   * Valeur attendue : un nom de domaine nu (`zendou.app`). Un schéma ou un
+   * port (`https://zendou.app`, `zendou.app:443`) est refusé au démarrage : le
+   * navigateur, lui, se contenterait d'ignorer le cookie sans rien dire.
+   */
+  SESSION_COOKIE_DOMAIN: z.preprocess(
+    normalizeCookieDomain,
+    z
+      .string()
+      .regex(
+        COOKIE_DOMAIN_PATTERN,
+        'doit être un nom de domaine nu, sans schéma ni port ni chemin (exemple : zendou.app)',
+      )
+      .optional(),
+  ),
 
   /**
    * Nombre de proxys inverses devant l'application (Traefik sous Dokploy en

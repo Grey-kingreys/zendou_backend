@@ -435,3 +435,46 @@ describe('validateEnv — anti-abus du relais SMTP (B6/S9)', () => {
     ).toBe(SMTP_DEFAULT_MAX_CONNECTIONS_PER_IP);
   });
 });
+
+describe('validateEnv - SESSION_COOKIE_DOMAIN (lot D)', () => {
+  it('est optionnelle : absente ou vide, le cookie reste hôte-seul', () => {
+    expect(validateEnv({ ...BASE_ENV }).SESSION_COOKIE_DOMAIN).toBeUndefined();
+    expect(
+      validateEnv({ ...BASE_ENV, SESSION_COOKIE_DOMAIN: '' })
+        .SESSION_COOKIE_DOMAIN,
+    ).toBeUndefined();
+    expect(
+      validateEnv({ ...BASE_ENV, SESSION_COOKIE_DOMAIN: '   ' })
+        .SESSION_COOKIE_DOMAIN,
+    ).toBeUndefined();
+  });
+
+  it('accepte un nom de domaine nu et le normalise', () => {
+    expect(
+      validateEnv({ ...BASE_ENV, SESSION_COOKIE_DOMAIN: 'zendou.app' })
+        .SESSION_COOKIE_DOMAIN,
+    ).toBe('zendou.app');
+    // Minuscules, espaces de bord retirés.
+    expect(
+      validateEnv({ ...BASE_ENV, SESSION_COOKIE_DOMAIN: '  Zendou.App  ' })
+        .SESSION_COOKIE_DOMAIN,
+    ).toBe('zendou.app');
+    // Point initial toléré (notation RFC 2109) et retiré.
+    expect(
+      validateEnv({ ...BASE_ENV, SESSION_COOKIE_DOMAIN: '.zendou.app' })
+        .SESSION_COOKIE_DOMAIN,
+    ).toBe('zendou.app');
+  });
+
+  it.each([
+    ['https://zendou.app'],
+    ['zendou.app:443'],
+    ['zendou.app/'],
+    ['zendou.app/session'],
+    ['zendou app'],
+  ])('refuse « %s » : un cookie mal formé serait ignoré en silence', (raw) => {
+    expect(() =>
+      validateEnv({ ...BASE_ENV, SESSION_COOKIE_DOMAIN: raw }),
+    ).toThrow(/SESSION_COOKIE_DOMAIN/);
+  });
+});
