@@ -8,6 +8,7 @@ import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
 import { EmailConfirmationService } from './email-confirmation.service';
 import { EmailVerifiedGuard } from './email-verified.guard';
+import { LoginLockoutService } from './login-lockout.service';
 import { SessionAuthGuard } from './session-auth.guard';
 import { SessionService } from './session.service';
 
@@ -39,6 +40,9 @@ import { SessionService } from './session.service';
     SessionAuthGuard,
     EmailConfirmationService,
     EmailVerifiedGuard,
+    // Partage le client Redis des sessions : mêmes contraintes de
+    // disponibilité, même politique de repli, un seul pool de connexions.
+    LoginLockoutService,
   ],
   exports: [
     AuthService,

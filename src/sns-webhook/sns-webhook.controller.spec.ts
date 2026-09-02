@@ -1,7 +1,8 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { Logger, type INestApplication } from '@nestjs/common';
+import { Logger, ValidationPipe, type INestApplication } from '@nestjs/common';
 import request from 'supertest';
 import { App } from 'supertest/types';
+import { validationExceptionFactory } from '../app-setup';
 import { deliveryFixture, permanentBounceFixture } from './fixtures';
 import { SnsSignatureValidator } from './sns-signature.validator';
 import { SnsWebhookModule } from './sns-webhook.module';
@@ -89,6 +90,49 @@ describe('SnsWebhookController (HTTP)', () => {
     expect(response.status).toBe(400);
     expect(signatureValidator.isValid).not.toHaveBeenCalled();
     expect(snsWebhookService.handle).not.toHaveBeenCalled();
+  });
+
+  it('survit au pipe strict de production, fixture AWS complète à l’appui', async () => {
+    // `forbidNonWhitelisted` refuse désormais tout champ non déclaré par un
+    // DTO. Le corps d'AWS en porte une vingtaine (Type, MessageId, TopicArn,
+    // Signature...) : si le contrôleur le typait un jour avec une classe
+    // validée, la production répondrait 400 à chaque notification et nous
+    // perdrions bounces et plaintes en silence. Ce test monte le pipe avec
+    // **les mêmes options que `setupApp`** et rejoue la fixture réelle.
+    const strict = await Test.createTestingModule({
+      imports: [SnsWebhookModule],
+    })
+      .overrideProvider(SnsWebhookService)
+      .useValue(snsWebhookService)
+      .overrideProvider(SnsSignatureValidator)
+      .useValue(signatureValidator)
+      .compile();
+
+    const strictApp = strict.createNestApplication<INestApplication<App>>();
+    strictApp.useGlobalPipes(
+      new ValidationPipe({
+        whitelist: true,
+        forbidNonWhitelisted: true,
+        exceptionFactory: validationExceptionFactory,
+      }),
+    );
+    await strictApp.init();
+
+    try {
+      const fixture = permanentBounceFixture();
+
+      const response = await request(strictApp.getHttpServer())
+        .post('/webhooks/sns')
+        .set('Content-Type', 'text/plain; charset=UTF-8')
+        .send(JSON.stringify(fixture));
+
+      expect(response.status).toBe(200);
+      expect(response.body).toEqual({ received: true });
+      // Le message est arrivé entier : aucun champ n'a été raboté au passage.
+      expect(snsWebhookService.handle).toHaveBeenCalledWith(fixture);
+    } finally {
+      await strictApp.close();
+    }
   });
 
   it('acknowledges with 200 even when processing blows up (SNS would retry)', async () => {

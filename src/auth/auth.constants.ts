@@ -44,3 +44,56 @@ export const SAME_PASSWORD_MESSAGE =
  * sans SCAN sur tout Redis.
  */
 export const SESSION_USER_SET_PREFIX = 'usersess:';
+
+/**
+ * Verrouillage progressif de la connexion (`LoginLockoutService`).
+ *
+ * Complète la limitation de débit sans la remplacer : celle-ci borne le
+ * *rythme* (5 tentatives par minute et par IP), celui-là borne
+ * l'*acharnement* dans la durée sur **une adresse donnée**, quelle que soit
+ * l'IP d'où viennent les tentatives. Un attaquant qui dispose d'un parc d'IP -
+ * ce que le NAT opérateur guinéen rend d'ailleurs banal - passe entre les
+ * mailles de la première ; il bute sur le second.
+ *
+ * Les trois clés sont indexées par l'empreinte SHA-256 de l'adresse
+ * normalisée : Redis ne contient jamais d'email en clair.
+ */
+
+/** Compteur d'échecs de la fenêtre courante : `lockout:fail:<sha256(email)>`. */
+export const LOGIN_LOCKOUT_FAIL_PREFIX = 'lockout:fail:';
+
+/** Marque de blocage en cours : `lockout:block:<sha256(email)>`. */
+export const LOGIN_LOCKOUT_BLOCK_PREFIX = 'lockout:block:';
+
+/**
+ * Niveau d'escalade atteint : `lockout:level:<sha256(email)>`. Sa durée de vie
+ * (24 h) est ce qui fait tenir le doublement dans le temps ; sans elle, un
+ * attaquant patient repartirait indéfiniment du premier palier.
+ */
+export const LOGIN_LOCKOUT_LEVEL_PREFIX = 'lockout:level:';
+
+/** Durée de vie du niveau d'escalade, en secondes (24 h). */
+export const LOGIN_LOCKOUT_LEVEL_TTL_SECONDS = 86_400;
+
+/**
+ * Défauts du verrouillage, tous ajustables par variable d'environnement
+ * (validées dans `src/config/env.schema.ts`, documentées dans `.env.example`).
+ */
+export const LOGIN_LOCKOUT_DEFAULTS = {
+  /** `LOGIN_LOCKOUT_THRESHOLD` - échecs tolérés avant le blocage suivant. */
+  THRESHOLD: 5,
+  /** `LOGIN_LOCKOUT_BASE_SECONDS` - durée du premier blocage. */
+  BASE_SECONDS: 60,
+  /**
+   * `LOGIN_LOCKOUT_MAX_SECONDS` - plafond du doublement (une heure). Au-delà,
+   * le verrouillage cesserait de protéger le titulaire du compte pour se
+   * mettre à le punir : quelqu'un peut bloquer l'adresse d'un tiers rien qu'en
+   * échouant sur elle.
+   */
+  MAX_SECONDS: 3600,
+  /**
+   * `LOGIN_LOCKOUT_WINDOW_SECONDS` - durée de vie du compteur d'échecs. Cinq
+   * fautes de frappe étalées sur une journée ne doivent rien déclencher.
+   */
+  WINDOW_SECONDS: 900,
+} as const;

@@ -1,65 +1,17 @@
 import { NestFactory } from '@nestjs/core';
-import { ValidationPipe } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { NestExpressApplication } from '@nestjs/platform-express';
-import cookieParser from 'cookie-parser';
 import { AppModule } from './app.module';
-import { AllExceptionsFilter } from './common/http-exception.filter';
-import { DEFAULT_TRUST_PROXY_HOPS } from './rate-limit/rate-limit.constants';
-import { trustProxySetting } from './rate-limit/rate-limit.identity';
+import { setupApp } from './app-setup';
 
 async function bootstrap() {
   const app = await NestFactory.create<NestExpressApplication>(AppModule);
   const configService = app.get(ConfigService);
 
-  // Sans ceci, Nest n'appelle jamais `onModuleDestroy`/`onApplicationShutdown`
-  // sur SIGTERM — le relais SMTP (B6/S5) ne fermerait donc jamais ses
-  // serveurs à l'arrêt du conteneur, laissant des connexions en cours se
-  // faire trancher par SIGKILL plutôt que de recevoir un `421` propre.
-  // Effet global assumé (A17) : Prisma, Redis et BullMQ s'arrêtent désormais
-  // eux aussi sur SIGTERM — vérifié qu'aucun de ces hooks existants ne jette.
-  app.enableShutdownHooks();
-
-  // Derrière le proxy Dokploy/Traefik, Express voit par défaut l'IP du proxy
-  // et non celle du client : tous les clients partageraient alors un unique
-  // compteur de limitation de débit, et le premier bourrin bloquerait tout le
-  // monde. `trust proxy` fait retenir l'IP réelle écrite dans
-  // `X-Forwarded-For`. Réglable via `TRUST_PROXY_HOPS` (0 = aucun proxy,
-  // l'en-tête est ignoré car falsifiable).
-  app.set(
-    'trust proxy',
-    trustProxySetting(
-      configService.get<number>('TRUST_PROXY_HOPS') ?? DEFAULT_TRUST_PROXY_HOPS,
-    ),
-  );
-
-  app.setGlobalPrefix('v1', {
-    exclude: ['health'],
-  });
-
-  // La limite Express par défaut (100 Ko) est en deçà des 500 Ko autorisés
-  // pour `html`/`text` sur `POST /v1/emails`.
-  app.useBodyParser('json', { limit: '2mb' });
-
-  app.use(cookieParser());
-
-  app.useGlobalPipes(
-    new ValidationPipe({
-      whitelist: true,
-    }),
-  );
-
-  // Uniformise le corps de toutes les réponses d'erreur : `message` toujours
-  // une chaîne, `errors` toujours un tableau non vide. Sans lui, un échec
-  // class-validator (agrégé en tableau par le pipe ci-dessus) et un
-  // `throw new BadRequestException("…")` rendaient la même phrase métier sous
-  // deux types différents — voir `common/http-exception.filter.ts`.
-  app.useGlobalFilters(new AllExceptionsFilter());
-
-  app.enableCors({
-    origin: configService.get<string>('FRONTEND_ORIGIN'),
-    credentials: true,
-  });
+  // Tout le réglage de l'application vit dans `app-setup.ts`, où les tests
+  // peuvent l'exercer : `main.ts` n'est jamais chargé par un test, puisqu'il
+  // ouvre un port.
+  setupApp(app, configService);
 
   const port = configService.get<number>('PORT') ?? 4000;
   await app.listen(port);

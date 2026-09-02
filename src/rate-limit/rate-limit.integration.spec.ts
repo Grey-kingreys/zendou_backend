@@ -41,6 +41,8 @@ describe('Limitation de débit (intégration)', () => {
 
   const PROXY_IP = '203.0.113.10';
   const OTHER_PROXY_IP = '198.51.100.20';
+  /** Client isolé, réservé à la lecture des en-têtes de débit. */
+  const HEADERS_IP = '192.0.2.30';
 
   beforeAll(async () => {
     storage = new ThrottlerStorageService();
@@ -142,6 +144,33 @@ describe('Limitation de débit (intégration)', () => {
       statusCode: 429,
       message: TOO_MANY_REQUESTS_MESSAGE,
     });
+  });
+
+  it('annonce le budget restant à chaque tentative, puis le délai à respecter', async () => {
+    // Client isolé (autre IP, autre email) : ce test ne consomme aucun des
+    // compteurs sur lesquels les autres s'appuient.
+    const email = 'compteur@example.com';
+    const limit = RATE_LIMIT_DEFAULTS.LOGIN_PER_MINUTE;
+
+    for (let attempt = 1; attempt <= limit; attempt++) {
+      const response = await login(HEADERS_IP, email);
+
+      expect(response.status).toBe(401);
+      // La minute est le compteur le plus contraignant de la politique de
+      // connexion : c'est donc lui qui s'affiche, et non l'heure (20).
+      expect(response.headers['x-ratelimit-limit']).toBe(String(limit));
+      expect(response.headers['x-ratelimit-remaining']).toBe(
+        String(limit - attempt),
+      );
+      expect(Number(response.headers['x-ratelimit-reset'])).toBeGreaterThan(0);
+      // Aucun en-tête suffixé par un nom de compteur.
+      expect(response.headers['x-ratelimit-limit-minute']).toBeUndefined();
+    }
+
+    const blocked = await login(HEADERS_IP, email);
+
+    expect(blocked.status).toBe(429);
+    expect(Number(blocked.headers['retry-after'])).toBeGreaterThan(0);
   });
 
   it("repart d'un compteur neuf derrière une autre IP réelle", async () => {

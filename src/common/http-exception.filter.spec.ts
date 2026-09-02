@@ -7,6 +7,7 @@ import {
   Delete,
   Get,
   HttpCode,
+  HttpException,
   HttpStatus,
   INestApplication,
   Logger,
@@ -53,6 +54,9 @@ const API_KEY = 'zd_live_cle_de_test_0123456789abcdef';
  */
 const SECRET_INTERNAL_DETAIL =
   'ECONNREFUSED 10.0.0.7:5432 — mot de passe base « s3cr3t-postgres »';
+
+/** Phrase du 429 métier joué par les cobayes ci-dessous. */
+const QUOTA_MESSAGE = 'Quota journalier atteint.';
 
 /** Compte autorisé à envoyer : actif, adresse confirmée. */
 const ACCOUNT = {
@@ -111,6 +115,30 @@ class CobayeController {
   @Get('ok')
   ok(): { ok: true } {
     return { ok: true };
+  }
+
+  /**
+   * 429 « métier » : levé depuis la couche service, donc sans le moindre accès
+   * à la réponse HTTP. C'est exactement la forme qu'ont le verrouillage de
+   * connexion et le futur dépassement de quota journalier.
+   */
+  @Get('quota-depasse')
+  quotaDepasse(): never {
+    throw new HttpException(
+      {
+        statusCode: HttpStatus.TOO_MANY_REQUESTS,
+        error: 'Too Many Requests',
+        message: QUOTA_MESSAGE,
+        retryAfter: 42,
+      },
+      HttpStatus.TOO_MANY_REQUESTS,
+    );
+  }
+
+  /** Même statut, mais sans délai annonçable : aucun en-tête à poser. */
+  @Get('trop-de-requetes-sans-delai')
+  tropDeRequetesSansDelai(): never {
+    throw new HttpException(QUOTA_MESSAGE, HttpStatus.TOO_MANY_REQUESTS);
   }
 }
 
@@ -394,6 +422,46 @@ describe("Filtre d'erreur global — forme du corps, bout en bout", () => {
   });
 
   // -------------------------------------------------------------------------
+  // 7. `Retry-After` sur un 429 métier
+  // -------------------------------------------------------------------------
+
+  it('pose `Retry-After` sur un 429 dont le corps annonce un délai', async () => {
+    const response = await request(app.getHttpServer()).get(
+      '/cobayes/quota-depasse',
+    );
+
+    const { message, errors } = expectContract(response, 429);
+
+    // Le service n'a écrit qu'un champ de corps ; le client, lui, reçoit
+    // l'en-tête standard qu'il sait lire.
+    expect(response.headers['retry-after']).toBe('42');
+    expect(message).toBe(QUOTA_MESSAGE);
+    expect(errors).toEqual([QUOTA_MESSAGE]);
+    // Le corps garde son `retryAfter` : les deux disent la même chose.
+    expect(bodyOf(response)).toMatchObject({ retryAfter: 42 });
+  });
+
+  it('ne pose aucun `Retry-After` quand le 429 n’annonce pas de délai', async () => {
+    const response = await request(app.getHttpServer()).get(
+      '/cobayes/trop-de-requetes-sans-delai',
+    );
+
+    expectContract(response, 429);
+
+    expect(response.headers['retry-after']).toBeUndefined();
+  });
+
+  it('ne pose aucun `Retry-After` sur un statut qui n’est pas un 429', async () => {
+    const response = await request(app.getHttpServer()).get(
+      '/cobayes/refus-manuel',
+    );
+
+    expectContract(response, 400);
+
+    expect(response.headers['retry-after']).toBeUndefined();
+  });
+
+  // -------------------------------------------------------------------------
   // Piège 1 — les réponses 2xx ne passent pas par le filtre
   // -------------------------------------------------------------------------
 
@@ -628,11 +696,13 @@ describe('Filtre d’erreur global — 503 de /health, diagnostic préservé', (
 // esprit que `config/env-example.consistency.spec.ts`.
 // ---------------------------------------------------------------------------
 
-describe('main.ts — enregistrement du filtre', () => {
+describe('app-setup.ts - enregistrement du filtre', () => {
   it('monte `AllExceptionsFilter` en filtre global', () => {
-    const main = readFileSync(join(__dirname, '..', 'main.ts'), 'utf8');
+    // Le montage a quitté `main.ts` pour `app-setup.ts` (testable, lui) : la
+    // garde anti-dérive suit le code qu'elle surveille.
+    const setup = readFileSync(join(__dirname, '..', 'app-setup.ts'), 'utf8');
 
-    expect(main).toContain('AllExceptionsFilter');
-    expect(main).toContain('useGlobalFilters(new AllExceptionsFilter())');
+    expect(setup).toContain('AllExceptionsFilter');
+    expect(setup).toContain('useGlobalFilters(new AllExceptionsFilter())');
   });
 });

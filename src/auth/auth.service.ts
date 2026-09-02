@@ -22,6 +22,7 @@ import { LoginDto } from './dto/login.dto';
 import { RegisterDto } from './dto/register.dto';
 import { UpdateProfileDto } from './dto/update-profile.dto';
 import { EmailConfirmationService } from './email-confirmation.service';
+import { LoginLockoutService } from './login-lockout.service';
 import { SessionService } from './session.service';
 import { resolveTestSenderAddress } from './test-sender-address';
 
@@ -39,6 +40,7 @@ export class AuthService {
     private readonly sessionService: SessionService,
     private readonly emailConfirmation: EmailConfirmationService,
     private readonly configService: ConfigService,
+    private readonly loginLockout: LoginLockoutService,
   ) {}
 
   /** Crée un utilisateur, hache son mot de passe et ouvre une session. */
@@ -111,20 +113,32 @@ export class AuthService {
   async login(dto: LoginDto): Promise<AuthResult> {
     const email = normalizeEmail(dto.email);
 
+    // Avant la base et avant argon2 : une adresse déjà verrouillée ne doit
+    // plus rien coûter au serveur, et surtout pas un hachage argon2id de
+    // plusieurs dizaines de millisecondes par tentative.
+    await this.loginLockout.assertNotLocked(email);
+
     const record = await this.prisma.user.findUnique({
       where: { email },
       select: { ...AUTH_USER_SELECT, passwordHash: true },
     });
 
     if (!record) {
+      // Email inconnu compté exactement comme un mot de passe faux : la
+      // différence de traitement serait, à elle seule, un oracle d'existence
+      // de compte.
+      await this.loginLockout.recordFailure(email);
       throw new UnauthorizedException(INVALID_CREDENTIALS_MESSAGE);
     }
 
     const { passwordHash, ...selected } = record;
 
     if (!(await this.verifyPassword(passwordHash, dto.password))) {
+      await this.loginLockout.recordFailure(email);
       throw new UnauthorizedException(INVALID_CREDENTIALS_MESSAGE);
     }
+
+    await this.loginLockout.recordSuccess(email);
 
     // `testSenderAddress` n'est pas une colonne Prisma : voir la
     // documentation de `AuthUser.testSenderAddress` (`auth.types.ts`).

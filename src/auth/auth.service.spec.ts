@@ -2,6 +2,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import {
   BadRequestException,
   ConflictException,
+  HttpException,
   UnauthorizedException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -18,6 +19,7 @@ import {
   WRONG_CURRENT_PASSWORD_MESSAGE,
 } from './auth.constants';
 import { EmailConfirmationService } from './email-confirmation.service';
+import { LoginLockoutService } from './login-lockout.service';
 import { SessionService } from './session.service';
 
 interface CreateArgs {
@@ -62,6 +64,17 @@ describe('AuthService', () => {
   };
   const emailConfirmation = { issueAndSend: jest.fn() };
   const configGet = jest.fn();
+  /**
+   * Le verrouillage progressif lui-même est éprouvé dans
+   * `login-lockout.service.spec.ts`, avec un vrai Redis simulé et une horloge.
+   * Ici, on ne vérifie que son **branchement** : appelé avant la base, nourri
+   * sur les deux branches d'échec, remis à zéro sur succès.
+   */
+  const loginLockout = {
+    assertNotLocked: jest.fn(),
+    recordFailure: jest.fn(),
+    recordSuccess: jest.fn(),
+  };
 
   beforeEach(async () => {
     jest.clearAllMocks();
@@ -69,6 +82,9 @@ describe('AuthService', () => {
     sessionService.create.mockResolvedValue('session-token');
     emailConfirmation.issueAndSend.mockResolvedValue(undefined);
     configGet.mockReturnValue(undefined);
+    loginLockout.assertNotLocked.mockResolvedValue(undefined);
+    loginLockout.recordFailure.mockResolvedValue(undefined);
+    loginLockout.recordSuccess.mockResolvedValue(undefined);
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -83,6 +99,7 @@ describe('AuthService', () => {
           useValue: emailConfirmation,
         },
         { provide: ConfigService, useValue: { get: configGet } },
+        { provide: LoginLockoutService, useValue: loginLockout },
       ],
     }).compile();
 
@@ -254,6 +271,76 @@ describe('AuthService', () => {
         (wrongPassword as UnauthorizedException).getResponse(),
       );
       expect(sessionService.create).not.toHaveBeenCalled();
+    }, 15000);
+
+    it('interroge le verrouillage avant même de lire la base', async () => {
+      // L'ordre est tout l'intérêt : une adresse déjà verrouillée ne doit
+      // coûter ni une requête Prisma, ni un hachage argon2id.
+      loginLockout.assertNotLocked.mockImplementation(() => {
+        expect(findUnique).not.toHaveBeenCalled();
+        return Promise.resolve();
+      });
+      findUnique.mockResolvedValue(null);
+
+      await expect(
+        service.login({
+          email: 'INCONNU@Example.com ',
+          password: 'peu importe',
+        }),
+      ).rejects.toBeInstanceOf(UnauthorizedException);
+
+      expect(loginLockout.assertNotLocked).toHaveBeenCalledWith(
+        'inconnu@example.com',
+      );
+    });
+
+    it('propage tel quel le 429 du verrouillage', async () => {
+      const verrou = new HttpException(
+        { statusCode: 429, message: 'bloqué', retryAfter: 60 },
+        429,
+      );
+      loginLockout.assertNotLocked.mockRejectedValue(verrou);
+
+      await expect(
+        service.login({ email: 'aissatou@example.com', password: 'x' }),
+      ).rejects.toBe(verrou);
+
+      expect(findUnique).not.toHaveBeenCalled();
+    });
+
+    it('compte un échec sur les deux branches de refus', async () => {
+      findUnique.mockResolvedValue(null);
+      await expect(
+        service.login({ email: 'inconnu@example.com', password: 'x' }),
+      ).rejects.toBeInstanceOf(UnauthorizedException);
+
+      const passwordHash = await argon2.hash('motdepasse-solide', {
+        type: argon2.argon2id,
+      });
+      findUnique.mockResolvedValue({ ...authUser, passwordHash });
+      await expect(
+        service.login({ email: 'aissatou@example.com', password: 'mauvais' }),
+      ).rejects.toBeInstanceOf(UnauthorizedException);
+
+      expect(loginLockout.recordFailure).toHaveBeenCalledTimes(2);
+      expect(loginLockout.recordSuccess).not.toHaveBeenCalled();
+    }, 15000);
+
+    it('remet le compteur à zéro après une connexion réussie', async () => {
+      const passwordHash = await argon2.hash('motdepasse-solide', {
+        type: argon2.argon2id,
+      });
+      findUnique.mockResolvedValue({ ...authUser, passwordHash });
+
+      await service.login({
+        email: 'aissatou@example.com',
+        password: 'motdepasse-solide',
+      });
+
+      expect(loginLockout.recordSuccess).toHaveBeenCalledWith(
+        'aissatou@example.com',
+      );
+      expect(loginLockout.recordFailure).not.toHaveBeenCalled();
     }, 15000);
   });
 

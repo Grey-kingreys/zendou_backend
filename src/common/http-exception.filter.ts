@@ -76,8 +76,11 @@ export class AllExceptionsFilter implements ExceptionFilter {
 
     if (exception instanceof HttpException) {
       const status = exception.getStatus();
+      const body = normalizeErrorBody(exception, status);
 
-      response.status(status).json(normalizeErrorBody(exception, status));
+      setRetryAfter(response, status, body);
+
+      response.status(status).json(body);
       return;
     }
 
@@ -94,6 +97,40 @@ export class AllExceptionsFilter implements ExceptionFilter {
       message: INTERNAL_ERROR_MESSAGE,
       errors: [INTERNAL_ERROR_MESSAGE],
     } satisfies NormalizedErrorBody);
+  }
+}
+
+/**
+ * Pose `Retry-After` sur tout 429 dont le corps annonce un délai d'attente.
+ *
+ * Le garde de limitation de débit le pose déjà lui-même, sur la réponse, avant
+ * de lever son exception : cette fonction est donc idempotente pour lui (même
+ * valeur, tirée du même corps). Elle sert aux **429 métier** - quota journalier
+ * dépassé, connexion verrouillée - levés depuis un service, qui n'ont aucun
+ * accès à la réponse HTTP et ne peuvent donc écrire qu'un `retryAfter` dans le
+ * corps. Sans cet en-tête, un client HTTP standard n'a aucun moyen de savoir
+ * quand réessayer.
+ *
+ * Aucune conversion : la valeur du corps est déjà exprimée en secondes, comme
+ * l'en-tête. Une valeur absente, nulle ou non numérique ne pose rien.
+ */
+function setRetryAfter(
+  response: Response,
+  status: number,
+  body: NormalizedErrorBody,
+): void {
+  if (status !== TOO_MANY_REQUESTS_STATUS) {
+    return;
+  }
+
+  const retryAfter = body.retryAfter;
+
+  if (
+    typeof retryAfter === 'number' &&
+    Number.isFinite(retryAfter) &&
+    retryAfter > 0
+  ) {
+    response.setHeader('Retry-After', String(Math.ceil(retryAfter)));
   }
 }
 
@@ -189,6 +226,9 @@ function fallbackMessage(status: number): string {
  * on élargit une fois ici plutôt que de comparer deux types disjoints.
  */
 const INTERNAL_SERVER_ERROR_STATUS: number = HttpStatus.INTERNAL_SERVER_ERROR;
+
+/** Même élargissement, pour la comparaison du 429 (voir {@link setRetryAfter}). */
+const TOO_MANY_REQUESTS_STATUS: number = HttpStatus.TOO_MANY_REQUESTS;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);

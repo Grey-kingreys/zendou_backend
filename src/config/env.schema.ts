@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { LOGIN_LOCKOUT_DEFAULTS } from '../auth/auth.constants';
 import { DEFAULT_WELCOME_CREDITS } from '../billing/billing.constants';
 import { parseEmailAddress } from '../emails/email-address';
 import { MAX_RAW_MESSAGE_BYTES } from '../emails/emails.constants';
@@ -182,6 +183,37 @@ const baseEnvSchema = z.object({
   ),
   RATE_LIMIT_RESEND_CONFIRMATION_PER_HOUR: positiveIntFromEnv(
     RATE_LIMIT_DEFAULTS.RESEND_CONFIRMATION_PER_HOUR,
+  ),
+
+  // ─── Verrouillage progressif de la connexion (auth/login-lockout.service) ───
+
+  /**
+   * Échecs consécutifs tolérés sur une même adresse email avant blocage. La
+   * limitation de débit borne le *rythme* des tentatives ; ce compteur-ci
+   * borne l'*acharnement* sur un compte donné, quelle que soit l'IP d'origine.
+   */
+  LOGIN_LOCKOUT_THRESHOLD: positiveIntFromEnv(LOGIN_LOCKOUT_DEFAULTS.THRESHOLD),
+
+  /** Durée du premier blocage, en secondes. Elle double à chaque palier. */
+  LOGIN_LOCKOUT_BASE_SECONDS: positiveIntFromEnv(
+    LOGIN_LOCKOUT_DEFAULTS.BASE_SECONDS,
+  ),
+
+  /**
+   * Plafond du doublement, en secondes. Au-delà, le verrouillage cesserait de
+   * protéger le titulaire du compte pour se mettre à le punir : n'importe qui
+   * peut faire échouer des connexions sur l'adresse d'un tiers.
+   */
+  LOGIN_LOCKOUT_MAX_SECONDS: positiveIntFromEnv(
+    LOGIN_LOCKOUT_DEFAULTS.MAX_SECONDS,
+  ),
+
+  /**
+   * Durée de vie du compteur d'échecs, en secondes : cinq fautes de frappe
+   * étalées sur la journée ne doivent rien déclencher.
+   */
+  LOGIN_LOCKOUT_WINDOW_SECONDS: positiveIntFromEnv(
+    LOGIN_LOCKOUT_DEFAULTS.WINDOW_SECONDS,
   ),
 
   // AWS SES / SNS — optionnelles pour l'instant (pas de module d'envoi)

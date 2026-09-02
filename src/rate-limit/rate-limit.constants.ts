@@ -146,6 +146,26 @@ export const DEFAULT_TRUST_PROXY_HOPS = 1;
 export const TOO_MANY_REQUESTS_MESSAGE =
   'Trop de requêtes. Réessayez dans quelques instants.';
 
+/**
+ * En-têtes de débit posés sur **toute** réponse d'une route soumise à une
+ * politique (donc toutes sauf `/health`).
+ *
+ * Volontairement **sans suffixe de compteur** : la bibliothèque écrirait
+ * `X-RateLimit-Limit-minute`, `X-RateLimit-Limit-hour-alt`… que personne ne
+ * lit et qu'aucune convention n'emploie. Quand plusieurs compteurs
+ * s'appliquent à une même requête (connexion : minute et heure, IP et email),
+ * c'est le plus contraignant - celui dont le reste est le plus petit - qui
+ * s'affiche : c'est bien lui qui bloquera le client en premier.
+ */
+export const RATE_LIMIT_HEADERS = {
+  /** Budget de la fenêtre exposée. */
+  LIMIT: 'X-RateLimit-Limit',
+  /** Requêtes encore acceptées dans cette fenêtre. */
+  REMAINING: 'X-RateLimit-Remaining',
+  /** Secondes restant avant la remise à zéro de cette fenêtre. */
+  RESET: 'X-RateLimit-Reset',
+} as const;
+
 /** Préfixe de toutes les clés Redis de compteurs. */
 export const RATE_LIMIT_KEY_PREFIX = 'throttle:';
 
