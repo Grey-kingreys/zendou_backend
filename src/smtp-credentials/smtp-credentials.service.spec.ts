@@ -1,5 +1,8 @@
+import { createHash, createHmac } from 'crypto';
 import { Test, TestingModule } from '@nestjs/testing';
 import { ConflictException, NotFoundException } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { SecretHashingService } from '../api-keys';
 import { PrismaService } from '../prisma/prisma.service';
 import {
   SMTP_CREDENTIAL_NOT_FOUND_MESSAGE,
@@ -89,6 +92,10 @@ describe('SmtpCredentialsService', () => {
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         SmtpCredentialsService,
+        // Vrai service de hachage, sans poivre configuré : comportement
+        // historique (SHA-256), inchangé par E3.
+        SecretHashingService,
+        { provide: ConfigService, useValue: { get: () => undefined } },
         {
           provide: PrismaService,
           useValue: {
@@ -334,5 +341,69 @@ describe('SmtpCredentialsService', () => {
       expect(capturedUpdateArgs!.data.secretHash).not.toBe(result.password);
       expect(result.rotatedAt).toBeInstanceOf(Date);
     });
+  });
+});
+
+/** E3 - la colonne `secretHash` reçoit l'empreinte poivrée, comme `keyHash`. */
+describe('SmtpCredentialsService - empreinte poivrée persistée (E3)', () => {
+  const PEPPER = 'p'.repeat(64);
+
+  let service: SmtpCredentialsService;
+  let captured: { data: { secretHash: string; prefix: string } } | undefined;
+
+  const create = jest.fn(
+    (args: {
+      data: { secretHash: string; prefix: string; username: string };
+    }) => {
+      captured = args;
+      return Promise.resolve({
+        id: 'smtp_1',
+        name: 'WordPress boutique',
+        username: args.data.username,
+        prefix: args.data.prefix,
+        createdAt: new Date('2026-01-01T00:00:00.000Z'),
+      });
+    },
+  );
+
+  beforeEach(async () => {
+    jest.clearAllMocks();
+    captured = undefined;
+
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [
+        SmtpCredentialsService,
+        SecretHashingService,
+        {
+          provide: ConfigService,
+          useValue: {
+            get: (key: string) =>
+              key === 'API_KEY_PEPPER' ? PEPPER : undefined,
+          },
+        },
+        { provide: PrismaService, useValue: { smtpCredential: { create } } },
+      ],
+    }).compile();
+
+    service = module.get<SmtpCredentialsService>(SmtpCredentialsService);
+  });
+
+  it('stocke le HMAC poivré du mot de passe, jamais son SHA-256 nu', async () => {
+    const result = await service.create('user_1', { name: 'WordPress' });
+
+    expect(captured?.data.secretHash).toBe(
+      createHmac('sha256', PEPPER).update(result.password).digest('hex'),
+    );
+    expect(captured?.data.secretHash).not.toBe(
+      createHash('sha256').update(result.password).digest('hex'),
+    );
+  });
+
+  it('rend un mot de passe zd_smtp_ + 43 caractères, préfixe affiché de 12', async () => {
+    const result = await service.create('user_1', { name: 'WordPress' });
+
+    expect(result.password).toMatch(/^zd_smtp_[A-Za-z0-9]{43}$/);
+    expect(result.prefix).toBe(result.password.slice(0, 12));
+    expect(result.prefix).toHaveLength(12);
   });
 });

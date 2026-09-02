@@ -26,6 +26,8 @@ const BASE_ENV = {
  */
 const PRODUCTION_REQUIRED = {
   SYSTEM_EMAIL_FROM: 'no-reply@mail.kingreys.fr',
+  // E3 : le poivre est obligatoire en production, au même titre.
+  API_KEY_PEPPER: 'a'.repeat(64),
 };
 
 describe('validateEnv — SNS_SKIP_SIGNATURE_VALIDATION', () => {
@@ -476,5 +478,49 @@ describe('validateEnv - SESSION_COOKIE_DOMAIN (lot D)', () => {
     expect(() =>
       validateEnv({ ...BASE_ENV, SESSION_COOKIE_DOMAIN: raw }),
     ).toThrow(/SESSION_COOKIE_DOMAIN/);
+  });
+});
+
+describe('validateEnv - API_KEY_PEPPER (E3)', () => {
+  it('est optionnelle hors production : le hachage retombe sur le SHA-256 historique', () => {
+    expect(validateEnv({ ...BASE_ENV }).API_KEY_PEPPER).toBeUndefined();
+    expect(
+      validateEnv({ ...BASE_ENV, API_KEY_PEPPER: '' }).API_KEY_PEPPER,
+    ).toBeUndefined();
+  });
+
+  it('accepte un poivre d’au moins 32 caractères', () => {
+    const pepper = 'a'.repeat(64);
+
+    expect(
+      validateEnv({ ...BASE_ENV, API_KEY_PEPPER: pepper }).API_KEY_PEPPER,
+    ).toBe(pepper);
+  });
+
+  it('refuse un poivre trop court pour servir de clé HMAC', () => {
+    expect(() =>
+      validateEnv({ ...BASE_ENV, API_KEY_PEPPER: 'trop-court' }),
+    ).toThrow(/API_KEY_PEPPER/);
+  });
+
+  it('refuse de démarrer en production sans poivre', () => {
+    expect(() =>
+      validateEnv({
+        ...BASE_ENV,
+        ...PRODUCTION_REQUIRED,
+        NODE_ENV: 'production',
+        API_KEY_PEPPER: '',
+      }),
+    ).toThrow(/API_KEY_PEPPER/);
+  });
+
+  it('démarre en production dès que le poivre est fourni', () => {
+    expect(
+      validateEnv({
+        ...BASE_ENV,
+        ...PRODUCTION_REQUIRED,
+        NODE_ENV: 'production',
+      }).API_KEY_PEPPER,
+    ).toBe(PRODUCTION_REQUIRED.API_KEY_PEPPER);
   });
 });

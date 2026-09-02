@@ -265,6 +265,25 @@ const baseEnvSchema = z.object({
   SNS_SKIP_SIGNATURE_VALIDATION: booleanFromEnv(false),
 
   /**
+   * Poivre des empreintes de secrets porteurs : clés API (`ApiKey.keyHash`) et
+   * mots de passe SMTP (`SmtpCredential.secretHash`). Voir
+   * `api-keys/secret-hashing.service.ts`.
+   *
+   * **Obligatoire en production** (voir le `refine` plus bas) : sans lui, une
+   * fuite de la base suffit à vérifier une clé devinée hors ligne. Optionnelle
+   * ailleurs - absente, le hachage reste le SHA-256 historique, exactement
+   * comme avant E3.
+   *
+   * Minimum 32 caractères : un poivre plus court affaiblirait la clé HMAC
+   * au point de rendre l'exercice décoratif. À générer avec
+   * `openssl rand -hex 32`.
+   */
+  API_KEY_PEPPER: z.preprocess(
+    emptyToUndefined,
+    z.string().min(32, 'doit contenir au moins 32 caractères').optional(),
+  ),
+
+  /**
    * Clé secrète Cloudflare Turnstile (`POST /v1/auth/register` uniquement).
    * **Optionnelle** : absente ou vide (y compris une chaîne blanche), le
    * captcha est **désactivé** — utile en dev/tests, et comme débrayage
@@ -594,6 +613,18 @@ export const envSchema = baseEnvSchema
       path: ['SYSTEM_EMAIL_FROM'],
       message:
         'est obligatoire quand NODE_ENV=production (sans elle, aucun email de confirmation ne peut partir et aucun compte créé ne peut être confirmé)',
+    },
+  )
+  // E3 - le poivre est ce qui empêche une fuite de la base de suffire à
+  // vérifier une clé devinée hors ligne. En production, il n'est pas
+  // facultatif : démarrer sans lui reviendrait à publier un service dont
+  // toutes les empreintes sont recalculables par quiconque lit la table.
+  .refine(
+    (env) => env.NODE_ENV !== 'production' || Boolean(env.API_KEY_PEPPER),
+    {
+      path: ['API_KEY_PEPPER'],
+      message:
+        'est obligatoire quand NODE_ENV=production (sans lui, une fuite de la base suffit à vérifier une clé API ou un mot de passe SMTP deviné hors ligne)',
     },
   )
   // §1.4 / A19 — règle dure et testable : en production, un relais SMTP activé

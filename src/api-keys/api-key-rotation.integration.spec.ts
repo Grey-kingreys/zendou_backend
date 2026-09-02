@@ -7,6 +7,7 @@ import { AuthUser } from '../auth';
 import { ApiKeyAuthGuard } from './api-key-auth.guard';
 import { ApiKeysService } from './api-keys.service';
 import { ApiKeyAuthenticatedRequest } from './api-keys.types';
+import { SecretHashingService } from './secret-hashing.service';
 
 /**
  * Ligne stockée par le double de `PrismaService.apiKey` ci-dessous.
@@ -154,6 +155,7 @@ describe('Rotation de clé API — chemin d’authentification réel', () => {
         // TEST_EMAIL_FROM non configurée : `resolveTestSenderAddress` doit
         // renvoyer `null` (voir `owner.testSenderAddress` ci-dessus).
         { provide: ConfigService, useValue: { get: jest.fn() } },
+        SecretHashingService,
       ],
     }).compile();
 

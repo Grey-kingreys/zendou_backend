@@ -3,6 +3,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+import { SecretHashingService } from '../api-keys';
 import { PrismaService } from '../prisma/prisma.service';
 import {
   SMTP_CREDENTIAL_NOT_FOUND_MESSAGE,
@@ -29,12 +30,16 @@ import { CreateSmtpCredentialDto } from './dto/create-smtp-credential.dto';
  */
 @Injectable()
 export class SmtpCredentialsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly secretHashing: SecretHashingService,
+  ) {}
 
   /**
    * Génère un nouvel identifiant SMTP pour l'utilisateur.
-   * Le mot de passe complet n'est renvoyé qu'ici : seul son hash SHA-256
-   * est stocké (`secretHash`), et le nom d'utilisateur est opaque et généré.
+   * Le mot de passe complet n'est renvoyé qu'ici : seule son empreinte est
+   * stockée (`secretHash` - HMAC poivré quand `API_KEY_PEPPER` est
+   * configurée, SHA-256 sinon), et le nom d'utilisateur est opaque et généré.
    */
   async create(
     userId: string,
@@ -49,7 +54,7 @@ export class SmtpCredentialsService {
         name: dto.name.trim(),
         username,
         prefix: generated.prefix,
-        secretHash: generated.passwordHash,
+        secretHash: this.secretHashing.hashForStorage(generated.password),
       },
       select: {
         id: true,
@@ -169,7 +174,7 @@ export class SmtpCredentialsService {
       where: { id },
       data: {
         prefix: generated.prefix,
-        secretHash: generated.passwordHash,
+        secretHash: this.secretHashing.hashForStorage(generated.password),
         rotatedAt,
       },
     });

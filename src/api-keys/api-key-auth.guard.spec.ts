@@ -1,4 +1,4 @@
-import { createHash } from 'crypto';
+import { createHash, createHmac } from 'crypto';
 import { Test, TestingModule } from '@nestjs/testing';
 import {
   ExecutionContext,
@@ -20,6 +20,7 @@ import {
   API_KEY_FAILURES_PER_MINUTE_DEFAULT,
 } from './api-keys.constants';
 import { ApiKeyAuthenticatedRequest } from './api-keys.types';
+import { SecretHashingService } from './secret-hashing.service';
 
 interface UpdateArgs {
   where: { id: string };
@@ -53,7 +54,7 @@ function contextFor(
   } as unknown as ExecutionContext;
 }
 
-const validKey = 'zd_live_' + 'a'.repeat(40);
+const validKey = 'zd_live_' + 'a'.repeat(43);
 
 describe('ApiKeyAuthGuard', () => {
   let guard: ApiKeyAuthGuard;
@@ -86,6 +87,7 @@ describe('ApiKeyAuthGuard', () => {
           useValue: { apiKey: { findUnique, update } },
         },
         { provide: ConfigService, useValue: { get: configGet } },
+        SecretHashingService,
       ],
     }).compile();
 
@@ -319,6 +321,7 @@ describe('ApiKeyAuthGuard - échecs comptés par IP (lot C)', () => {
         },
         { provide: ConfigService, useValue: { get: configGet } },
         { provide: RedisThrottlerStorage, useValue: storage },
+        SecretHashingService,
       ],
     }).compile();
 
@@ -426,6 +429,7 @@ describe('ApiKeyAuthGuard - échecs comptés par IP (lot C)', () => {
         },
         { provide: ConfigService, useValue: { get: configGet } },
         { provide: RedisThrottlerStorage, useValue: storage },
+        SecretHashingService,
       ],
     }).compile();
     guard = module.get<ApiKeyAuthGuard>(ApiKeyAuthGuard);
@@ -437,5 +441,174 @@ describe('ApiKeyAuthGuard - échecs comptés par IP (lot C)', () => {
     expect((error as HttpException).getStatus()).toBe(
       HttpStatus.TOO_MANY_REQUESTS,
     );
+  });
+});
+
+/**
+ * E3 - poivre HMAC et migration paresseuse des empreintes.
+ *
+ * Le double de Prisma indexe les lignes par empreinte, comme la vraie colonne
+ * unique `keyHash` : c'est donc le vrai code du garde qui décide sous quelle
+ * forme chercher, et dans quel ordre.
+ */
+describe('ApiKeyAuthGuard - poivre et migration paresseuse (E3)', () => {
+  const PEPPER = 'p'.repeat(64);
+  const plainKey = `zd_live_${'c'.repeat(43)}`;
+  const legacyHash = hashApiKey(plainKey);
+  const pepperedHash = createHmac('sha256', PEPPER)
+    .update(plainKey)
+    .digest('hex');
+
+  interface Row {
+    id: string;
+    keyHash: string;
+    revokedAt: Date | null;
+  }
+
+  let rows: Row[];
+  let guard: ApiKeyAuthGuard;
+
+  const findUnique = jest.fn(({ where }: { where: { keyHash: string } }) => {
+    const row = rows.find((candidate) => candidate.keyHash === where.keyHash);
+    return Promise.resolve(
+      row ? { id: row.id, revokedAt: row.revokedAt, user: activeUser } : null,
+    );
+  });
+  const update = jest.fn(
+    ({
+      where,
+      data,
+    }: {
+      where: { id: string };
+      data: { keyHash?: string; lastUsedAt?: Date };
+    }) => {
+      if (data.keyHash) {
+        const row = rows.find((candidate) => candidate.id === where.id);
+        if (row) {
+          row.keyHash = data.keyHash;
+        }
+      }
+      return Promise.resolve({});
+    },
+  );
+
+  /** Appels d'écriture qui touchent réellement l'empreinte. */
+  function hashRewrites() {
+    return update.mock.calls.filter(
+      ([args]: [{ data: { keyHash?: string } }]) =>
+        args.data.keyHash !== undefined,
+    );
+  }
+
+  async function buildGuard(pepper?: string): Promise<ApiKeyAuthGuard> {
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [
+        ApiKeyAuthGuard,
+        {
+          provide: PrismaService,
+          useValue: { apiKey: { findUnique, update } },
+        },
+        {
+          provide: ConfigService,
+          useValue: {
+            get: (key: string) =>
+              key === 'API_KEY_PEPPER' ? pepper : undefined,
+          },
+        },
+        SecretHashingService,
+      ],
+    }).compile();
+
+    return module.get<ApiKeyAuthGuard>(ApiKeyAuthGuard);
+  }
+
+  function authenticate() {
+    const request: Partial<ApiKeyAuthenticatedRequest> = {
+      headers: { authorization: `Bearer ${plainKey}` },
+    };
+    return { request, result: guard.canActivate(contextFor(request)) };
+  }
+
+  beforeEach(async () => {
+    jest.clearAllMocks();
+    rows = [];
+    guard = await buildGuard(PEPPER);
+  });
+
+  it('accepte une clé dont la base porte encore l’empreinte historique, puis la réécrit poivrée', async () => {
+    rows.push({ id: 'key_1', keyHash: legacyHash, revokedAt: null });
+
+    const { request, result } = authenticate();
+    await expect(result).resolves.toBe(true);
+    expect(request.user).toEqual(activeUser);
+
+    // Cherchée poivrée d'abord, historique ensuite.
+    expect(findUnique.mock.calls.map(([args]) => args.where.keyHash)).toEqual([
+      pepperedHash,
+      legacyHash,
+    ]);
+
+    // Réécriture effectuée, et sur la bonne ligne.
+    expect(hashRewrites()).toHaveLength(1);
+    expect(update).toHaveBeenCalledWith({
+      where: { id: 'key_1' },
+      data: { keyHash: pepperedHash },
+    });
+    expect(rows[0].keyHash).toBe(pepperedHash);
+  });
+
+  it('n’a plus rien à réécrire au deuxième passage : la clé est déjà migrée', async () => {
+    rows.push({ id: 'key_1', keyHash: legacyHash, revokedAt: null });
+
+    await expect(authenticate().result).resolves.toBe(true);
+    jest.clearAllMocks();
+    await expect(authenticate().result).resolves.toBe(true);
+
+    expect(hashRewrites()).toHaveLength(0);
+    // Une seule lecture : la forme poivrée répond du premier coup.
+    expect(findUnique).toHaveBeenCalledTimes(1);
+  });
+
+  it('accepte une clé déjà poivrée sans jamais réécrire son empreinte', async () => {
+    rows.push({ id: 'key_1', keyHash: pepperedHash, revokedAt: null });
+
+    await expect(authenticate().result).resolves.toBe(true);
+
+    expect(findUnique).toHaveBeenCalledTimes(1);
+    expect(hashRewrites()).toHaveLength(0);
+  });
+
+  it('refuse une clé historique révoquée et ne la réécrit pas', async () => {
+    rows.push({
+      id: 'key_1',
+      keyHash: legacyHash,
+      revokedAt: new Date('2026-01-01T00:00:00.000Z'),
+    });
+
+    await expect(authenticate().result).rejects.toBeInstanceOf(
+      UnauthorizedException,
+    );
+
+    expect(hashRewrites()).toHaveLength(0);
+    expect(rows[0].keyHash).toBe(legacyHash);
+  });
+
+  it('laisse passer l’authentification quand la réécriture échoue', async () => {
+    rows.push({ id: 'key_1', keyHash: legacyHash, revokedAt: null });
+    update.mockRejectedValueOnce(new Error('base en lecture seule'));
+
+    await expect(authenticate().result).resolves.toBe(true);
+  });
+
+  it('sans poivre, cherche une seule empreinte et ne migre rien', async () => {
+    guard = await buildGuard(undefined);
+    rows.push({ id: 'key_1', keyHash: legacyHash, revokedAt: null });
+
+    await expect(authenticate().result).resolves.toBe(true);
+
+    expect(findUnique.mock.calls.map(([args]) => args.where.keyHash)).toEqual([
+      legacyHash,
+    ]);
+    expect(hashRewrites()).toHaveLength(0);
   });
 });

@@ -4,6 +4,7 @@ import { RateLimitCoreModule } from '../rate-limit/rate-limit-core.module';
 import { ApiKeyAuthGuard } from './api-key-auth.guard';
 import { ApiKeysController } from './api-keys.controller';
 import { ApiKeysService } from './api-keys.service';
+import { SecretHashingService } from './secret-hashing.service';
 
 /**
  * `RateLimitCoreModule` apporte `RedisThrottlerStorage`, le compteur partagé
@@ -13,7 +14,7 @@ import { ApiKeysService } from './api-keys.service';
 @Module({
   imports: [AuthModule, RateLimitCoreModule],
   controllers: [ApiKeysController],
-  providers: [ApiKeysService, ApiKeyAuthGuard],
-  exports: [ApiKeysService, ApiKeyAuthGuard],
+  providers: [ApiKeysService, ApiKeyAuthGuard, SecretHashingService],
+  exports: [ApiKeysService, ApiKeyAuthGuard, SecretHashingService],
 })
 export class ApiKeysModule {}

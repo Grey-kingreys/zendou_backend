@@ -16,14 +16,20 @@ import {
   RotateApiKeyResponse,
 } from './api-keys.types';
 import { CreateApiKeyDto } from './dto/create-api-key.dto';
+import { SecretHashingService } from './secret-hashing.service';
 
 @Injectable()
 export class ApiKeysService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly secretHashing: SecretHashingService,
+  ) {}
 
   /**
    * Génère une nouvelle clé API pour l'utilisateur.
-   * La clé complète n'est renvoyée qu'ici : seul son hash SHA-256 est stocké.
+   * La clé complète n'est renvoyée qu'ici : seule son empreinte est stockée
+   * (HMAC poivré quand `API_KEY_PEPPER` est configurée, SHA-256 sinon - voir
+   * `SecretHashingService`).
    */
   async create(
     userId: string,
@@ -36,7 +42,7 @@ export class ApiKeysService {
         userId,
         name: dto.name.trim(),
         prefix: generated.prefix,
-        keyHash: generated.keyHash,
+        keyHash: this.secretHashing.hashForStorage(generated.key),
       },
       select: { id: true, name: true, prefix: true, createdAt: true },
     });
@@ -144,7 +150,7 @@ export class ApiKeysService {
       where: { id },
       data: {
         prefix: generated.prefix,
-        keyHash: generated.keyHash,
+        keyHash: this.secretHashing.hashForStorage(generated.key),
         rotatedAt,
       },
     });

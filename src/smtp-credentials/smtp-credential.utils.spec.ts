@@ -7,13 +7,14 @@ import {
 } from './smtp-credential.utils';
 
 describe('generateSmtpCredentialSecret', () => {
-  it('produces a password in the zd_smtp_ + 40 base62 chars format', () => {
+  // E3 : même longueur que les clés API (43 caractères base62 ~ 256 bits).
+  it('produces a password in the zd_smtp_ + 43 base62 chars format', () => {
     const { password } = generateSmtpCredentialSecret();
 
     expect(password.startsWith(SMTP_CREDENTIAL_SECRET_PREFIX)).toBe(true);
-    expect(password).toHaveLength(SMTP_CREDENTIAL_SECRET_PREFIX.length + 40);
+    expect(password).toHaveLength(SMTP_CREDENTIAL_SECRET_PREFIX.length + 43);
     expect(password.slice(SMTP_CREDENTIAL_SECRET_PREFIX.length)).toMatch(
-      /^[A-Za-z0-9]{40}$/,
+      /^[A-Za-z0-9]{43}$/,
     );
   });
 
