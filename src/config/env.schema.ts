@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { API_KEY_FAILURES_PER_MINUTE_DEFAULT } from '../api-keys/api-keys.constants';
 import { DEFAULT_WELCOME_CREDITS } from '../billing/billing.constants';
 import { parseEmailAddress } from '../emails/email-address';
 import { MAX_RAW_MESSAGE_BYTES } from '../emails/emails.constants';
@@ -233,6 +234,18 @@ const baseEnvSchema = z.object({
   ),
   RATE_LIMIT_RESEND_CONFIRMATION_PER_HOUR: positiveIntFromEnv(
     RATE_LIMIT_DEFAULTS.RESEND_CONFIRMATION_PER_HOUR,
+  ),
+
+  /**
+   * Échecs d'authentification par clé API tolérés pour une même IP en une
+   * minute (lot C). Au-delà, cette IP reçoit un 429 pendant une minute.
+   *
+   * Seuls les ÉCHECS sont comptés : une clé valide passe toujours, même
+   * derrière une IP bloquée - voir `ApiKeyAuthGuard`. Le défaut vit dans
+   * `api-keys.constants.ts`, avec le raisonnement.
+   */
+  RATE_LIMIT_API_KEY_FAILURES_PER_MINUTE: positiveIntFromEnv(
+    API_KEY_FAILURES_PER_MINUTE_DEFAULT,
   ),
 
   // AWS SES / SNS — optionnelles pour l'instant (pas de module d'envoi)

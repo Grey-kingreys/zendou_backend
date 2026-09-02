@@ -1,15 +1,24 @@
+import { createHash } from 'crypto';
 import { Test, TestingModule } from '@nestjs/testing';
 import {
   ExecutionContext,
   ForbiddenException,
+  HttpException,
+  HttpStatus,
   UnauthorizedException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { UserRole, UserStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuthUser } from '../auth';
+import { TOO_MANY_REQUESTS_MESSAGE } from '../rate-limit/rate-limit.constants';
+import { RedisThrottlerStorage } from '../rate-limit/redis-throttler.storage';
 import { ApiKeyAuthGuard } from './api-key-auth.guard';
 import { hashApiKey } from './api-key.utils';
+import {
+  API_KEY_FAILURE_KEY_PREFIX,
+  API_KEY_FAILURES_PER_MINUTE_DEFAULT,
+} from './api-keys.constants';
 import { ApiKeyAuthenticatedRequest } from './api-keys.types';
 
 interface UpdateArgs {
@@ -31,11 +40,16 @@ const activeUser: AuthUser = {
   testSenderAddress: null,
 };
 
+const responseMock = { setHeader: jest.fn() };
+
 function contextFor(
   request: Partial<ApiKeyAuthenticatedRequest>,
 ): ExecutionContext {
   return {
-    switchToHttp: () => ({ getRequest: () => request }),
+    switchToHttp: () => ({
+      getRequest: () => request,
+      getResponse: () => responseMock,
+    }),
   } as unknown as ExecutionContext;
 }
 
@@ -208,5 +222,220 @@ describe('ApiKeyAuthGuard', () => {
     expect(capturedUpdateArgs!.data.lastUsedAt).toBeInstanceOf(Date);
 
     resolveUpdate?.();
+  });
+});
+
+/**
+ * Lot C - limite par IP des échecs d'authentification par clé API.
+ *
+ * Le stockage est un double en mémoire qui reproduit la sémantique du script
+ * Lua de `RedisThrottlerStorage` : le blocage tombe quand le nombre de coups
+ * dépasse la limite (`hits > limit`), et une IP déjà bloquée n'incrémente
+ * plus rien.
+ */
+class FakeThrottlerStorage {
+  private hits = new Map<string, number>();
+  private blocked = new Set<string>();
+  /** Rejette au lieu de compter : simule un magasin Redis en panne. */
+  broken = false;
+
+  increment = jest.fn(
+    (key: string, ttl: number, limit: number, blockDuration: number) => {
+      if (this.broken) {
+        return Promise.reject(new Error('Redis injoignable'));
+      }
+
+      if (this.blocked.has(key)) {
+        return Promise.resolve({
+          totalHits: this.hits.get(key) ?? 0,
+          timeToExpire: ttl / 1000,
+          isBlocked: true,
+          timeToBlockExpire: blockDuration / 1000,
+        });
+      }
+
+      const total = (this.hits.get(key) ?? 0) + 1;
+      this.hits.set(key, total);
+
+      if (total > limit) {
+        this.blocked.add(key);
+        return Promise.resolve({
+          totalHits: total,
+          timeToExpire: ttl / 1000,
+          isBlocked: true,
+          timeToBlockExpire: blockDuration / 1000,
+        });
+      }
+
+      return Promise.resolve({
+        totalHits: total,
+        timeToExpire: ttl / 1000,
+        isBlocked: false,
+        timeToBlockExpire: 0,
+      });
+    },
+  );
+}
+
+describe('ApiKeyAuthGuard - échecs comptés par IP (lot C)', () => {
+  let guard: ApiKeyAuthGuard;
+  let storage: FakeThrottlerStorage;
+
+  const findUnique = jest.fn();
+  const update = jest.fn().mockResolvedValue({});
+  const configGet = jest.fn();
+
+  const clientIp = '203.0.113.10';
+  const counterKey = `${API_KEY_FAILURE_KEY_PREFIX}${createHash('sha256')
+    .update(clientIp)
+    .digest('hex')}`;
+
+  function requestWith(authorization?: string) {
+    return {
+      ip: clientIp,
+      headers: authorization ? { authorization } : {},
+    } as unknown as Partial<ApiKeyAuthenticatedRequest>;
+  }
+
+  /** Une tentative avec une clé inconnue : toujours un échec. */
+  function failOnce() {
+    return guard.canActivate(
+      contextFor(requestWith(`Bearer ${'zd_live_' + 'b'.repeat(43)}`)),
+    );
+  }
+
+  beforeEach(async () => {
+    jest.clearAllMocks();
+    configGet.mockReturnValue(undefined);
+    findUnique.mockResolvedValue(null);
+    storage = new FakeThrottlerStorage();
+
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [
+        ApiKeyAuthGuard,
+        {
+          provide: PrismaService,
+          useValue: { apiKey: { findUnique, update } },
+        },
+        { provide: ConfigService, useValue: { get: configGet } },
+        { provide: RedisThrottlerStorage, useValue: storage },
+      ],
+    }).compile();
+
+    guard = module.get<ApiKeyAuthGuard>(ApiKeyAuthGuard);
+  });
+
+  it('compte sur l’empreinte de l’IP, jamais sur l’IP en clair', async () => {
+    await expect(failOnce()).rejects.toBeInstanceOf(UnauthorizedException);
+
+    expect(storage.increment).toHaveBeenCalledWith(
+      counterKey,
+      60_000,
+      API_KEY_FAILURES_PER_MINUTE_DEFAULT,
+      60_000,
+    );
+    expect(counterKey).not.toContain(clientIp);
+  });
+
+  it('laisse passer 20 échecs en 401, puis répond 429 au 21e', async () => {
+    for (let attempt = 1; attempt <= 20; attempt++) {
+      await expect(failOnce()).rejects.toBeInstanceOf(UnauthorizedException);
+    }
+
+    expect(responseMock.setHeader).not.toHaveBeenCalled();
+
+    const error: unknown = await failOnce().catch((thrown: unknown) => thrown);
+
+    expect(error).toBeInstanceOf(HttpException);
+    const exception = error as HttpException;
+    expect(exception.getStatus()).toBe(HttpStatus.TOO_MANY_REQUESTS);
+    expect(exception.getResponse()).toEqual({
+      statusCode: HttpStatus.TOO_MANY_REQUESTS,
+      error: 'Too Many Requests',
+      message: TOO_MANY_REQUESTS_MESSAGE,
+      retryAfter: 60,
+    });
+    expect(responseMock.setHeader).toHaveBeenCalledWith('Retry-After', '60');
+  });
+
+  it.each([
+    ['header absent', undefined],
+    ['schéma non Bearer', `Basic ${validKey}`],
+  ])('compte aussi l’échec « %s »', async (_label, authorization) => {
+    await expect(
+      guard.canActivate(contextFor(requestWith(authorization))),
+    ).rejects.toBeInstanceOf(UnauthorizedException);
+
+    expect(storage.increment).toHaveBeenCalledTimes(1);
+    expect(findUnique).not.toHaveBeenCalled();
+  });
+
+  it('compte aussi une clé révoquée', async () => {
+    findUnique.mockResolvedValue({
+      id: 'key_1',
+      revokedAt: new Date('2026-01-01T00:00:00.000Z'),
+      user: activeUser,
+    });
+
+    await expect(
+      guard.canActivate(contextFor(requestWith(`Bearer ${validKey}`))),
+    ).rejects.toBeInstanceOf(UnauthorizedException);
+
+    expect(storage.increment).toHaveBeenCalledTimes(1);
+  });
+
+  it('laisse passer une clé valide même quand l’IP est bloquée', async () => {
+    for (let attempt = 1; attempt <= 21; attempt++) {
+      await expect(failOnce()).rejects.toBeDefined();
+    }
+    expect(storage.increment).toHaveBeenCalledTimes(21);
+
+    // Même IP, même seconde : la clé, elle, est bonne. Le client légitime
+    // derrière le NAT de l'attaquant ne doit pas payer pour lui.
+    findUnique.mockResolvedValue({
+      id: 'key_1',
+      revokedAt: null,
+      user: activeUser,
+    });
+
+    const request = requestWith(`Bearer ${validKey}`);
+    await expect(guard.canActivate(contextFor(request))).resolves.toBe(true);
+
+    expect(request.user).toEqual(activeUser);
+    // Aucun coup supplémentaire : un succès ne touche jamais le compteur.
+    expect(storage.increment).toHaveBeenCalledTimes(21);
+  });
+
+  it('rend un 401 normal quand le compteur est en panne', async () => {
+    storage.broken = true;
+
+    await expect(failOnce()).rejects.toBeInstanceOf(UnauthorizedException);
+    expect(responseMock.setHeader).not.toHaveBeenCalled();
+  });
+
+  it('lit la limite depuis RATE_LIMIT_API_KEY_FAILURES_PER_MINUTE', async () => {
+    configGet.mockImplementation((key: string) =>
+      key === 'RATE_LIMIT_API_KEY_FAILURES_PER_MINUTE' ? 2 : undefined,
+    );
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [
+        ApiKeyAuthGuard,
+        {
+          provide: PrismaService,
+          useValue: { apiKey: { findUnique, update } },
+        },
+        { provide: ConfigService, useValue: { get: configGet } },
+        { provide: RedisThrottlerStorage, useValue: storage },
+      ],
+    }).compile();
+    guard = module.get<ApiKeyAuthGuard>(ApiKeyAuthGuard);
+
+    await expect(failOnce()).rejects.toBeInstanceOf(UnauthorizedException);
+    await expect(failOnce()).rejects.toBeInstanceOf(UnauthorizedException);
+
+    const error: unknown = await failOnce().catch((thrown: unknown) => thrown);
+    expect((error as HttpException).getStatus()).toBe(
+      HttpStatus.TOO_MANY_REQUESTS,
+    );
   });
 });
