@@ -14,6 +14,7 @@ import { EmailsModule } from './emails/emails.module';
 import { DomainsModule } from './domains/domains.module';
 import { ReputationModule } from './reputation';
 import { SnsWebhookModule } from './sns-webhook/sns-webhook.module';
+import { CspReportModule } from './csp-report';
 import { BillingModule } from './billing/billing.module';
 import { AdminModule } from './admin';
 import { SeedModule } from './seed/seed.module';
@@ -50,6 +51,8 @@ import { EMAIL_SEND_QUEUE } from './queues/queues';
     DomainsModule,
     ReputationModule,
     SnsWebhookModule,
+    // Boîte aux lettres des violations CSP du front (lot A).
+    CspReportModule,
     BillingModule,
     AdminModule,
     SeedModule,

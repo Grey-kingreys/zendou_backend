@@ -61,6 +61,8 @@ export const RATE_LIMIT_POLICY = {
   DNS_CHECK: 'dns-check',
   /** `POST /v1/webhooks/sns` */
   SNS_WEBHOOK: 'sns-webhook',
+  /** `POST /v1/csp-report` */
+  CSP_REPORT: 'csp-report',
   /** `GET /health` — jamais compté (voir plus bas). */
   EXEMPT: 'exempt',
 } as const;
@@ -155,6 +157,17 @@ export const RATE_LIMIT_DEFAULTS = {
    * ferait perdre des bounces/plaintes.
    */
   SNS_PER_MINUTE: 300,
+  /**
+   * `RATE_LIMIT_CSP_REPORT_PER_MINUTE` - rapports de violation CSP, comptés
+   * par IP.
+   *
+   * Une seule page mal configurée peut en émettre des dizaines par
+   * chargement, et l'émetteur est le navigateur d'un visiteur : la route est
+   * publique et non authentifiée, donc un amplificateur de journaux tout
+   * trouvé. 30 par minute laisse passer un vrai incident (on veut le voir)
+   * sans laisser quiconque remplir le disque.
+   */
+  CSP_REPORT_PER_MINUTE: 30,
 } as const;
 
 /** Nombre de proxys de confiance par défaut (Dokploy/Traefik en pose un). */

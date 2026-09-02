@@ -190,6 +190,13 @@ const baseEnvSchema = z.object({
   RATE_LIMIT_SNS_PER_MINUTE: positiveIntFromEnv(
     RATE_LIMIT_DEFAULTS.SNS_PER_MINUTE,
   ),
+  /**
+   * Rapports de violation CSP (`POST /v1/csp-report`), comptés par IP. Route
+   * publique dont le seul coût est le journal : c'est lui qu'on protège.
+   */
+  RATE_LIMIT_CSP_REPORT_PER_MINUTE: positiveIntFromEnv(
+    RATE_LIMIT_DEFAULTS.CSP_REPORT_PER_MINUTE,
+  ),
   RATE_LIMIT_RESEND_CONFIRMATION_PER_HOUR: positiveIntFromEnv(
     RATE_LIMIT_DEFAULTS.RESEND_CONFIRMATION_PER_HOUR,
   ),

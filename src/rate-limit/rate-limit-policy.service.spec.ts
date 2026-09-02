@@ -4,6 +4,7 @@ import { AuthController } from '../auth/auth.controller';
 import { DomainsController } from '../domains/domains.controller';
 import { EmailsController } from '../emails/emails.controller';
 import { HealthController } from '../health/health.controller';
+import { CspReportController } from '../csp-report/csp-report.controller';
 import { SnsWebhookController } from '../sns-webhook/sns-webhook.controller';
 import {
   RateLimitPolicyService,
@@ -129,6 +130,25 @@ describe('buildRateLimitPolicies', () => {
       limit: RATE_LIMIT_DEFAULTS.DNS_CHECK_PER_HOUR,
       ttl: HOUR_WINDOW_MS,
     });
+
+    expect(
+      policies[RATE_LIMIT_POLICY.CSP_REPORT].windows[RATE_LIMIT_WINDOW.MINUTE],
+    ).toEqual({
+      limit: RATE_LIMIT_DEFAULTS.CSP_REPORT_PER_MINUTE,
+      ttl: MINUTE_WINDOW_MS,
+    });
+  });
+
+  it('compte les rapports CSP par IP, faute d’identité à compter', () => {
+    // Route publique et non authentifiée : il n'y a ni utilisateur ni clé
+    // API derrière un rapport de violation.
+    expect(policies[RATE_LIMIT_POLICY.CSP_REPORT].tracker).toBe(
+      TRACKER_KIND.IP,
+    );
+    expect(policies[RATE_LIMIT_POLICY.CSP_REPORT].exempt).toBe(false);
+    expect(RATE_LIMIT_DEFAULTS.CSP_REPORT_PER_MINUTE).toBeLessThan(
+      RATE_LIMIT_DEFAULTS.DEFAULT_PER_MINUTE,
+    );
   });
 
   it('laisse passer SNS plus largement que le budget par défaut', () => {
@@ -212,6 +232,7 @@ describe('buildRateLimitPolicies', () => {
 
     expect(read.mock.calls.map(([name]) => name).sort()).toEqual([
       'RATE_LIMIT_CHANGE_PASSWORD_PER_HOUR',
+      'RATE_LIMIT_CSP_REPORT_PER_MINUTE',
       'RATE_LIMIT_DEFAULT_PER_MINUTE',
       'RATE_LIMIT_DNS_CHECK_PER_HOUR',
       'RATE_LIMIT_DOMAIN_CHECK_PER_HOUR',
@@ -251,6 +272,9 @@ describe('RateLimitPolicyService', () => {
     expect(
       resolver.policyFor(contextOf(SnsWebhookController, 'receive')).id,
     ).toBe(RATE_LIMIT_POLICY.SNS_WEBHOOK);
+    expect(
+      resolver.policyFor(contextOf(CspReportController, 'receive')).id,
+    ).toBe(RATE_LIMIT_POLICY.CSP_REPORT);
   });
 
   it('retombe sur la politique par défaut pour une route non décorée', () => {

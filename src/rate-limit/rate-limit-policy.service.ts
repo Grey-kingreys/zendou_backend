@@ -195,6 +195,25 @@ export function buildRateLimitPolicies(
       },
     },
 
+    // Rapports de violation CSP : route publique, non authentifiée, dont
+    // l'émetteur est le navigateur d'un visiteur. Comptée par IP faute de
+    // mieux - il n'y a pas d'identité à compter - et volontairement basse :
+    // le journal est la seule chose que cette route consomme, c'est donc lui
+    // qu'il faut protéger.
+    [RATE_LIMIT_POLICY.CSP_REPORT]: {
+      id: RATE_LIMIT_POLICY.CSP_REPORT,
+      tracker: TRACKER_KIND.IP,
+      exempt: false,
+      windows: {
+        [RATE_LIMIT_WINDOW.MINUTE]: perMinute(
+          read(
+            'RATE_LIMIT_CSP_REPORT_PER_MINUTE',
+            RATE_LIMIT_DEFAULTS.CSP_REPORT_PER_MINUTE,
+          ),
+        ),
+      },
+    },
+
     [RATE_LIMIT_POLICY.EXEMPT]: {
       id: RATE_LIMIT_POLICY.EXEMPT,
       tracker: TRACKER_KIND.IP,
