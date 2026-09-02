@@ -12,7 +12,7 @@ import {
   SMTP_NO_LISTENING_PORT_MESSAGE,
   SMTP_TLS_CERTIFICATE_REQUIRED_MESSAGE,
 } from '../smtp/smtp-relay.constants';
-import { validateEnv } from './env.schema';
+import { SMTP_PORT_25_REFUSED_MESSAGE, validateEnv } from './env.schema';
 
 const BASE_ENV = {
   DATABASE_URL: 'postgresql://zendou:zendou@localhost:5433/zendou',
@@ -522,5 +522,33 @@ describe('validateEnv - API_KEY_PEPPER (E3)', () => {
         NODE_ENV: 'production',
       }).API_KEY_PEPPER,
     ).toBe(PRODUCTION_REQUIRED.API_KEY_PEPPER);
+  });
+});
+
+describe('validateEnv - le port 25 est refusé par configuration (E5)', () => {
+  it.each([['SMTP_PORTS_STARTTLS'], ['SMTP_PORTS_TLS']])(
+    'refuse 25 dans %s',
+    (variable) => {
+      expect(() => validateEnv({ ...BASE_ENV, [variable]: '25' })).toThrow(
+        SMTP_PORT_25_REFUSED_MESSAGE,
+      );
+    },
+  );
+
+  it('refuse 25 même accompagné de ports légitimes', () => {
+    expect(() =>
+      validateEnv({ ...BASE_ENV, SMTP_PORTS_STARTTLS: '587,25,2525' }),
+    ).toThrow(SMTP_PORT_25_REFUSED_MESSAGE);
+  });
+
+  it('accepte 587, 2525 et 465, les seuls ports de soumission', () => {
+    const env = validateEnv({
+      ...BASE_ENV,
+      SMTP_PORTS_STARTTLS: '587,2525',
+      SMTP_PORTS_TLS: '465',
+    });
+
+    expect(env.SMTP_PORTS_STARTTLS).toEqual([587, 2525]);
+    expect(env.SMTP_PORTS_TLS).toEqual([465]);
   });
 });

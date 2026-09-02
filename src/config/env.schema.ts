@@ -91,6 +91,19 @@ const nonNegativeIntFromEnv = (defaultValue: number) =>
  * est activé alors que **les deux** listes sont vides. On peut donc renoncer à
  * une famille de ports, jamais à toutes, et jamais en silence.
  */
+/**
+ * Port 25 : transit MX entre serveurs, jamais soumission cliente. Le relais
+ * de Zendou n'a aucune raison de l'écouter, et l'écouter serait un risque -
+ * un port 25 ouvert est immédiatement sondé, et un relais qui y répond finit
+ * sur les listes noires. La règle était déjà écrite dans la documentation
+ * (A6) ; elle devient ici une règle de configuration, vérifiée au démarrage.
+ */
+const MX_TRANSIT_PORT = 25;
+
+/** Message de refus du port 25, dans les deux listes de ports. */
+export const SMTP_PORT_25_REFUSED_MESSAGE =
+  "Le port 25 (transit MX) n'est jamais écouté par le relais SMTP : utilisez 587, 2525 ou 465.";
+
 const portListFromEnv = (defaultValue: string) =>
   z
     .string()
@@ -111,6 +124,14 @@ const portListFromEnv = (defaultValue: string) =>
           ctx.addIssue({
             code: 'custom',
             message: `« ${trimmed} » n'est pas un port TCP valide (entier de 1 à 65535)`,
+          });
+          continue;
+        }
+
+        if (port === MX_TRANSIT_PORT) {
+          ctx.addIssue({
+            code: 'custom',
+            message: SMTP_PORT_25_REFUSED_MESSAGE,
           });
           continue;
         }
