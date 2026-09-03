@@ -17,7 +17,8 @@ import { getQueueToken } from '@nestjs/bullmq';
 import { Test, TestingModule } from '@nestjs/testing';
 import request from 'supertest';
 import type { App } from 'supertest/types';
-import { ApiKeyAuthGuard } from '../api-keys';
+import { ApiKeyAuthGuard, SecretHashingService } from '../api-keys';
+import { RedisThrottlerStorage } from '../rate-limit/redis-throttler.storage';
 import { hashApiKey } from '../api-keys/api-key.utils';
 import { INVALID_API_KEY_MESSAGE } from '../api-keys/api-keys.constants';
 import { EmailVerifiedGuard } from '../auth';
@@ -179,6 +180,22 @@ describe("Filtre d'erreur global — forme du corps, bout en bout", () => {
         EmailsService,
         ApiKeyAuthGuard,
         EmailVerifiedGuard,
+        // Dépendances constructeur d'`ApiKeyAuthGuard`, toutes deux
+        // obligatoires. Le compteur d'échecs est doublé par un stockage qui ne
+        // bloque jamais : ce fichier mesure la forme du corps d'erreur, pas la
+        // limitation de débit (couverte par `api-key-auth.guard.spec.ts`).
+        SecretHashingService,
+        {
+          provide: RedisThrottlerStorage,
+          useValue: {
+            increment: jest.fn().mockResolvedValue({
+              totalHits: 1,
+              timeToExpire: 60,
+              isBlocked: false,
+              timeToBlockExpire: 0,
+            }),
+          },
+        },
         { provide: PrismaService, useValue: prisma },
         { provide: ConfigService, useValue: configService },
         { provide: getQueueToken(EMAIL_SEND_QUEUE), useValue: queue },

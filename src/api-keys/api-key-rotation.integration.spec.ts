@@ -7,6 +7,7 @@ import { AuthUser } from '../auth';
 import { ApiKeyAuthGuard } from './api-key-auth.guard';
 import { ApiKeysService } from './api-keys.service';
 import { ApiKeyAuthenticatedRequest } from './api-keys.types';
+import { RedisThrottlerStorage } from '../rate-limit/redis-throttler.storage';
 import { SecretHashingService } from './secret-hashing.service';
 
 /**
@@ -179,6 +180,21 @@ describe('Rotation de clé API — chemin d’authentification réel', () => {
         // renvoyer `null` (voir `owner.testSenderAddress` ci-dessus).
         { provide: ConfigService, useValue: { get: jest.fn() } },
         SecretHashingService,
+        // Obligatoire depuis le correctif de câblage ; ce test mesure la
+        // rotation, pas la limite d'échecs.
+        {
+          provide: RedisThrottlerStorage,
+          useValue: {
+            increment: jest.fn(() =>
+              Promise.resolve({
+                totalHits: 1,
+                timeToExpire: 60,
+                isBlocked: false,
+                timeToBlockExpire: 0,
+              }),
+            ),
+          },
+        },
       ],
     }).compile();
 
