@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { API_KEY_FAILURES_PER_MINUTE_DEFAULT } from '../api-keys/api-keys.constants';
 import { LOGIN_LOCKOUT_DEFAULTS } from '../auth/auth.constants';
 import { DEFAULT_WELCOME_CREDITS } from '../billing/billing.constants';
 import { parseEmailAddress } from '../emails/email-address';
@@ -91,6 +92,19 @@ const nonNegativeIntFromEnv = (defaultValue: number) =>
  * est activé alors que **les deux** listes sont vides. On peut donc renoncer à
  * une famille de ports, jamais à toutes, et jamais en silence.
  */
+/**
+ * Port 25 : transit MX entre serveurs, jamais soumission cliente. Le relais
+ * de Zendou n'a aucune raison de l'écouter, et l'écouter serait un risque -
+ * un port 25 ouvert est immédiatement sondé, et un relais qui y répond finit
+ * sur les listes noires. La règle était déjà écrite dans la documentation
+ * (A6) ; elle devient ici une règle de configuration, vérifiée au démarrage.
+ */
+const MX_TRANSIT_PORT = 25;
+
+/** Message de refus du port 25, dans les deux listes de ports. */
+export const SMTP_PORT_25_REFUSED_MESSAGE =
+  "Le port 25 (transit MX) n'est jamais écouté par le relais SMTP : utilisez 587, 2525 ou 465.";
+
 const portListFromEnv = (defaultValue: string) =>
   z
     .string()
@@ -115,6 +129,14 @@ const portListFromEnv = (defaultValue: string) =>
           continue;
         }
 
+        if (port === MX_TRANSIT_PORT) {
+          ctx.addIssue({
+            code: 'custom',
+            message: SMTP_PORT_25_REFUSED_MESSAGE,
+          });
+          continue;
+        }
+
         if (ports.includes(port)) {
           ctx.addIssue({
             code: 'custom',
@@ -129,6 +151,32 @@ const portListFromEnv = (defaultValue: string) =>
       return ports;
     });
 
+/**
+ * Nom de domaine nu : suite de libellés alphanumériques séparés par des
+ * points. Ni schéma (`https://`), ni port (`:443`), ni chemin - un `Domain=`
+ * de cookie n'accepte rien de tout cela, et un navigateur qui reçoit une
+ * valeur mal formée ignore le cookie **en silence**, ce qui déconnecterait
+ * tout le monde sans une ligne d'erreur nulle part.
+ */
+const COOKIE_DOMAIN_PATTERN =
+  /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$/;
+
+/**
+ * Normalise `SESSION_COOKIE_DOMAIN` : espaces retirés, minuscules (les noms de
+ * domaine sont insensibles à la casse), point initial toléré et retiré
+ * (`.zendou.app` est la notation RFC 2109, que la RFC 6265 a remplacée par la
+ * forme nue), et vide traité comme absent selon la convention du fichier.
+ */
+const normalizeCookieDomain = (value: unknown): unknown => {
+  if (typeof value !== 'string') {
+    return value;
+  }
+
+  const normalized = value.trim().toLowerCase().replace(/^\./, '');
+
+  return normalized === '' ? undefined : normalized;
+};
+
 const baseEnvSchema = z.object({
   NODE_ENV: z
     .enum(['development', 'test', 'production'])
@@ -137,6 +185,31 @@ const baseEnvSchema = z.object({
   DATABASE_URL: z.string().url(),
   REDIS_URL: z.string().url(),
   FRONTEND_ORIGIN: z.string().url(),
+
+  /**
+   * Domaine porté par le cookie de session (`Domain=zendou.app`).
+   *
+   * **Optionnelle.** Absente, le cookie reste *hôte-seul* : seul l'hôte qui l'a
+   * posé (`api.zendou.app`) le reçoit - le comportement historique. Renseignée
+   * avec le domaine parent, le cookie est envoyé à `zendou.app` **et** à
+   * `api.zendou.app`, ce qui est la seule façon pour le proxy Next servi sur
+   * `zendou.app` de lire la session. En production, son absence est signalée
+   * par un avertissement au démarrage du contrôleur d'authentification.
+   *
+   * Valeur attendue : un nom de domaine nu (`zendou.app`). Un schéma ou un
+   * port (`https://zendou.app`, `zendou.app:443`) est refusé au démarrage : le
+   * navigateur, lui, se contenterait d'ignorer le cookie sans rien dire.
+   */
+  SESSION_COOKIE_DOMAIN: z.preprocess(
+    normalizeCookieDomain,
+    z
+      .string()
+      .regex(
+        COOKIE_DOMAIN_PATTERN,
+        'doit être un nom de domaine nu, sans schéma ni port ni chemin (exemple : zendou.app)',
+      )
+      .optional(),
+  ),
 
   /**
    * Nombre de proxys inverses devant l'application (Traefik sous Dokploy en
@@ -232,6 +305,18 @@ const baseEnvSchema = z.object({
     LOGIN_LOCKOUT_DEFAULTS.WINDOW_SECONDS,
   ),
 
+  /**
+   * Échecs d'authentification par clé API tolérés pour une même IP en une
+   * minute (lot C). Au-delà, cette IP reçoit un 429 pendant une minute.
+   *
+   * Seuls les ÉCHECS sont comptés : une clé valide passe toujours, même
+   * derrière une IP bloquée - voir `ApiKeyAuthGuard`. Le défaut vit dans
+   * `api-keys.constants.ts`, avec le raisonnement.
+   */
+  RATE_LIMIT_API_KEY_FAILURES_PER_MINUTE: positiveIntFromEnv(
+    API_KEY_FAILURES_PER_MINUTE_DEFAULT,
+  ),
+
   // AWS SES / SNS — optionnelles pour l'instant (pas de module d'envoi)
   AWS_REGION: z.string().optional(),
   AWS_ACCESS_KEY_ID: z.string().optional(),
@@ -247,6 +332,25 @@ const baseEnvSchema = z.object({
   // Interdit en production : sans signature, n'importe qui peut forger un
   // bounce et faire suppressor des adresses arbitraires.
   SNS_SKIP_SIGNATURE_VALIDATION: booleanFromEnv(false),
+
+  /**
+   * Poivre des empreintes de secrets porteurs : clés API (`ApiKey.keyHash`) et
+   * mots de passe SMTP (`SmtpCredential.secretHash`). Voir
+   * `api-keys/secret-hashing.service.ts`.
+   *
+   * **Obligatoire en production** (voir le `refine` plus bas) : sans lui, une
+   * fuite de la base suffit à vérifier une clé devinée hors ligne. Optionnelle
+   * ailleurs - absente, le hachage reste le SHA-256 historique, exactement
+   * comme avant E3.
+   *
+   * Minimum 32 caractères : un poivre plus court affaiblirait la clé HMAC
+   * au point de rendre l'exercice décoratif. À générer avec
+   * `openssl rand -hex 32`.
+   */
+  API_KEY_PEPPER: z.preprocess(
+    emptyToUndefined,
+    z.string().min(32, 'doit contenir au moins 32 caractères').optional(),
+  ),
 
   /**
    * Clé secrète Cloudflare Turnstile (`POST /v1/auth/register` uniquement).
@@ -578,6 +682,18 @@ export const envSchema = baseEnvSchema
       path: ['SYSTEM_EMAIL_FROM'],
       message:
         'est obligatoire quand NODE_ENV=production (sans elle, aucun email de confirmation ne peut partir et aucun compte créé ne peut être confirmé)',
+    },
+  )
+  // E3 - le poivre est ce qui empêche une fuite de la base de suffire à
+  // vérifier une clé devinée hors ligne. En production, il n'est pas
+  // facultatif : démarrer sans lui reviendrait à publier un service dont
+  // toutes les empreintes sont recalculables par quiconque lit la table.
+  .refine(
+    (env) => env.NODE_ENV !== 'production' || Boolean(env.API_KEY_PEPPER),
+    {
+      path: ['API_KEY_PEPPER'],
+      message:
+        'est obligatoire quand NODE_ENV=production (sans lui, une fuite de la base suffit à vérifier une clé API ou un mot de passe SMTP deviné hors ligne)',
     },
   )
   // §1.4 / A19 — règle dure et testable : en production, un relais SMTP activé

@@ -3,6 +3,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+import { SecretHashingService } from '../api-keys';
 import { PrismaService } from '../prisma/prisma.service';
 import {
   SMTP_CREDENTIAL_NOT_FOUND_MESSAGE,
@@ -26,15 +27,24 @@ import { CreateSmtpCredentialDto } from './dto/create-smtp-credential.dto';
  * idempotente, purge réservée aux identifiants révoqués, rotation à
  * coupure immédiate sans période de grâce. Aucune sémantique nouvelle à
  * apprendre pour le client qui connaît déjà les clés API.
+ *
+ * E7 compris : comme `ApiKeysService`, la propriété est établie **dans la
+ * requête** (`findFirst` sur `{ id, userId }`) et non par une comparaison
+ * JavaScript après coup. Les `update`/`delete` qui suivent ciblent l'`id`
+ * seul, la propriété étant déjà acquise.
  */
 @Injectable()
 export class SmtpCredentialsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly secretHashing: SecretHashingService,
+  ) {}
 
   /**
    * Génère un nouvel identifiant SMTP pour l'utilisateur.
-   * Le mot de passe complet n'est renvoyé qu'ici : seul son hash SHA-256
-   * est stocké (`secretHash`), et le nom d'utilisateur est opaque et généré.
+   * Le mot de passe complet n'est renvoyé qu'ici : seule son empreinte est
+   * stockée (`secretHash` - HMAC poivré quand `API_KEY_PEPPER` est
+   * configurée, SHA-256 sinon), et le nom d'utilisateur est opaque et généré.
    */
   async create(
     userId: string,
@@ -49,7 +59,7 @@ export class SmtpCredentialsService {
         name: dto.name.trim(),
         username,
         prefix: generated.prefix,
-        secretHash: generated.passwordHash,
+        secretHash: this.secretHashing.hashForStorage(generated.password),
       },
       select: {
         id: true,
@@ -86,12 +96,12 @@ export class SmtpCredentialsService {
    * 404 si l'identifiant n'existe pas ou n'appartient pas à `userId`.
    */
   async revoke(userId: string, id: string): Promise<void> {
-    const credential = await this.prisma.smtpCredential.findUnique({
-      where: { id },
-      select: { id: true, userId: true, revokedAt: true },
+    const credential = await this.prisma.smtpCredential.findFirst({
+      where: { id, userId },
+      select: { id: true, revokedAt: true },
     });
 
-    if (!credential || credential.userId !== userId) {
+    if (!credential) {
       throw new NotFoundException(SMTP_CREDENTIAL_NOT_FOUND_MESSAGE);
     }
 
@@ -113,12 +123,12 @@ export class SmtpCredentialsService {
    * n'appartient pas à `userId` ; 409 s'il est encore actif.
    */
   async purge(userId: string, id: string): Promise<void> {
-    const credential = await this.prisma.smtpCredential.findUnique({
-      where: { id },
-      select: { id: true, userId: true, revokedAt: true },
+    const credential = await this.prisma.smtpCredential.findFirst({
+      where: { id, userId },
+      select: { id: true, revokedAt: true },
     });
 
-    if (!credential || credential.userId !== userId) {
+    if (!credential) {
       throw new NotFoundException(SMTP_CREDENTIAL_NOT_FOUND_MESSAGE);
     }
 
@@ -142,11 +152,10 @@ export class SmtpCredentialsService {
     userId: string,
     id: string,
   ): Promise<RotateSmtpCredentialResponse> {
-    const credential = await this.prisma.smtpCredential.findUnique({
-      where: { id },
+    const credential = await this.prisma.smtpCredential.findFirst({
+      where: { id, userId },
       select: {
         id: true,
-        userId: true,
         name: true,
         username: true,
         createdAt: true,
@@ -154,7 +163,7 @@ export class SmtpCredentialsService {
       },
     });
 
-    if (!credential || credential.userId !== userId) {
+    if (!credential) {
       throw new NotFoundException(SMTP_CREDENTIAL_NOT_FOUND_MESSAGE);
     }
 
@@ -169,7 +178,7 @@ export class SmtpCredentialsService {
       where: { id },
       data: {
         prefix: generated.prefix,
-        secretHash: generated.passwordHash,
+        secretHash: this.secretHashing.hashForStorage(generated.password),
         rotatedAt,
       },
     });

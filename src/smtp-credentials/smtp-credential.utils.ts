@@ -15,11 +15,12 @@ const SMTP_CREDENTIAL_USERNAME_PREFIX = 'zdu_';
 
 /**
  * Longueur de la partie aléatoire (base62) du mot de passe SMTP. Même valeur
- * que `RANDOM_PART_LENGTH` d'`api-key.utils.ts` (40, ≈238 bits d'entropie),
- * mais c'est une décision de format indépendante propre au secret SMTP — pas
- * une valeur chaînée à celle des clés API, donc pas importée.
+ * que `RANDOM_PART_LENGTH` d'`api-key.utils.ts` (43, soit 43 x log2(62) ≈ 256
+ * bits, les 32 octets exigés par E3), mais c'est une décision de format
+ * indépendante propre au secret SMTP - pas une valeur chaînée à celle des
+ * clés API, donc pas importée.
  */
-const RANDOM_PART_LENGTH = 40;
+const RANDOM_PART_LENGTH = 43;
 
 /** Nombre d'octets aléatoires du nom d'utilisateur opaque (→ 16 caractères hex). */
 const USERNAME_RANDOM_BYTES = 8;
@@ -29,13 +30,19 @@ export interface GeneratedSmtpCredentialSecret {
   password: string;
   /** 12 premiers caractères du mot de passe, sûrs à afficher/stocker en clair. */
   prefix: string;
-  /** Empreinte SHA-256 (hex) du mot de passe complet, seule forme persistée. */
+  /**
+   * Empreinte SHA-256 (hex) du mot de passe complet - la forme
+   * **historique**. Depuis E3, `SmtpCredentialsService` persiste
+   * `SecretHashingService.hashForStorage` (HMAC poivré si `API_KEY_PEPPER`
+   * est configurée) ; ce champ reste la forme historique, celle sous laquelle
+   * un secret pas encore migré est reconnu.
+   */
   passwordHash: string;
 }
 
 /**
- * Génère un nouveau secret d'identifiant SMTP au format `zd_smtp_` + 40
- * caractères aléatoires base62.
+ * Génère un nouveau secret d'identifiant SMTP au format `zd_smtp_` + 43
+ * caractères aléatoires base62 (256 bits).
  *
  * **Même mécanique que `generateApiKey`, réutilisée et non réécrite** :
  * `generateBase62Secret` (tirage cryptographique), `hashApiKey` (hash

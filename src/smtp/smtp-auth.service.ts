@@ -1,9 +1,9 @@
 import { timingSafeEqual } from 'crypto';
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { SecretHashingService } from '../api-keys';
 import { AUTH_USER_SELECT, resolveTestSenderAddress } from '../auth';
 import { PrismaService } from '../prisma/prisma.service';
-import { hashSmtpCredentialSecret } from '../smtp-credentials';
 import { smtpReplyToError } from './smtp-reply.adapter';
 import { SMTP_REPLY_AUTH_INVALID_CREDENTIALS } from './smtp-reply';
 import type { SmtpSessionUser } from './smtp-session';
@@ -24,10 +24,24 @@ import type { SmtpSessionUser } from './smtp-session';
 export class SmtpAuthService {
   private readonly logger = new Logger(SmtpAuthService.name);
 
+  /**
+   * Hachage des secrets, poivre compris (E3) - la même mécanique que celle des
+   * clés API, puisque c'est le même genre de secret porteur.
+   *
+   * Construit ici plutôt qu'injecté : `SmtpRelayModule` ne connaît que
+   * `EmailsCoreModule`, et lui faire importer `ApiKeysModule` (contrôleur REST
+   * compris) pour une classe sans état dont la seule dépendance est
+   * `ConfigService` couterait plus qu'il ne rapporte. Le service reste
+   * fourni par `ApiKeysModule` pour tout ce qui vit dans le graphe HTTP.
+   */
+  private readonly secretHashing: SecretHashingService;
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly configService: ConfigService,
-  ) {}
+  ) {
+    this.secretHashing = new SecretHashingService(configService);
+  }
 
   /**
    * Vérifie un couple (nom d'utilisateur, secret) et rend l'utilisateur à
@@ -74,8 +88,32 @@ export class SmtpAuthService {
       this.refuse(username, remoteAddress, 'identifiant révoqué');
     }
 
-    if (!secretMatches(secret, credential.secretHash)) {
+    if (
+      !secretMatches(
+        this.secretHashing.candidateHashes(secret),
+        credential.secretHash,
+      )
+    ) {
       this.refuse(username, remoteAddress, 'secret invalide');
+    }
+
+    // Migration paresseuse (E3), exactement comme `ApiKeyAuthGuard` : le
+    // secret vient d'être reconnu sous son empreinte historique, on la
+    // réécrit poivrée. Attendue - sans quoi la migration ne se ferait jamais
+    // -, mais tolérante à l'échec : une base en lecture seule ne doit pas
+    // faire échouer une authentification par ailleurs valide.
+    if (this.secretHashing.isLegacy(credential.secretHash, secret)) {
+      try {
+        await this.prisma.smtpCredential.update({
+          where: { id: credential.id },
+          data: { secretHash: this.secretHashing.hashForStorage(secret) },
+        });
+      } catch (error: unknown) {
+        this.logger.warn(
+          `Échec de la migration de l'empreinte de l'identifiant SMTP ${credential.id}`,
+          error instanceof Error ? error.stack : String(error),
+        );
+      }
     }
 
     // Fire-and-forget, comme `ApiKeyAuthGuard` : la mise à jour d'un horodatage
@@ -127,7 +165,8 @@ export class SmtpAuthService {
 }
 
 /**
- * Compare le secret présenté à l'empreinte stockée, en temps constant.
+ * Compare les empreintes possibles du secret présenté à celle stockée, en
+ * temps constant.
  *
  * `ApiKeyAuthGuard` n'a pas besoin d'équivalent : il retrouve la clé **par**
  * son empreinte, sans jamais comparer deux secrets. Ici le nom d'utilisateur
@@ -135,14 +174,26 @@ export class SmtpAuthService {
  * doit. Les longueurs sont vérifiées d'abord : `timingSafeEqual` lève sur des
  * tampons de tailles différentes, ce qu'une empreinte tronquée en base
  * suffirait à provoquer.
+ *
+ * Plusieurs candidats depuis E3 (forme poivrée, puis forme historique) : la
+ * boucle les parcourt tous sans sortir au premier succès, pour que le temps
+ * de réponse ne dise pas sous quelle forme le secret a été reconnu.
  */
-function secretMatches(secret: string, expectedHash: string): boolean {
-  const presented = Buffer.from(hashSmtpCredentialSecret(secret), 'hex');
+function secretMatches(candidates: string[], expectedHash: string): boolean {
   const expected = Buffer.from(expectedHash, 'hex');
+  let matched = false;
 
-  return (
-    presented.length > 0 &&
-    presented.length === expected.length &&
-    timingSafeEqual(presented, expected)
-  );
+  for (const candidate of candidates) {
+    const presented = Buffer.from(candidate, 'hex');
+
+    if (
+      presented.length > 0 &&
+      presented.length === expected.length &&
+      timingSafeEqual(presented, expected)
+    ) {
+      matched = true;
+    }
+  }
+
+  return matched;
 }

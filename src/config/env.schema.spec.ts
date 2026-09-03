@@ -12,7 +12,7 @@ import {
   SMTP_NO_LISTENING_PORT_MESSAGE,
   SMTP_TLS_CERTIFICATE_REQUIRED_MESSAGE,
 } from '../smtp/smtp-relay.constants';
-import { validateEnv } from './env.schema';
+import { SMTP_PORT_25_REFUSED_MESSAGE, validateEnv } from './env.schema';
 
 const BASE_ENV = {
   DATABASE_URL: 'postgresql://zendou:zendou@localhost:5433/zendou',
@@ -26,6 +26,8 @@ const BASE_ENV = {
  */
 const PRODUCTION_REQUIRED = {
   SYSTEM_EMAIL_FROM: 'no-reply@mail.kingreys.fr',
+  // E3 : le poivre est obligatoire en production, au même titre.
+  API_KEY_PEPPER: 'a'.repeat(64),
 };
 
 describe('validateEnv — SNS_SKIP_SIGNATURE_VALIDATION', () => {
@@ -433,5 +435,120 @@ describe('validateEnv — anti-abus du relais SMTP (B6/S9)', () => {
       validateEnv({ ...BASE_ENV, SMTP_MAX_CONNECTIONS_PER_IP: '' })
         .SMTP_MAX_CONNECTIONS_PER_IP,
     ).toBe(SMTP_DEFAULT_MAX_CONNECTIONS_PER_IP);
+  });
+});
+
+describe('validateEnv - SESSION_COOKIE_DOMAIN (lot D)', () => {
+  it('est optionnelle : absente ou vide, le cookie reste hôte-seul', () => {
+    expect(validateEnv({ ...BASE_ENV }).SESSION_COOKIE_DOMAIN).toBeUndefined();
+    expect(
+      validateEnv({ ...BASE_ENV, SESSION_COOKIE_DOMAIN: '' })
+        .SESSION_COOKIE_DOMAIN,
+    ).toBeUndefined();
+    expect(
+      validateEnv({ ...BASE_ENV, SESSION_COOKIE_DOMAIN: '   ' })
+        .SESSION_COOKIE_DOMAIN,
+    ).toBeUndefined();
+  });
+
+  it('accepte un nom de domaine nu et le normalise', () => {
+    expect(
+      validateEnv({ ...BASE_ENV, SESSION_COOKIE_DOMAIN: 'zendou.app' })
+        .SESSION_COOKIE_DOMAIN,
+    ).toBe('zendou.app');
+    // Minuscules, espaces de bord retirés.
+    expect(
+      validateEnv({ ...BASE_ENV, SESSION_COOKIE_DOMAIN: '  Zendou.App  ' })
+        .SESSION_COOKIE_DOMAIN,
+    ).toBe('zendou.app');
+    // Point initial toléré (notation RFC 2109) et retiré.
+    expect(
+      validateEnv({ ...BASE_ENV, SESSION_COOKIE_DOMAIN: '.zendou.app' })
+        .SESSION_COOKIE_DOMAIN,
+    ).toBe('zendou.app');
+  });
+
+  it.each([
+    ['https://zendou.app'],
+    ['zendou.app:443'],
+    ['zendou.app/'],
+    ['zendou.app/session'],
+    ['zendou app'],
+  ])('refuse « %s » : un cookie mal formé serait ignoré en silence', (raw) => {
+    expect(() =>
+      validateEnv({ ...BASE_ENV, SESSION_COOKIE_DOMAIN: raw }),
+    ).toThrow(/SESSION_COOKIE_DOMAIN/);
+  });
+});
+
+describe('validateEnv - API_KEY_PEPPER (E3)', () => {
+  it('est optionnelle hors production : le hachage retombe sur le SHA-256 historique', () => {
+    expect(validateEnv({ ...BASE_ENV }).API_KEY_PEPPER).toBeUndefined();
+    expect(
+      validateEnv({ ...BASE_ENV, API_KEY_PEPPER: '' }).API_KEY_PEPPER,
+    ).toBeUndefined();
+  });
+
+  it('accepte un poivre d’au moins 32 caractères', () => {
+    const pepper = 'a'.repeat(64);
+
+    expect(
+      validateEnv({ ...BASE_ENV, API_KEY_PEPPER: pepper }).API_KEY_PEPPER,
+    ).toBe(pepper);
+  });
+
+  it('refuse un poivre trop court pour servir de clé HMAC', () => {
+    expect(() =>
+      validateEnv({ ...BASE_ENV, API_KEY_PEPPER: 'trop-court' }),
+    ).toThrow(/API_KEY_PEPPER/);
+  });
+
+  it('refuse de démarrer en production sans poivre', () => {
+    expect(() =>
+      validateEnv({
+        ...BASE_ENV,
+        ...PRODUCTION_REQUIRED,
+        NODE_ENV: 'production',
+        API_KEY_PEPPER: '',
+      }),
+    ).toThrow(/API_KEY_PEPPER/);
+  });
+
+  it('démarre en production dès que le poivre est fourni', () => {
+    expect(
+      validateEnv({
+        ...BASE_ENV,
+        ...PRODUCTION_REQUIRED,
+        NODE_ENV: 'production',
+      }).API_KEY_PEPPER,
+    ).toBe(PRODUCTION_REQUIRED.API_KEY_PEPPER);
+  });
+});
+
+describe('validateEnv - le port 25 est refusé par configuration (E5)', () => {
+  it.each([['SMTP_PORTS_STARTTLS'], ['SMTP_PORTS_TLS']])(
+    'refuse 25 dans %s',
+    (variable) => {
+      expect(() => validateEnv({ ...BASE_ENV, [variable]: '25' })).toThrow(
+        SMTP_PORT_25_REFUSED_MESSAGE,
+      );
+    },
+  );
+
+  it('refuse 25 même accompagné de ports légitimes', () => {
+    expect(() =>
+      validateEnv({ ...BASE_ENV, SMTP_PORTS_STARTTLS: '587,25,2525' }),
+    ).toThrow(SMTP_PORT_25_REFUSED_MESSAGE);
+  });
+
+  it('accepte 587, 2525 et 465, les seuls ports de soumission', () => {
+    const env = validateEnv({
+      ...BASE_ENV,
+      SMTP_PORTS_STARTTLS: '587,2525',
+      SMTP_PORTS_TLS: '465',
+    });
+
+    expect(env.SMTP_PORTS_STARTTLS).toEqual([587, 2525]);
+    expect(env.SMTP_PORTS_TLS).toEqual([465]);
   });
 });

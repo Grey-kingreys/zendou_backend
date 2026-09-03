@@ -1,14 +1,19 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { HttpStatus } from '@nestjs/common';
+import { HttpStatus, INestApplication, Logger } from '@nestjs/common';
 import { HTTP_CODE_METADATA } from '@nestjs/common/constants';
 import { ConfigService } from '@nestjs/config';
 import { UserRole, UserStatus } from '@prisma/client';
 import type { Request, Response } from 'express';
+import request from 'supertest';
+import type { App } from 'supertest/types';
 import { CaptchaService } from '../captcha/captcha.service';
 import { RATE_LIMIT_POLICY } from '../rate-limit/rate-limit.constants';
 import { RATE_LIMIT_POLICY_METADATA } from '../rate-limit/rate-limit.decorator';
 import { SESSION_COOKIE_NAME, SESSION_TTL_SECONDS } from './auth.constants';
-import { AuthController } from './auth.controller';
+import {
+  AuthController,
+  SESSION_COOKIE_DOMAIN_MISSING_WARNING,
+} from './auth.controller';
 import { AuthService } from './auth.service';
 import { AUTH_USER_SELECT, AuthUser } from './auth.types';
 import { EmailConfirmationService } from './email-confirmation.service';
@@ -82,9 +87,15 @@ describe('AuthController', () => {
           provide: EmailConfirmationService,
           useValue: emailConfirmationService,
         },
+        // Mock sensible à la clé : `SESSION_COOKIE_DOMAIN` doit pouvoir être
+        // absente sans que le contrôleur reçoive la valeur de `NODE_ENV`.
         {
           provide: ConfigService,
-          useValue: { get: jest.fn().mockReturnValue('development') },
+          useValue: {
+            get: jest.fn((key: string) =>
+              key === 'NODE_ENV' ? 'development' : undefined,
+            ),
+          },
         },
         // Captcha désactivé (pas de TURNSTILE_SECRET_KEY) : suffit à
         // satisfaire les dépendances de CaptchaGuard, posé sur /register.
@@ -339,5 +350,180 @@ describe('session cookie options', () => {
       path: '/',
       secure: true,
     });
+  });
+
+  it('n’ajoute aucun attribut domain quand SESSION_COOKIE_DOMAIN est absente', () => {
+    expect(baseSessionCookieOptions(true)).not.toHaveProperty('domain');
+    expect(sessionCookieOptions(true)).not.toHaveProperty('domain');
+    expect(baseSessionCookieOptions(true, '')).not.toHaveProperty('domain');
+  });
+
+  it('ajoute domain quand SESSION_COOKIE_DOMAIN est configurée', () => {
+    expect(baseSessionCookieOptions(true, 'zendou.app')).toEqual({
+      httpOnly: true,
+      sameSite: 'lax',
+      path: '/',
+      secure: true,
+      domain: 'zendou.app',
+    });
+    expect(sessionCookieOptions(false, 'zendou.app')).toEqual({
+      httpOnly: true,
+      sameSite: 'lax',
+      path: '/',
+      secure: false,
+      domain: 'zendou.app',
+      maxAge: SESSION_TTL_SECONDS * 1000,
+    });
+  });
+});
+
+/**
+ * Lot D - preuve au niveau HTTP réel (et pas seulement sur un double de
+ * `Response`) : c'est l'en-tête `Set-Cookie` que le navigateur lit, donc c'est
+ * lui qu'on inspecte. Application Nest réelle, contrôleur réel, requêtes
+ * supertest - même patron qu'`admin-stats.controller.spec.ts`.
+ */
+describe('AuthController - attribut Domain du cookie de session (lot D)', () => {
+  const authService = {
+    register: jest.fn(),
+    login: jest.fn(),
+    updateProfile: jest.fn(),
+    changePassword: jest.fn(),
+  };
+  const sessionService = { destroy: jest.fn() };
+  const emailConfirmationService = { confirm: jest.fn(), resend: jest.fn() };
+
+  async function buildApp(
+    values: Record<string, string | undefined>,
+  ): Promise<INestApplication<App>> {
+    const module: TestingModule = await Test.createTestingModule({
+      controllers: [AuthController],
+      providers: [
+        { provide: AuthService, useValue: authService },
+        { provide: SessionService, useValue: sessionService },
+        {
+          provide: EmailConfirmationService,
+          useValue: emailConfirmationService,
+        },
+        {
+          provide: ConfigService,
+          useValue: { get: (key: string) => values[key] },
+        },
+        { provide: CaptchaService, useValue: { isEnabled: false } },
+      ],
+    })
+      .overrideGuard(SessionAuthGuard)
+      .useValue({ canActivate: () => true })
+      .compile();
+
+    const app = module.createNestApplication<INestApplication<App>>();
+    await app.init();
+    return app;
+  }
+
+  function setCookies(headers: Record<string, unknown>): string[] {
+    const raw = headers['set-cookie'];
+    return Array.isArray(raw) ? (raw as string[]) : [];
+  }
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    authService.login.mockResolvedValue({
+      user: authUser,
+      token: 'token-login',
+    });
+  });
+
+  it('pose Domain=zendou.app à la connexion quand la variable est configurée', async () => {
+    const app = await buildApp({ SESSION_COOKIE_DOMAIN: 'zendou.app' });
+
+    const response = await request(app.getHttpServer())
+      .post('/auth/login')
+      .send({ email: 'aissatou@example.com', password: 'motdepasse-solide' });
+
+    expect(response.status).toBe(200);
+    const cookies = setCookies(response.headers);
+    expect(cookies).toHaveLength(1);
+    expect(cookies[0]).toContain('Domain=zendou.app');
+
+    await app.close();
+  });
+
+  it('ne pose jamais d’attribut Domain quand la variable est absente', async () => {
+    const app = await buildApp({});
+
+    const response = await request(app.getHttpServer())
+      .post('/auth/login')
+      .send({ email: 'aissatou@example.com', password: 'motdepasse-solide' });
+
+    expect(response.status).toBe(200);
+    const cookies = setCookies(response.headers);
+    expect(cookies).toHaveLength(1);
+    expect(cookies[0]).not.toContain('Domain=');
+
+    await app.close();
+  });
+
+  it('la déconnexion émet deux Set-Cookie d’effacement quand le domaine est configuré', async () => {
+    const app = await buildApp({ SESSION_COOKIE_DOMAIN: 'zendou.app' });
+
+    const response = await request(app.getHttpServer()).post('/auth/logout');
+
+    expect(response.status).toBe(204);
+    const cookies = setCookies(response.headers);
+    expect(cookies).toHaveLength(2);
+    // Le cookie posé depuis le déploiement…
+    expect(cookies.some((cookie) => cookie.includes('Domain=zendou.app'))).toBe(
+      true,
+    );
+    // …et celui, hôte-seul, des sessions ouvertes avant lui.
+    expect(cookies.some((cookie) => !cookie.includes('Domain='))).toBe(true);
+    expect(
+      cookies.every((cookie) => cookie.startsWith(`${SESSION_COOKIE_NAME}=;`)),
+    ).toBe(true);
+
+    await app.close();
+  });
+
+  it('n’émet qu’un seul Set-Cookie d’effacement quand aucun domaine n’est configuré', async () => {
+    const app = await buildApp({});
+
+    const response = await request(app.getHttpServer()).post('/auth/logout');
+
+    expect(response.status).toBe(204);
+    expect(setCookies(response.headers)).toHaveLength(1);
+
+    await app.close();
+  });
+
+  it('avertit au démarrage quand la variable manque en production', async () => {
+    const warn = jest
+      .spyOn(Logger.prototype, 'warn')
+      .mockImplementation(() => undefined);
+
+    const app = await buildApp({ NODE_ENV: 'production' });
+
+    expect(warn).toHaveBeenCalledWith(SESSION_COOKIE_DOMAIN_MISSING_WARNING);
+
+    await app.close();
+    warn.mockRestore();
+  });
+
+  it('n’avertit pas quand la variable est présente en production', async () => {
+    const warn = jest
+      .spyOn(Logger.prototype, 'warn')
+      .mockImplementation(() => undefined);
+
+    const app = await buildApp({
+      NODE_ENV: 'production',
+      SESSION_COOKIE_DOMAIN: 'zendou.app',
+    });
+
+    expect(warn).not.toHaveBeenCalledWith(
+      SESSION_COOKIE_DOMAIN_MISSING_WARNING,
+    );
+
+    await app.close();
+    warn.mockRestore();
   });
 });

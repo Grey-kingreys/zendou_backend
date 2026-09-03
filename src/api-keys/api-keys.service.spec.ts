@@ -1,5 +1,7 @@
+import { createHash, createHmac } from 'crypto';
 import { Test, TestingModule } from '@nestjs/testing';
 import { ConflictException, NotFoundException } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../prisma/prisma.service';
 import {
   API_KEY_NOT_FOUND_MESSAGE,
@@ -7,6 +9,7 @@ import {
   API_KEY_ROTATE_REVOKED_MESSAGE,
 } from './api-keys.constants';
 import { ApiKeysService } from './api-keys.service';
+import { SecretHashingService } from './secret-hashing.service';
 
 interface CreateArgs {
   data: { userId: string; name: string; prefix: string; keyHash: string };
@@ -48,7 +51,10 @@ describe('ApiKeysService', () => {
   let capturedUpdateArgs: UpdateArgs | undefined;
   let capturedDeleteArgs: DeleteArgs | undefined;
 
-  const findUnique = jest.fn();
+  // E7 : le service ne charge plus une ligne par identifiant seul - il
+  // demande à la base la ligne { id, userId }. Le double suit donc la même
+  // méthode que le code de production.
+  const findFirst = jest.fn();
   const findMany = jest.fn((args: FindManyArgs) => {
     capturedFindManyArgs = args;
     return Promise.resolve([listedKey]);
@@ -81,10 +87,14 @@ describe('ApiKeysService', () => {
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         ApiKeysService,
+        // Vrai service de hachage, sans poivre configuré : le comportement
+        // testé ici est donc l'historique (SHA-256), inchangé par E3.
+        SecretHashingService,
+        { provide: ConfigService, useValue: { get: () => undefined } },
         {
           provide: PrismaService,
           useValue: {
-            apiKey: { findUnique, findMany, update, create, delete: deleteFn },
+            apiKey: { findFirst, findMany, update, create, delete: deleteFn },
           },
         },
       ],
@@ -133,7 +143,7 @@ describe('ApiKeysService', () => {
 
   describe('revoke', () => {
     it('throws 404 when the key does not exist', async () => {
-      findUnique.mockResolvedValue(null);
+      findFirst.mockResolvedValue(null);
 
       await expect(
         service.revoke('user_1', 'key_missing'),
@@ -143,21 +153,23 @@ describe('ApiKeysService', () => {
     });
 
     it('throws 404 when the key belongs to another user', async () => {
-      findUnique.mockResolvedValue({
-        id: 'key_1',
-        userId: 'user_2',
-        revokedAt: null,
-      });
+      // La base ne rend rien : le filtre { id, userId } ne matche pas.
+      findFirst.mockResolvedValue(null);
 
       await expect(service.revoke('user_1', 'key_1')).rejects.toMatchObject(
         new NotFoundException(API_KEY_NOT_FOUND_MESSAGE),
       );
 
+      // E7 : la propriété est demandée à la base, pas vérifiée après coup.
+      expect(findFirst).toHaveBeenCalledWith({
+        where: { id: 'key_1', userId: 'user_1' },
+        select: { id: true, revokedAt: true },
+      });
       expect(update).not.toHaveBeenCalled();
     });
 
     it('sets revokedAt on an active key', async () => {
-      findUnique.mockResolvedValue({
+      findFirst.mockResolvedValue({
         id: 'key_1',
         userId: 'user_1',
         revokedAt: null,
@@ -171,7 +183,7 @@ describe('ApiKeysService', () => {
     });
 
     it('is idempotent when the key is already revoked', async () => {
-      findUnique.mockResolvedValue({
+      findFirst.mockResolvedValue({
         id: 'key_1',
         userId: 'user_1',
         revokedAt: new Date('2026-01-01T00:00:00.000Z'),
@@ -185,7 +197,7 @@ describe('ApiKeysService', () => {
 
   describe('purge', () => {
     it('throws 404 when the key does not exist', async () => {
-      findUnique.mockResolvedValue(null);
+      findFirst.mockResolvedValue(null);
 
       await expect(
         service.purge('user_1', 'key_missing'),
@@ -195,21 +207,21 @@ describe('ApiKeysService', () => {
     });
 
     it('throws 404 when the key belongs to another user', async () => {
-      findUnique.mockResolvedValue({
-        id: 'key_1',
-        userId: 'user_2',
-        revokedAt: new Date('2026-01-01T00:00:00.000Z'),
-      });
+      findFirst.mockResolvedValue(null);
 
       await expect(service.purge('user_1', 'key_1')).rejects.toMatchObject(
         new NotFoundException(API_KEY_NOT_FOUND_MESSAGE),
       );
 
+      expect(findFirst).toHaveBeenCalledWith({
+        where: { id: 'key_1', userId: 'user_1' },
+        select: { id: true, revokedAt: true },
+      });
       expect(deleteFn).not.toHaveBeenCalled();
     });
 
     it('refuses to delete an active key', async () => {
-      findUnique.mockResolvedValue({
+      findFirst.mockResolvedValue({
         id: 'key_1',
         userId: 'user_1',
         revokedAt: null,
@@ -223,7 +235,7 @@ describe('ApiKeysService', () => {
     });
 
     it('deletes a revoked key', async () => {
-      findUnique.mockResolvedValue({
+      findFirst.mockResolvedValue({
         id: 'key_1',
         userId: 'user_1',
         revokedAt: new Date('2026-01-01T00:00:00.000Z'),
@@ -245,7 +257,7 @@ describe('ApiKeysService', () => {
     };
 
     it('throws 404 when the key does not exist', async () => {
-      findUnique.mockResolvedValue(null);
+      findFirst.mockResolvedValue(null);
 
       await expect(
         service.rotate('user_1', 'key_missing'),
@@ -255,17 +267,26 @@ describe('ApiKeysService', () => {
     });
 
     it('throws 404 when the key belongs to another user', async () => {
-      findUnique.mockResolvedValue({ ...rotatableKey, userId: 'user_2' });
+      findFirst.mockResolvedValue(null);
 
       await expect(service.rotate('user_1', 'key_1')).rejects.toMatchObject(
         new NotFoundException(API_KEY_NOT_FOUND_MESSAGE),
       );
 
+      expect(findFirst).toHaveBeenCalledWith({
+        where: { id: 'key_1', userId: 'user_1' },
+        select: {
+          id: true,
+          name: true,
+          createdAt: true,
+          revokedAt: true,
+        },
+      });
       expect(update).not.toHaveBeenCalled();
     });
 
     it('refuses to rotate a revoked key', async () => {
-      findUnique.mockResolvedValue({
+      findFirst.mockResolvedValue({
         ...rotatableKey,
         revokedAt: new Date('2026-01-01T00:00:00.000Z'),
       });
@@ -278,7 +299,7 @@ describe('ApiKeysService', () => {
     });
 
     it('regenerates prefix/keyHash while keeping id, name and createdAt', async () => {
-      findUnique.mockResolvedValue(rotatableKey);
+      findFirst.mockResolvedValue(rotatableKey);
 
       const result = await service.rotate('user_1', 'key_1');
 
@@ -298,5 +319,102 @@ describe('ApiKeysService', () => {
       expect(capturedUpdateArgs!.data.keyHash).not.toBe(result.key);
       expect(result.rotatedAt).toBeInstanceOf(Date);
     });
+  });
+});
+
+/**
+ * E3 - ce que la colonne `keyHash` reçoit réellement quand un poivre est
+ * configuré. Le secret rendu au client, lui, ne change pas de forme.
+ */
+describe('ApiKeysService - empreinte poivrée persistée (E3)', () => {
+  const PEPPER = 'p'.repeat(64);
+
+  let service: ApiKeysService;
+  let captured: { data: { keyHash: string; prefix: string } } | undefined;
+
+  const create = jest.fn(
+    (args: { data: { keyHash: string; prefix: string } }) => {
+      captured = args;
+      return Promise.resolve({
+        id: 'key_1',
+        name: 'Prod',
+        prefix: args.data.prefix,
+        createdAt: new Date('2026-01-01T00:00:00.000Z'),
+      });
+    },
+  );
+  const update = jest.fn(
+    (args: { data: { keyHash: string; prefix: string } }) => {
+      captured = args;
+      return Promise.resolve({});
+    },
+  );
+  const findFirst = jest.fn();
+  const findUnique = jest.fn();
+
+  beforeEach(async () => {
+    jest.clearAllMocks();
+    captured = undefined;
+
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [
+        ApiKeysService,
+        SecretHashingService,
+        {
+          provide: ConfigService,
+          useValue: {
+            get: (key: string) =>
+              key === 'API_KEY_PEPPER' ? PEPPER : undefined,
+          },
+        },
+        {
+          provide: PrismaService,
+          useValue: { apiKey: { create, update, findFirst, findUnique } },
+        },
+      ],
+    }).compile();
+
+    service = module.get<ApiKeysService>(ApiKeysService);
+  });
+
+  it('stocke le HMAC poivré de la clé, jamais son SHA-256 nu', async () => {
+    const result = await service.create('user_1', { name: 'Prod' });
+
+    expect(captured?.data.keyHash).toBe(
+      createHmac('sha256', PEPPER).update(result.key).digest('hex'),
+    );
+    expect(captured?.data.keyHash).not.toBe(
+      createHash('sha256').update(result.key).digest('hex'),
+    );
+  });
+
+  it('stocke aussi l’empreinte poivrée à la rotation', async () => {
+    findFirst.mockResolvedValue({
+      id: 'key_1',
+      name: 'Prod',
+      createdAt: new Date('2026-01-01T00:00:00.000Z'),
+      revokedAt: null,
+    });
+    findFirst.mockResolvedValue({
+      id: 'key_1',
+      userId: 'user_1',
+      name: 'Prod',
+      createdAt: new Date('2026-01-01T00:00:00.000Z'),
+      revokedAt: null,
+    });
+
+    const result = await service.rotate('user_1', 'key_1');
+
+    expect(captured?.data.keyHash).toBe(
+      createHmac('sha256', PEPPER).update(result.key).digest('hex'),
+    );
+  });
+
+  it('rend une clé au format zd_live_ + 43 caractères, préfixe affiché de 12', async () => {
+    const result = await service.create('user_1', { name: 'Prod' });
+
+    expect(result.key).toMatch(/^zd_live_[A-Za-z0-9]{43}$/);
+    expect(result.prefix).toBe(result.key.slice(0, 12));
+    expect(result.prefix).toHaveLength(12);
   });
 });

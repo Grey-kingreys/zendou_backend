@@ -1,5 +1,8 @@
+import { createHash, createHmac } from 'crypto';
 import { Test, TestingModule } from '@nestjs/testing';
 import { ConflictException, NotFoundException } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { SecretHashingService } from '../api-keys';
 import { PrismaService } from '../prisma/prisma.service';
 import {
   SMTP_CREDENTIAL_NOT_FOUND_MESSAGE,
@@ -55,7 +58,9 @@ describe('SmtpCredentialsService', () => {
   let capturedUpdateArgs: UpdateArgs | undefined;
   let capturedDeleteArgs: DeleteArgs | undefined;
 
-  const findUnique = jest.fn();
+  // E7 : le service demande à la base la ligne { id, userId }, il ne charge
+  // plus par identifiant seul pour comparer ensuite en JavaScript.
+  const findFirst = jest.fn();
   const findMany = jest.fn((args: FindManyArgs) => {
     capturedFindManyArgs = args;
     return Promise.resolve([listedCredential]);
@@ -89,11 +94,15 @@ describe('SmtpCredentialsService', () => {
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         SmtpCredentialsService,
+        // Vrai service de hachage, sans poivre configuré : comportement
+        // historique (SHA-256), inchangé par E3.
+        SecretHashingService,
+        { provide: ConfigService, useValue: { get: () => undefined } },
         {
           provide: PrismaService,
           useValue: {
             smtpCredential: {
-              findUnique,
+              findFirst,
               findMany,
               update,
               create,
@@ -155,7 +164,7 @@ describe('SmtpCredentialsService', () => {
 
   describe('revoke', () => {
     it('throws 404 when the credential does not exist', async () => {
-      findUnique.mockResolvedValue(null);
+      findFirst.mockResolvedValue(null);
 
       await expect(
         service.revoke('user_1', 'smtp_missing'),
@@ -167,21 +176,23 @@ describe('SmtpCredentialsService', () => {
     });
 
     it('throws 404 when the credential belongs to another user', async () => {
-      findUnique.mockResolvedValue({
-        id: 'smtp_1',
-        userId: 'user_2',
-        revokedAt: null,
-      });
+      // La base ne rend rien : le filtre { id, userId } ne matche pas.
+      findFirst.mockResolvedValue(null);
 
       await expect(service.revoke('user_1', 'smtp_1')).rejects.toMatchObject(
         new NotFoundException(SMTP_CREDENTIAL_NOT_FOUND_MESSAGE),
       );
 
+      // E7 : la propriété est demandée à la base, pas vérifiée après coup.
+      expect(findFirst).toHaveBeenCalledWith({
+        where: { id: 'smtp_1', userId: 'user_1' },
+        select: { id: true, revokedAt: true },
+      });
       expect(update).not.toHaveBeenCalled();
     });
 
     it('sets revokedAt on an active credential', async () => {
-      findUnique.mockResolvedValue({
+      findFirst.mockResolvedValue({
         id: 'smtp_1',
         userId: 'user_1',
         revokedAt: null,
@@ -195,7 +206,7 @@ describe('SmtpCredentialsService', () => {
     });
 
     it('is idempotent when the credential is already revoked', async () => {
-      findUnique.mockResolvedValue({
+      findFirst.mockResolvedValue({
         id: 'smtp_1',
         userId: 'user_1',
         revokedAt: new Date('2026-01-01T00:00:00.000Z'),
@@ -209,7 +220,7 @@ describe('SmtpCredentialsService', () => {
 
   describe('purge', () => {
     it('throws 404 when the credential does not exist', async () => {
-      findUnique.mockResolvedValue(null);
+      findFirst.mockResolvedValue(null);
 
       await expect(
         service.purge('user_1', 'smtp_missing'),
@@ -221,21 +232,21 @@ describe('SmtpCredentialsService', () => {
     });
 
     it('throws 404 when the credential belongs to another user', async () => {
-      findUnique.mockResolvedValue({
-        id: 'smtp_1',
-        userId: 'user_2',
-        revokedAt: new Date('2026-01-01T00:00:00.000Z'),
-      });
+      findFirst.mockResolvedValue(null);
 
       await expect(service.purge('user_1', 'smtp_1')).rejects.toMatchObject(
         new NotFoundException(SMTP_CREDENTIAL_NOT_FOUND_MESSAGE),
       );
 
+      expect(findFirst).toHaveBeenCalledWith({
+        where: { id: 'smtp_1', userId: 'user_1' },
+        select: { id: true, revokedAt: true },
+      });
       expect(deleteFn).not.toHaveBeenCalled();
     });
 
     it('refuses to delete an active credential (409)', async () => {
-      findUnique.mockResolvedValue({
+      findFirst.mockResolvedValue({
         id: 'smtp_1',
         userId: 'user_1',
         revokedAt: null,
@@ -249,7 +260,7 @@ describe('SmtpCredentialsService', () => {
     });
 
     it('deletes a revoked credential', async () => {
-      findUnique.mockResolvedValue({
+      findFirst.mockResolvedValue({
         id: 'smtp_1',
         userId: 'user_1',
         revokedAt: new Date('2026-01-01T00:00:00.000Z'),
@@ -272,7 +283,7 @@ describe('SmtpCredentialsService', () => {
     };
 
     it('throws 404 when the credential does not exist', async () => {
-      findUnique.mockResolvedValue(null);
+      findFirst.mockResolvedValue(null);
 
       await expect(
         service.rotate('user_1', 'smtp_missing'),
@@ -284,20 +295,27 @@ describe('SmtpCredentialsService', () => {
     });
 
     it('throws 404 when the credential belongs to another user', async () => {
-      findUnique.mockResolvedValue({
-        ...rotatableCredential,
-        userId: 'user_2',
-      });
+      findFirst.mockResolvedValue(null);
 
       await expect(service.rotate('user_1', 'smtp_1')).rejects.toMatchObject(
         new NotFoundException(SMTP_CREDENTIAL_NOT_FOUND_MESSAGE),
       );
 
+      expect(findFirst).toHaveBeenCalledWith({
+        where: { id: 'smtp_1', userId: 'user_1' },
+        select: {
+          id: true,
+          name: true,
+          username: true,
+          createdAt: true,
+          revokedAt: true,
+        },
+      });
       expect(update).not.toHaveBeenCalled();
     });
 
     it('refuses to rotate a revoked credential', async () => {
-      findUnique.mockResolvedValue({
+      findFirst.mockResolvedValue({
         ...rotatableCredential,
         revokedAt: new Date('2026-01-01T00:00:00.000Z'),
       });
@@ -310,7 +328,7 @@ describe('SmtpCredentialsService', () => {
     });
 
     it('regenerates prefix/secretHash in a single write, keeping id/name/username/createdAt — cutting the old secret immediately', async () => {
-      findUnique.mockResolvedValue(rotatableCredential);
+      findFirst.mockResolvedValue(rotatableCredential);
 
       const result = await service.rotate('user_1', 'smtp_1');
 
@@ -334,5 +352,69 @@ describe('SmtpCredentialsService', () => {
       expect(capturedUpdateArgs!.data.secretHash).not.toBe(result.password);
       expect(result.rotatedAt).toBeInstanceOf(Date);
     });
+  });
+});
+
+/** E3 - la colonne `secretHash` reçoit l'empreinte poivrée, comme `keyHash`. */
+describe('SmtpCredentialsService - empreinte poivrée persistée (E3)', () => {
+  const PEPPER = 'p'.repeat(64);
+
+  let service: SmtpCredentialsService;
+  let captured: { data: { secretHash: string; prefix: string } } | undefined;
+
+  const create = jest.fn(
+    (args: {
+      data: { secretHash: string; prefix: string; username: string };
+    }) => {
+      captured = args;
+      return Promise.resolve({
+        id: 'smtp_1',
+        name: 'WordPress boutique',
+        username: args.data.username,
+        prefix: args.data.prefix,
+        createdAt: new Date('2026-01-01T00:00:00.000Z'),
+      });
+    },
+  );
+
+  beforeEach(async () => {
+    jest.clearAllMocks();
+    captured = undefined;
+
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [
+        SmtpCredentialsService,
+        SecretHashingService,
+        {
+          provide: ConfigService,
+          useValue: {
+            get: (key: string) =>
+              key === 'API_KEY_PEPPER' ? PEPPER : undefined,
+          },
+        },
+        { provide: PrismaService, useValue: { smtpCredential: { create } } },
+      ],
+    }).compile();
+
+    service = module.get<SmtpCredentialsService>(SmtpCredentialsService);
+  });
+
+  it('stocke le HMAC poivré du mot de passe, jamais son SHA-256 nu', async () => {
+    const result = await service.create('user_1', { name: 'WordPress' });
+
+    expect(captured?.data.secretHash).toBe(
+      createHmac('sha256', PEPPER).update(result.password).digest('hex'),
+    );
+    expect(captured?.data.secretHash).not.toBe(
+      createHash('sha256').update(result.password).digest('hex'),
+    );
+  });
+
+  it('rend un mot de passe zd_smtp_ + 43 caractères, préfixe affiché de 12', async () => {
+    const result = await service.create('user_1', { name: 'WordPress' });
+
+    expect(result.password).toMatch(/^zd_smtp_[A-Za-z0-9]{43}$/);
+    expect(result.prefix).toBe(result.password.slice(0, 12));
+    expect(result.prefix).toHaveLength(12);
   });
 });

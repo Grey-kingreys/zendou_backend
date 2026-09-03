@@ -7,14 +7,17 @@ import {
 } from './api-key.utils';
 
 describe('generateApiKey', () => {
-  it('produces a key in the zd_live_ + 40 base62 chars format', () => {
+  // E3 : 43 caractères base62 = 43 x log2(62) ~ 256 bits d'aléatoire, les 32
+  // octets exigés. 40 n'en donnaient que 238.
+  it('produces a key in the zd_live_ + 43 base62 chars format', () => {
     const { key } = generateApiKey();
 
     expect(key.startsWith(API_KEY_PREFIX)).toBe(true);
-    expect(key).toHaveLength(API_KEY_PREFIX.length + 40);
-    expect(key.slice(API_KEY_PREFIX.length)).toMatch(/^[A-Za-z0-9]{40}$/);
+    expect(key).toHaveLength(API_KEY_PREFIX.length + 43);
+    expect(key.slice(API_KEY_PREFIX.length)).toMatch(/^[A-Za-z0-9]{43}$/);
   });
 
+  // Le préfixe affiché ne bouge pas : la clé s'allonge, pas ce qu'on en montre.
   it('derives the prefix from the first 12 characters of the key', () => {
     const { key, prefix } = generateApiKey();
 

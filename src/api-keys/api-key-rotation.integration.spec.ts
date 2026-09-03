@@ -7,6 +7,7 @@ import { AuthUser } from '../auth';
 import { ApiKeyAuthGuard } from './api-key-auth.guard';
 import { ApiKeysService } from './api-keys.service';
 import { ApiKeyAuthenticatedRequest } from './api-keys.types';
+import { SecretHashingService } from './secret-hashing.service';
 
 /**
  * Ligne stockée par le double de `PrismaService.apiKey` ci-dessous.
@@ -90,6 +91,29 @@ class FakeApiKeyStore {
     },
   );
 
+  /**
+   * E7 : c'est par là que passent désormais `revoke`, `purge` et `rotate` -
+   * avec le filtre de propriété dans la requête. Le double l'applique, comme
+   * PostgreSQL le ferait.
+   */
+  findFirst = jest.fn(
+    ({
+      where,
+      select,
+    }: {
+      where: { id?: string; userId?: string };
+      select: Record<string, boolean>;
+    }) => {
+      const row = [...this.rows.values()].find(
+        (candidate) =>
+          (where.id === undefined || candidate.id === where.id) &&
+          (where.userId === undefined || candidate.userId === where.userId),
+      );
+
+      return Promise.resolve(row ? this.project(row, select) : null);
+    },
+  );
+
   update = jest.fn(
     ({ where, data }: { where: { id: string }; data: Partial<Row> }) => {
       const row = this.rows.get(where.id);
@@ -154,6 +178,7 @@ describe('Rotation de clé API — chemin d’authentification réel', () => {
         // TEST_EMAIL_FROM non configurée : `resolveTestSenderAddress` doit
         // renvoyer `null` (voir `owner.testSenderAddress` ci-dessus).
         { provide: ConfigService, useValue: { get: jest.fn() } },
+        SecretHashingService,
       ],
     }).compile();
 

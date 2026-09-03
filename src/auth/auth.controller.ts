@@ -4,6 +4,7 @@ import {
   Get,
   HttpCode,
   HttpStatus,
+  Logger,
   Patch,
   Post,
   Req,
@@ -37,9 +38,23 @@ import {
 } from './session-cookie';
 import { SessionService } from './session.service';
 
+/**
+ * Avertissement de démarrage quand le cookie de session reste hôte-seul en
+ * production : le proxy Next de `zendou.app` n'a alors aucun moyen de le lire.
+ */
+export const SESSION_COOKIE_DOMAIN_MISSING_WARNING =
+  'SESSION_COOKIE_DOMAIN absente : le proxy du frontend ne pourra pas lire le cookie de session';
+
 @Controller('auth')
 export class AuthController {
+  private readonly logger = new Logger(AuthController.name);
   private readonly isProduction: boolean;
+  /**
+   * Valeur de `SESSION_COOKIE_DOMAIN`, lue **une seule fois** : la
+   * configuration ne change pas en cours de vie du processus, et chaque route
+   * qui pose ou efface le cookie doit utiliser exactement la même valeur.
+   */
+  private readonly cookieDomain: string | undefined;
 
   constructor(
     private readonly authService: AuthService,
@@ -48,6 +63,36 @@ export class AuthController {
     configService: ConfigService,
   ) {
     this.isProduction = configService.get<string>('NODE_ENV') === 'production';
+    this.cookieDomain = configService.get<string>('SESSION_COOKIE_DOMAIN');
+
+    if (this.isProduction && !this.cookieDomain) {
+      this.logger.warn(SESSION_COOKIE_DOMAIN_MISSING_WARNING);
+    }
+  }
+
+  /**
+   * Efface le cookie de session sous **les deux** formes possibles.
+   *
+   * Un cookie posé avant l'arrivée de `SESSION_COOKIE_DOMAIN` est un cookie
+   * hôte-seul (sans attribut `Domain`) ; celui posé depuis en porte un. Pour
+   * le navigateur ce sont deux cookies distincts, et un `Set-Cookie`
+   * d'effacement ne supprime que celui dont les attributs correspondent. Sans
+   * ce double effacement, les sessions ouvertes avant le déploiement
+   * survivraient à la déconnexion - un cookie que l'utilisateur croit détruit
+   * et qui reste dans son navigateur.
+   */
+  private clearSessionCookie(response: Response): void {
+    response.clearCookie(
+      SESSION_COOKIE_NAME,
+      baseSessionCookieOptions(this.isProduction, this.cookieDomain),
+    );
+
+    if (this.cookieDomain) {
+      response.clearCookie(
+        SESSION_COOKIE_NAME,
+        baseSessionCookieOptions(this.isProduction),
+      );
+    }
   }
 
   // Route non authentifiée : comptée par IP (et par adresse visée), jamais
@@ -67,7 +112,7 @@ export class AuthController {
     response.cookie(
       SESSION_COOKIE_NAME,
       token,
-      sessionCookieOptions(this.isProduction),
+      sessionCookieOptions(this.isProduction, this.cookieDomain),
     );
     return user;
   }
@@ -87,7 +132,7 @@ export class AuthController {
     response.cookie(
       SESSION_COOKIE_NAME,
       token,
-      sessionCookieOptions(this.isProduction),
+      sessionCookieOptions(this.isProduction, this.cookieDomain),
     );
     return user;
   }
@@ -104,10 +149,7 @@ export class AuthController {
       await this.sessionService.destroy(token);
     }
 
-    response.clearCookie(
-      SESSION_COOKIE_NAME,
-      baseSessionCookieOptions(this.isProduction),
-    );
+    this.clearSessionCookie(response);
   }
 
   /**
@@ -174,9 +216,6 @@ export class AuthController {
     // d'être révoquées côté Redis : on efface aussi le cookie du navigateur
     // courant pour rester cohérent. Le client devra se reconnecter avec le
     // nouveau mot de passe.
-    response.clearCookie(
-      SESSION_COOKIE_NAME,
-      baseSessionCookieOptions(this.isProduction),
-    );
+    this.clearSessionCookie(response);
   }
 }
