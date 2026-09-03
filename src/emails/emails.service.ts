@@ -1,4 +1,5 @@
 import { randomBytes } from 'node:crypto';
+import { STATUS_CODES } from 'node:http';
 import {
   BadRequestException,
   ForbiddenException,
@@ -33,9 +34,11 @@ import {
   EMAIL_SEND_JOB,
   INSUFFICIENT_CREDITS_MESSAGE,
   INVALID_FROM_MESSAGE,
+  INVALID_REPLY_TO_MESSAGE,
   INVALID_TO_MESSAGE,
   MAX_BODY_BYTES,
   MISSING_BODY_MESSAGE,
+  REPLY_TO_NOT_VERIFIED_MESSAGE,
   SEND_JOB_ATTEMPTS,
   SEND_JOB_BACKOFF_DELAY_MS,
   SEND_REFUSAL,
@@ -94,6 +97,9 @@ export class EmailsService {
       from: dto.from,
       to: dto.to,
       subject: dto.subject,
+      // L'API n'accepte qu'une adresse de réponse ; `accept()` en prend une
+      // liste parce que le relais SMTP peut en présenter plusieurs.
+      replyTo: dto.replyTo === undefined ? undefined : [dto.replyTo],
       content: { kind: 'simple', html: dto.html, text: dto.text },
       channel: 'API',
     });
@@ -128,6 +134,7 @@ export class EmailsService {
       from: input.from,
       to: input.to,
       subject: input.subject,
+      replyTo: input.replyTo,
       content: { kind: 'raw', raw: input.raw },
       channel: 'SMTP',
       smtpCredentialId: input.smtpCredentialId,
@@ -165,7 +172,9 @@ export class EmailsService {
     if (!parsed) {
       throw refuse(
         SEND_REFUSAL.INVALID_FROM,
-        new BadRequestException(INVALID_FROM_MESSAGE),
+        HttpStatus.BAD_REQUEST,
+        INVALID_FROM_MESSAGE,
+        (body) => new BadRequestException(body),
       );
     }
 
@@ -245,7 +254,9 @@ export class EmailsService {
     if (!from) {
       throw refuse(
         SEND_REFUSAL.INVALID_FROM,
-        new BadRequestException(INVALID_FROM_MESSAGE),
+        HttpStatus.BAD_REQUEST,
+        INVALID_FROM_MESSAGE,
+        (body) => new BadRequestException(body),
       );
     }
 
@@ -255,7 +266,9 @@ export class EmailsService {
     if (!toAddress) {
       throw refuse(
         SEND_REFUSAL.INVALID_TO,
-        new BadRequestException(INVALID_TO_MESSAGE),
+        HttpStatus.BAD_REQUEST,
+        INVALID_TO_MESSAGE,
+        (body) => new BadRequestException(body),
       );
     }
 
@@ -277,14 +290,18 @@ export class EmailsService {
       if (!html && !text) {
         throw refuse(
           SEND_REFUSAL.MISSING_BODY,
-          new BadRequestException(MISSING_BODY_MESSAGE),
+          HttpStatus.BAD_REQUEST,
+          MISSING_BODY_MESSAGE,
+          (body) => new BadRequestException(body),
         );
       }
 
       if (exceedsMaxBody(html) || exceedsMaxBody(text)) {
         throw refuse(
           SEND_REFUSAL.BODY_TOO_LARGE,
-          new BadRequestException(BODY_TOO_LARGE_MESSAGE),
+          HttpStatus.BAD_REQUEST,
+          BODY_TOO_LARGE_MESSAGE,
+          (body) => new BadRequestException(body),
         );
       }
     }
@@ -307,6 +324,17 @@ export class EmailsService {
     } else {
       domainId = await this.requireVerifiedDomain(userId, from.domain);
     }
+
+    // Adresse(s) de réponse : **exactement la règle du `From:`**, y compris en
+    // mode bac à sable - un client sans domaine vérifié ne peut pas poser de
+    // reply-to. Sans cela, l'usurpation d'expéditeur reste ouverte par la
+    // bande : on expédie depuis un domaine qu'on possède, et la conversation
+    // atterrit chez un tiers, sous la signature DKIM de Zendou.
+    //
+    // Placé ici, avant la liste de suppression et avant tout débit : un refus
+    // ne laisse ni ligne `Email`, ni `CreditEntry`, ni job.
+    const replyTo = await this.requireVerifiedReplyTo(userId, input.replyTo);
+
     const fromAddress = formatEmailAddress(from);
     const common = {
       userId,
@@ -390,7 +418,15 @@ export class EmailsService {
             kind: 'raw',
             raw: toRawString(input.content.raw),
           }
-        : { emailId: email.id, html, text },
+        : {
+            emailId: email.id,
+            html,
+            text,
+            // Ajouté seulement s'il y en a une : la charge utile d'un envoi
+            // sans reply-to reste **exactement** celle d'avant, comme pour
+            // `kind` (rien à migrer au redéploiement).
+            ...(replyTo.length > 0 ? { replyTo: replyTo[0] } : {}),
+          },
       {
         // L'identifiant public sert de clé d'idempotence côté file.
         jobId: email.publicId,
@@ -553,7 +589,9 @@ export class EmailsService {
     if (account?.status === UserStatus.SUSPENDED) {
       throw refuse(
         SEND_REFUSAL.ACCOUNT_SUSPENDED,
-        new ForbiddenException(ACCOUNT_SUSPENDED_MESSAGE),
+        HttpStatus.FORBIDDEN,
+        ACCOUNT_SUSPENDED_MESSAGE,
+        (body) => new ForbiddenException(body),
       );
     }
 
@@ -568,19 +606,41 @@ export class EmailsService {
     if (account && !isEmailConfirmed(account.emailVerifiedAt)) {
       throw refuse(
         SEND_REFUSAL.EMAIL_NOT_VERIFIED,
-        new ForbiddenException(EMAIL_NOT_VERIFIED_MESSAGE),
+        HttpStatus.FORBIDDEN,
+        EMAIL_NOT_VERIFIED_MESSAGE,
+        (body) => new ForbiddenException(body),
       );
     }
   }
 
   /**
-   * Vérifie que le domaine de l'expéditeur appartient au client et qu'il
-   * est vérifié. Un domaine appartenant à un tiers donne la même réponse
-   * qu'un domaine inconnu : pas d'oracle sur les domaines des autres.
+   * Vérifie que le domaine appartient au client et qu'il est vérifié. Un
+   * domaine appartenant à un tiers donne la même réponse qu'un domaine
+   * inconnu : pas d'oracle sur les domaines des autres.
+   *
+   * L'égalité du nom est **stricte** : `mail.exemple.gn` n'est pas
+   * `exemple.gn`. Un sous-domaine est un domaine à part entière, qu'il faut
+   * ajouter et vérifier séparément - sans quoi vérifier `exemple.gn`
+   * ouvrirait l'expédition depuis n'importe quel sous-domaine, y compris ceux
+   * que le client ne contrôle pas (hébergement mutualisé, sous-domaine
+   * délégué).
+   *
+   * Deux appelants, deux refus : l'expéditeur (`from`, motif par défaut) et
+   * l'adresse de réponse (`replyTo`, motif passé par
+   * {@link requireVerifiedReplyTo}). La **règle** est la même - une seule
+   * requête, un seul filtre - seul le motif rendu au client change, pour qu'il
+   * sache laquelle des deux adresses corriger.
    */
   private async requireVerifiedDomain(
     userId: string,
     name: string,
+    refusal: {
+      reason: SendRefusalReason;
+      message: string;
+    } = {
+      reason: SEND_REFUSAL.DOMAIN_NOT_VERIFIED,
+      message: DOMAIN_NOT_VERIFIED_MESSAGE,
+    },
   ): Promise<string> {
     const domain = await this.prisma.domain.findFirst({
       where: { name, userId, status: DomainStatus.VERIFIED },
@@ -589,12 +649,64 @@ export class EmailsService {
 
     if (!domain) {
       throw refuse(
-        SEND_REFUSAL.DOMAIN_NOT_VERIFIED,
-        new ForbiddenException(DOMAIN_NOT_VERIFIED_MESSAGE),
+        refusal.reason,
+        HttpStatus.FORBIDDEN,
+        refusal.message,
+        (body) => new ForbiddenException(body),
       );
     }
 
     return domain.id;
+  }
+
+  /**
+   * Valide les adresses de réponse demandées et rend leur forme normalisée.
+   *
+   * Deux contrôles par adresse, dans l'ordre, et **la première qui échoue
+   * refuse tout l'envoi** - on ne réécrit ni ne retire aucun en-tête, on
+   * refuse : corriger le message d'un client à sa place, c'est lui livrer
+   * autre chose que ce qu'il a écrit.
+   *
+   * 1. analysable par le validateur maison (le même que pour `from`), sinon
+   *    400 `INVALID_REPLY_TO` ;
+   * 2. domaine vérifié **et rattaché au compte**, sinon 403
+   *    `REPLY_TO_NOT_VERIFIED` - la requête est celle de
+   *    {@link requireVerifiedDomain}, motif et message en propre : le client
+   *    doit savoir laquelle des deux adresses pose problème.
+   *
+   * La règle vaut aussi en mode bac à sable : `TEST_EMAIL_FROM` exempte du
+   * domaine vérifié **l'expéditeur**, en échange d'une restriction stricte du
+   * destinataire. Étendre l'exemption au reply-to rendrait cette contrepartie
+   * inopérante - le client s'écrirait à lui-même, mais toute réponse partirait
+   * vers l'adresse de son choix, sur un domaine qui n'est pas le sien.
+   */
+  private async requireVerifiedReplyTo(
+    userId: string,
+    requested: string[] | undefined,
+  ): Promise<string[]> {
+    const normalized: string[] = [];
+
+    for (const raw of requested ?? []) {
+      const parsed = parseEmailAddress(raw);
+
+      if (!parsed) {
+        throw refuse(
+          SEND_REFUSAL.INVALID_REPLY_TO,
+          HttpStatus.BAD_REQUEST,
+          INVALID_REPLY_TO_MESSAGE,
+          (body) => new BadRequestException(body),
+        );
+      }
+
+      await this.requireVerifiedDomain(userId, parsed.domain, {
+        reason: SEND_REFUSAL.REPLY_TO_NOT_VERIFIED,
+        message: REPLY_TO_NOT_VERIFIED_MESSAGE,
+      });
+
+      normalized.push(formatEmailAddress(parsed));
+    }
+
+    return normalized;
   }
 
   /**
@@ -646,7 +758,9 @@ export class EmailsService {
       );
       throw refuse(
         SEND_REFUSAL.TEST_SENDER_UNAVAILABLE,
-        new ServiceUnavailableException(TEST_SENDER_UNAVAILABLE_MESSAGE),
+        HttpStatus.SERVICE_UNAVAILABLE,
+        TEST_SENDER_UNAVAILABLE_MESSAGE,
+        (body) => new ServiceUnavailableException(body),
       );
     }
   }
@@ -688,7 +802,9 @@ export class EmailsService {
     if (!ownAddress || ownAddress !== toAddress) {
       throw refuse(
         SEND_REFUSAL.TEST_SENDER_RECIPIENT_RESTRICTED,
-        new ForbiddenException(TEST_SENDER_RECIPIENT_RESTRICTED_MESSAGE),
+        HttpStatus.FORBIDDEN,
+        TEST_SENDER_RECIPIENT_RESTRICTED_MESSAGE,
+        (body) => new ForbiddenException(body),
       );
     }
 
@@ -717,10 +833,9 @@ export class EmailsService {
     if ((_sum.delta ?? 0) < CREDITS_PER_EMAIL * messages) {
       throw refuse(
         SEND_REFUSAL.INSUFFICIENT_CREDITS,
-        new HttpException(
-          INSUFFICIENT_CREDITS_MESSAGE,
-          HttpStatus.PAYMENT_REQUIRED,
-        ),
+        HttpStatus.PAYMENT_REQUIRED,
+        INSUFFICIENT_CREDITS_MESSAGE,
+        (body) => new HttpException(body, HttpStatus.PAYMENT_REQUIRED),
       );
     }
   }
@@ -757,10 +872,16 @@ export class EmailsService {
     if (user && today + messages > user.dailySendLimit) {
       throw refuse(
         SEND_REFUSAL.DAILY_LIMIT_REACHED,
-        new HttpException(
-          DAILY_LIMIT_REACHED_MESSAGE,
-          HttpStatus.TOO_MANY_REQUESTS,
-        ),
+        HttpStatus.TOO_MANY_REQUESTS,
+        DAILY_LIMIT_REACHED_MESSAGE,
+        (body) => new HttpException(body, HttpStatus.TOO_MANY_REQUESTS),
+        // Le seul refus dont l'attente est **connue** : le quota se remet à
+        // zéro au prochain début de journée de la fenêtre de comptage (minuit
+        // UTC, voir `startOfUtcDay` - c'est ce même repère que compte
+        // `email.count` ci-dessus, les deux ne doivent jamais diverger). Le
+        // filtre global en fait l'en-tête `Retry-After`, pour que le client
+        // patiente au lieu de marteler.
+        { retryAfter: secondsUntilNextUtcDay(new Date()) },
       );
     }
   }
@@ -772,18 +893,59 @@ interface SendRefusalCarrier {
 }
 
 /**
- * Marque une exception de refus avec son motif, et la renvoie pour être levée.
+ * Corps HTTP d'un refus du point d'acceptation.
  *
- * L'exception elle-même est celle d'avant — même classe, même statut, même
- * message : le contrat HTTP est intact, `instanceof ForbiddenException` tient
- * toujours. Le motif est posé en propriété non énumérable sous une clé
- * symbole, donc invisible d'une sérialisation ou d'une comparaison
- * structurelle.
+ * `code` est le motif `SEND_REFUSAL` lui-même : c'est le discriminant **stable**
+ * qu'un client de l'API doit lire. Quatre motifs partagent le 403 et le message
+ * français peut être reformulé à tout moment ; le code, lui, ne bouge pas.
+ *
+ * `statusCode`, `error` et `message` reprennent exactement les trois champs que
+ * Nest écrivait déjà pour ces exceptions : le corps ne perd rien, il gagne une
+ * clé.
+ */
+export interface SendRefusalBody extends Record<string, unknown> {
+  statusCode: number;
+  /** Libellé standard du statut (« Forbidden », « Too Many Requests »…). */
+  error: string;
+  message: string;
+  code: SendRefusalReason;
+}
+
+/**
+ * Construit une exception de refus : corps normalisé porteur du `code`, et
+ * motif symbolique posé sur l'exception.
+ *
+ * La **classe**, le **statut** et le **message** restent ceux d'avant - le
+ * contrat de `POST /v1/emails` ne bouge pas, `instanceof ForbiddenException`
+ * tient toujours, et `error.message` rend la même phrase (Nest reprend le champ
+ * `message` d'un corps objet). Ce qui s'ajoute :
+ *
+ * - `code` dans le corps HTTP, recopié tel quel par le filtre global
+ *   (`AllExceptionsFilter`, qui repart d'une copie du corps d'origine) ;
+ * - `extra`, pour ce qu'un refus particulier sait en plus - aujourd'hui le
+ *   `retryAfter` du quota journalier, dont le filtre fait un en-tête ;
+ * - le motif en propriété **non énumérable** sous une clé symbole, invisible
+ *   d'une sérialisation ou d'une comparaison structurelle, que lit le relais
+ *   SMTP (`sendRefusalReason` → `smtpReplyForError`).
+ *
+ * L'exception est construite par `build` plutôt qu'ici : c'est ce qui garde le
+ * choix de la classe au point de refus, là où il se lit.
  */
 function refuse<E extends HttpException>(
   reason: SendRefusalReason,
-  exception: E,
+  status: HttpStatus,
+  message: string,
+  build: (body: SendRefusalBody) => E,
+  extra?: Record<string, unknown>,
 ): E {
+  const exception = build({
+    statusCode: status,
+    error: STATUS_CODES[status] ?? INTERNAL_ERROR_LABEL,
+    message,
+    code: reason,
+    ...extra,
+  });
+
   Object.defineProperty(exception, SEND_REFUSAL_REASON, {
     value: reason,
     enumerable: false,
@@ -791,6 +953,13 @@ function refuse<E extends HttpException>(
 
   return exception;
 }
+
+/**
+ * Repli du libellé de statut : `http.STATUS_CODES` est le registre IANA tel que
+ * Node le livre, et couvre tous les statuts utilisés ici. La branche n'existe
+ * que pour le typage.
+ */
+const INTERNAL_ERROR_LABEL = 'Error';
 
 /**
  * Motif de refus porté par une exception du point d'acceptation, `null` si
@@ -811,6 +980,24 @@ export function sendRefusalReason(error: unknown): SendRefusalReason | null {
 /** Identifiant public d'un email : `e_` suivi de 12 caractères hex. */
 export function generateEmailPublicId(): string {
   return `${EMAIL_PUBLIC_ID_PREFIX}${randomBytes(EMAIL_PUBLIC_ID_BYTES).toString('hex')}`;
+}
+
+/** Durée d'une journée, en millisecondes. */
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Secondes restant jusqu'au **prochain début de journée de la fenêtre du quota
+ * journalier**, c'est-à-dire le prochain minuit UTC : le quota compte les
+ * emails créés depuis `startOfUtcDay` (voir `assertDailyLimitNotReached`), donc
+ * c'est à ce repère-là, et à aucun autre, qu'il se libère.
+ *
+ * Arrondi **au plafond** et jamais inférieur à 1 : un `Retry-After: 0` invite à
+ * réessayer immédiatement, sur un quota qui n'est pas encore remis à zéro.
+ */
+export function secondsUntilNextUtcDay(reference: Date): number {
+  const nextDay = startOfUtcDay(reference).getTime() + DAY_MS;
+
+  return Math.max(1, Math.ceil((nextDay - reference.getTime()) / 1000));
 }
 
 /** Minuit UTC du jour de `reference`. */

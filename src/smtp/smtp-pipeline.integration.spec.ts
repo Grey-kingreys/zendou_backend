@@ -28,6 +28,8 @@ import {
   SMTP_REPLY_DOMAIN_NOT_VERIFIED,
   SMTP_REPLY_INSUFFICIENT_CREDITS,
   SMTP_REPLY_MIME_INVALID,
+  SMTP_REPLY_REPLY_TO_NOT_VERIFIED,
+  SMTP_REPLY_REPLY_TO_UNREADABLE,
   SMTP_REPLY_SIZE_EXCEEDED,
   SMTP_REPLY_TOO_MANY_RECIPIENTS,
   SMTP_REPLY_ACCOUNT_SUSPENDED,
@@ -960,6 +962,127 @@ describe('Relais SMTP — pipeline de bout en bout (B6/S7)', () => {
     });
 
     expect(relay.store.emails[0].fromAddress).toBe(CLIENT_FROM);
+  });
+
+  // ─── (f) Reply-To : la règle du From, appliquée à l'adresse de réponse ──
+  describe('(f) l’en-tête Reply-To subit la règle du domaine vérifié (E1)', () => {
+    it('refuse en 550 5.7.1 un Reply-To sur le domaine d’un tiers, sans créer de ligne ni débiter', async () => {
+      const result = await send(relay.port, {
+        // Tout le reste est irréprochable : enveloppe et `From:` sur le
+        // domaine vérifié du client. Seule l'adresse de réponse détourne la
+        // conversation vers un domaine qui n'est pas le sien.
+        to: 'client@exemple.gn',
+        raw: mime(
+          [
+            `From: ${CLIENT_FROM}`,
+            'Reply-To: pirate@autre-domaine.gn',
+            'Subject: Détournement des réponses',
+          ],
+          'Ce message ne doit jamais partir.',
+        ),
+      });
+
+      expect(result.error?.responseCode).toBe(
+        SMTP_REPLY_REPLY_TO_NOT_VERIFIED.code,
+      );
+      expect(result.error?.responseCode).toBe(550);
+      expect(relay.store.emails).toHaveLength(0);
+      expect(relay.store.sendDebits).toHaveLength(0);
+      expect(relay.queue.add).not.toHaveBeenCalled();
+    });
+
+    it('accepte un Reply-To sur un domaine vérifié du compte', async () => {
+      const result = await send(relay.port, {
+        to: 'client@exemple.gn',
+        raw: mime(
+          [
+            `From: ${CLIENT_FROM}`,
+            `Reply-To: Service client <sav@${CLIENT_DOMAIN}>`,
+            'Subject: Votre commande',
+          ],
+          'Bonjour.',
+        ),
+      });
+
+      expect(result.error).toBeUndefined();
+      expect(relay.store.emails).toHaveLength(1);
+      expect(relay.store.sendDebits).toHaveLength(1);
+    });
+
+    it('n’en réécrit ni n’en retire aucun : les octets transmis portent toujours le Reply-To accepté', async () => {
+      await send(relay.port, {
+        to: 'client@exemple.gn',
+        raw: mime(
+          [
+            `From: ${CLIENT_FROM}`,
+            `Reply-To: sav@${CLIENT_DOMAIN}`,
+            'Subject: Votre commande',
+          ],
+          'Bonjour.',
+        ),
+      });
+
+      const job = onlyJob() as { raw: string };
+      expect(job.raw).toContain(`Reply-To: sav@${CLIENT_DOMAIN}`);
+    });
+
+    it('refuse tout le message dès la première adresse fautive d’un Reply-To qui en porte plusieurs', async () => {
+      const result = await send(relay.port, {
+        to: 'client@exemple.gn',
+        raw: mime(
+          [
+            `From: ${CLIENT_FROM}`,
+            `Reply-To: sav@${CLIENT_DOMAIN}, pirate@autre-domaine.gn`,
+            'Subject: Une bonne, une mauvaise',
+          ],
+          'Bonjour.',
+        ),
+      });
+
+      expect(result.error?.responseCode).toBe(550);
+      expect(relay.store.emails).toHaveLength(0);
+      expect(relay.store.sendDebits).toHaveLength(0);
+    });
+
+    it('refuse en 501 5.1.7 un Reply-To illisible', async () => {
+      const result = await send(relay.port, {
+        to: 'client@exemple.gn',
+        raw: mime(
+          [
+            `From: ${CLIENT_FROM}`,
+            'Reply-To: pas-une-adresse',
+            'Subject: Adresse de réponse illisible',
+          ],
+          'Bonjour.',
+        ),
+      });
+
+      expect(result.error?.responseCode).toBe(
+        SMTP_REPLY_REPLY_TO_UNREADABLE.code,
+      );
+      expect(result.error?.responseCode).toBe(501);
+      expect(relay.store.emails).toHaveLength(0);
+    });
+
+    it('refuse en 554 un message à deux en-têtes Reply-To (même ambiguïté que deux From)', async () => {
+      const result = await send(relay.port, {
+        to: 'client@exemple.gn',
+        raw: mime(
+          [
+            `From: ${CLIENT_FROM}`,
+            `Reply-To: sav@${CLIENT_DOMAIN}`,
+            'Reply-To: pirate@autre-domaine.gn',
+            'Subject: Deux adresses de réponse',
+          ],
+          'Bonjour.',
+        ),
+      });
+
+      expect(result.error?.responseCode).toBe(SMTP_REPLY_MIME_INVALID.code);
+      expect(result.error?.responseCode).toBe(554);
+      expect(relay.store.emails).toHaveLength(0);
+      expect(relay.store.sendDebits).toHaveLength(0);
+    });
   });
 
   // ─── Câblage de l'anti-abus (S9) ────────────────────────────────────────

@@ -334,6 +334,127 @@ describe('analyzeRawMessage — From', () => {
   });
 });
 
+/**
+ * E1 - l'en-tête `Reply-To:`, deuxième porte de l'usurpation d'expéditeur.
+ *
+ * Les messages sont assemblés ici plutôt que tirés d'une fixture partagée :
+ * ce bloc éprouve la **découpe** de l'en-tête, pas la préservation du corps,
+ * et chaque cas se lit alors en entier au même endroit.
+ */
+describe('analyzeRawMessage - Reply-To (E1)', () => {
+  /** Message minimal portant les en-têtes donnés. */
+  function messageWith(headerLines: string[]): Buffer {
+    return Buffer.from(
+      `${headerLines.map((line) => `${line}\r\n`).join('')}\r\nBonjour\r\n`,
+      'utf8',
+    );
+  }
+
+  it('rend undefined quand le message ne porte aucun Reply-To', () => {
+    expect(
+      accepted(
+        messageWith(['From: contact@boutique-awa.gn', 'Subject: Facture']),
+      ).replyTo,
+    ).toBeUndefined();
+  });
+
+  it('extrait la boîte aux lettres unique d’un Reply-To simple', () => {
+    expect(
+      accepted(
+        messageWith([
+          'From: contact@boutique-awa.gn',
+          'Reply-To: sav@boutique-awa.gn',
+        ]),
+      ).replyTo,
+    ).toEqual(['sav@boutique-awa.gn']);
+  });
+
+  /**
+   * Rendues telles quelles, sans analyse d'adresse : le point d'acceptation
+   * leur applique le validateur du `From:` et refuse explicitement ce qui est
+   * illisible. Décider ici en ferait un refus muet de plus.
+   */
+  it('rend les adresses telles que le client les a écrites, nom d’affichage compris', () => {
+    expect(
+      accepted(
+        messageWith([
+          'From: contact@boutique-awa.gn',
+          'Reply-To: "Service Client" <SAV@Boutique-Awa.GN>',
+        ]),
+      ).replyTo,
+    ).toEqual(['"Service Client" <SAV@Boutique-Awa.GN>']);
+  });
+
+  it('découpe plusieurs adresses d’un même en-tête, que la RFC 5322 autorise', () => {
+    expect(
+      accepted(
+        messageWith([
+          'From: contact@boutique-awa.gn',
+          'Reply-To: sav@boutique-awa.gn, compta@boutique-awa.gn',
+        ]),
+      ).replyTo,
+    ).toEqual(['sav@boutique-awa.gn', 'compta@boutique-awa.gn']);
+  });
+
+  it('ne découpe pas sur la virgule d’un nom d’affichage entre guillemets', () => {
+    expect(
+      accepted(
+        messageWith([
+          'From: contact@boutique-awa.gn',
+          'Reply-To: "Diallo, Awa" <sav@boutique-awa.gn>',
+        ]),
+      ).replyTo,
+    ).toEqual(['"Diallo, Awa" <sav@boutique-awa.gn>']);
+  });
+
+  it('déplie un Reply-To replié sur plusieurs lignes', () => {
+    expect(
+      accepted(
+        messageWith([
+          'From: contact@boutique-awa.gn',
+          'Reply-To: sav@boutique-awa.gn,',
+          '\tcompta@boutique-awa.gn',
+        ]),
+      ).replyTo,
+    ).toEqual(['sav@boutique-awa.gn', 'compta@boutique-awa.gn']);
+  });
+
+  /**
+   * Deux en-têtes `Reply-To:` : même refus que deux `From:`. Nous validerions
+   * le domaine de celui que nous lisons, et le destinataire pourrait répondre
+   * à l'autre - la protection serait contournée par l'ambiguïté même.
+   */
+  it('refuse deux en-têtes Reply-To, comme deux From', () => {
+    expect(
+      analyzeRawMessage(
+        messageWith([
+          'From: contact@boutique-awa.gn',
+          'Reply-To: sav@boutique-awa.gn',
+          'Reply-To: pirate@autre-domaine.gn',
+        ]),
+      ),
+    ).toEqual({ ok: false, reason: MIME_REFUSAL.MULTIPLE_REPLY_TO });
+  });
+
+  it('accepte un Reply-To vide en rendant une liste vide, jamais une adresse inventée', () => {
+    expect(
+      accepted(messageWith(['From: contact@boutique-awa.gn', 'Reply-To:']))
+        .replyTo,
+    ).toEqual([]);
+  });
+
+  it('ne réécrit pas l’en-tête : les octets transmis le portent toujours', () => {
+    const raw = messageWith([
+      'From: contact@boutique-awa.gn',
+      'Reply-To: pirate@autre-domaine.gn',
+    ]);
+
+    expect(accepted(raw).raw.toString('utf8')).toContain(
+      'Reply-To: pirate@autre-domaine.gn',
+    );
+  });
+});
+
 describe('analyzeRawMessage — réécriture des octets', () => {
   it('removes a folded Bcc and leaves the body hash-identical', () => {
     const fixture = bccWithAttachmentFixture();

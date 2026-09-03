@@ -85,3 +85,20 @@ export const RECOMPUTE_LIMIT_TTL_SECONDS = 3_600;
 
 /** Token d'injection du client Redis dédié au throttle des recalculs. */
 export const REPUTATION_REDIS = 'REPUTATION_REDIS';
+
+/**
+ * Chemin de la fiche d'un compte dans l'espace d'administration. Complété par
+ * l'identifiant du compte pour former le lien de l'alerte de suspension.
+ */
+export const ADMIN_ACCOUNT_PATH = '/admin/comptes';
+
+/**
+ * Avertissement émis quand une suspension automatique n'a personne à prévenir
+ * (ni `ALERTS_EMAIL_TO` ni `ADMIN_EMAIL`).
+ *
+ * La suspension, elle, a bien eu lieu et reste journalisée : l'alerte est un
+ * canal de notification, jamais une condition de la sanction. Même formulation
+ * d'esprit que `SMTP_CERT_ALERT_NO_RECIPIENT_MESSAGE`.
+ */
+export const SUSPENSION_ALERT_NO_RECIPIENT_MESSAGE =
+  "Suspension automatique sans destinataire d'alerte : renseignez ALERTS_EMAIL_TO (ou ADMIN_EMAIL) pour en être prévenu par email. En l'état, elle n'est que journalisée.";

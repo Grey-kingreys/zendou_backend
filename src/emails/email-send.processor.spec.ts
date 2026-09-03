@@ -108,6 +108,31 @@ describe('EmailSendProcessor', () => {
     expect(update.data.sentAt).toBeInstanceOf(Date);
   });
 
+  /**
+   * (e) L'adresse de réponse voyage dans le job comme les corps - le modèle
+   * `Email` ne la stocke pas. Le worker ne la valide pas : c'est fait, et
+   * c'est fait une seule fois, au point d'acceptation.
+   */
+  it('transmet au driver l’adresse de réponse portée par le job', async () => {
+    await processor.process(
+      jobFor({ replyTo: 'SAV Awa <sav@boutique-awa.gn>' }),
+    );
+
+    expect(driver.send).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'simple',
+        replyTo: 'SAV Awa <sav@boutique-awa.gn>',
+      }),
+    );
+  });
+
+  it('n’invente aucune adresse de réponse quand le job n’en porte pas', async () => {
+    await processor.process(jobFor());
+
+    const [payload] = driver.send.mock.calls[0] as [Record<string, unknown>];
+    expect(payload.replyTo).toBeUndefined();
+  });
+
   it('asks for a daily-limit recompute after a successful send', async () => {
     await processor.process(jobFor());
 

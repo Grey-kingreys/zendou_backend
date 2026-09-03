@@ -1,6 +1,7 @@
 import { IsNotEmpty, IsOptional, IsString, Length } from 'class-validator';
 import {
   INVALID_FROM_MESSAGE,
+  INVALID_REPLY_TO_MESSAGE,
   INVALID_TO_MESSAGE,
   SUBJECT_LENGTH_MESSAGE,
   SUBJECT_MAX_LENGTH,
@@ -19,6 +20,19 @@ export class SendEmailDto {
   @IsString({ message: INVALID_TO_MESSAGE })
   @IsNotEmpty({ message: INVALID_TO_MESSAGE })
   to!: string;
+
+  /**
+   * Adresse à laquelle les réponses doivent arriver, facultative.
+   *
+   * Soumise **à la même règle que `from`** dans `EmailsService.accept()` : son
+   * domaine doit être vérifié et rattaché au compte. Sans quoi un client
+   * pourrait expédier depuis un domaine qu'il possède et faire atterrir la
+   * conversation chez un tiers, sous une signature DKIM de Zendou.
+   */
+  @IsOptional()
+  @IsString({ message: INVALID_REPLY_TO_MESSAGE })
+  @IsNotEmpty({ message: INVALID_REPLY_TO_MESSAGE })
+  replyTo?: string;
 
   @IsString({ message: SUBJECT_LENGTH_MESSAGE })
   @Length(1, SUBJECT_MAX_LENGTH, { message: SUBJECT_LENGTH_MESSAGE })

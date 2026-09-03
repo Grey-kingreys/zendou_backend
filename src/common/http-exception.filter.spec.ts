@@ -147,6 +147,8 @@ interface ErrorBody {
   error?: unknown;
   message?: unknown;
   errors?: unknown;
+  /** Motif `SEND_REFUSAL` des refus du point d'acceptation (E1). */
+  code?: unknown;
 }
 
 function bodyOf(response: { body: unknown }): ErrorBody {
@@ -406,11 +408,16 @@ describe("Filtre d'erreur global — forme du corps, bout en bout", () => {
       Array.isArray(bodyOf(parThrow).errors),
     );
 
-    // Même phrase métier, donc même corps — champ pour champ.
+    // Même phrase métier, donc même corps - champ pour champ, au `code` près :
+    // le refus métier porte son motif `SEND_REFUSAL` (E1), le pipe n'en a
+    // aucun à nommer (il refuse une forme, pas une règle d'envoi).
     expect(viaPipe.message).toBe(INVALID_TO_MESSAGE);
     expect(viaThrow.message).toBe(INVALID_TO_MESSAGE);
     expect(viaPipe.errors).toEqual(viaThrow.errors);
-    expect(bodyOf(parPipe)).toEqual(bodyOf(parThrow));
+    expect(bodyOf(parPipe)).toEqual({
+      ...bodyOf(parThrow),
+      code: undefined,
+    });
 
     // La panne silencieuse elle-même : le client qui lisait `message[0]`
     // récupérait la phrase entière d'un côté, la lettre « L » de l'autre.

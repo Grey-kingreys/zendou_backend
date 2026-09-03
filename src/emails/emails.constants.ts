@@ -77,6 +77,22 @@ export const INVALID_FROM_MESSAGE =
 export const INVALID_TO_MESSAGE =
   "L'adresse du destinataire est invalide : indiquez une seule adresse comme « client@exemple.gn ».";
 
+/** Message renvoyé pour une adresse de réponse (reply-to) illisible. */
+export const INVALID_REPLY_TO_MESSAGE =
+  "L'adresse de réponse (reply-to) est invalide : utilisez « adresse@domaine » ou « Nom <adresse@domaine> ».";
+
+/**
+ * Message renvoyé quand l'adresse de réponse (reply-to) porte un domaine qui
+ * n'est pas un domaine vérifié du compte.
+ *
+ * Le reply-to est soumis **à la même règle que le `From:`** : sans cela, un
+ * client peut expédier depuis un domaine qu'il possède et faire atterrir les
+ * réponses - et donc la conversation - sur le domaine d'un tiers. C'est du
+ * détournement d'expéditeur, signé DKIM par Zendou.
+ */
+export const REPLY_TO_NOT_VERIFIED_MESSAGE =
+  "L'adresse de réponse (reply-to) doit utiliser un domaine vérifié de votre compte : ajoutez-le et validez ses enregistrements DNS avant d'envoyer.";
+
 /** Message renvoyé pour un sujet vide ou trop long. */
 export const SUBJECT_LENGTH_MESSAGE = `Le sujet est obligatoire et ne doit pas dépasser ${SUBJECT_MAX_LENGTH} caractères.`;
 
@@ -154,6 +170,11 @@ export const ACCOUNT_SUSPENDED_MESSAGE = 'Ce compte est suspendu';
  * Le motif est attaché à l'exception levée (`sendRefusalReason`,
  * `emails.service.ts`) : classe, statut et message des exceptions existantes
  * restent rigoureusement inchangés.
+ *
+ * Le même motif est **aussi** écrit dans le corps HTTP, sous la clé `code`
+ * (voir `refuse()`, `emails.service.ts`) : un client de l'API doit pouvoir
+ * distinguer les quatre 403 sans lire une phrase française susceptible d'être
+ * reformulée.
  */
 export const SEND_REFUSAL = {
   /** Compte suspendu par la surveillance de réputation (T12). */
@@ -164,6 +185,13 @@ export const SEND_REFUSAL = {
   INVALID_FROM: 'INVALID_FROM',
   /** Adresse de destinataire illisible. */
   INVALID_TO: 'INVALID_TO',
+  /** Adresse de réponse (reply-to) illisible. */
+  INVALID_REPLY_TO: 'INVALID_REPLY_TO',
+  /**
+   * Domaine de l'adresse de réponse absent, non vérifié, ou appartenant à un
+   * tiers - la règle du `From:`, appliquée au reply-to.
+   */
+  REPLY_TO_NOT_VERIFIED: 'REPLY_TO_NOT_VERIFIED',
   /** Ni `html` ni `text` fourni (contenu simple). */
   MISSING_BODY: 'MISSING_BODY',
   /** Un corps dépasse `MAX_BODY_BYTES` (contenu simple). */

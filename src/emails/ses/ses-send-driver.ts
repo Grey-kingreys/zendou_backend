@@ -25,6 +25,15 @@ export interface SesSendSimplePayload extends SesSendEnvelope {
   kind: 'simple';
   html?: string;
   text?: string;
+  /**
+   * Adresse de réponse, déjà validée par le point d'acceptation (domaine
+   * vérifié et possédé, comme l'expéditeur). SES en fait l'en-tête
+   * `Reply-To:` du message qu'il compose.
+   *
+   * Absente du contenu Raw, et c'est volontaire : là, l'en-tête est déjà dans
+   * les octets du client, et ces octets partent tels quels.
+   */
+  replyTo?: string;
 }
 
 /**
