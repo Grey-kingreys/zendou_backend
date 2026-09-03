@@ -1,5 +1,6 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { BadRequestException, ConflictException } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { TopUpMethod, TopUpStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { BillingService } from './billing.service';
@@ -8,6 +9,7 @@ import {
   CREDIT_REASON_TOPUP,
   CREDIT_REASON_WELCOME_BONUS,
   DUPLICATE_TRANSACTION_REF_MESSAGE,
+  INVALID_METHOD_MESSAGE,
   PACK_NOT_FOUND_MESSAGE,
   PACK_NOT_PURCHASABLE_MESSAGE,
 } from './billing.constants';
@@ -103,6 +105,7 @@ describe('BillingService', () => {
   const findFirst = jest.fn();
   const create = jest.fn();
   const topUpFindMany = jest.fn();
+  const configGet = jest.fn();
 
   const prisma = {
     creditEntry: { aggregate, findMany, count },
@@ -112,8 +115,21 @@ describe('BillingService', () => {
   beforeEach(async () => {
     jest.clearAllMocks();
 
+    // Par défaut, seule ORANGE_MONEY est configurée (le numéro compte peu,
+    // seule sa présence importe pour ces tests) : `dtoWith()` utilise cette
+    // méthode par défaut, donc les tests de `createTopUpRequest` déjà en
+    // place n'ont pas à connaître la nouvelle règle B22 pour continuer de
+    // passer.
+    configGet.mockImplementation((key: string) =>
+      key === 'MOBILE_MONEY_ORANGE_NUMBER' ? '+224 620 00 00 00' : undefined,
+    );
+
     const module: TestingModule = await Test.createTestingModule({
-      providers: [BillingService, { provide: PrismaService, useValue: prisma }],
+      providers: [
+        BillingService,
+        { provide: PrismaService, useValue: prisma },
+        { provide: ConfigService, useValue: { get: configGet } },
+      ],
     }).compile();
 
     service = module.get<BillingService>(BillingService);
@@ -348,7 +364,107 @@ describe('BillingService', () => {
     });
   });
 
+  describe('listPaymentMethods', () => {
+    it('returns both methods, in enum order, when both numbers are configured', () => {
+      configGet.mockImplementation((key: string) => {
+        if (key === 'MOBILE_MONEY_ORANGE_NUMBER') return '+224 620 00 00 00';
+        if (key === 'MOBILE_MONEY_MTN_NUMBER') return '+224 660 11 11 11';
+        return undefined;
+      });
+
+      const methods = service.listPaymentMethods();
+
+      expect(methods).toEqual([
+        {
+          method: TopUpMethod.ORANGE_MONEY,
+          label: 'Orange Money',
+          number: '+224 620 00 00 00',
+          accountName: null,
+        },
+        {
+          method: TopUpMethod.MTN_MOMO,
+          label: 'MTN MoMo',
+          number: '+224 660 11 11 11',
+          accountName: null,
+        },
+      ]);
+    });
+
+    it('returns only the configured method, and it is the right one, when a single number is set', () => {
+      configGet.mockImplementation((key: string) =>
+        key === 'MOBILE_MONEY_MTN_NUMBER' ? '+224 660 11 11 11' : undefined,
+      );
+
+      const methods = service.listPaymentMethods();
+
+      expect(methods).toHaveLength(1);
+      expect(methods[0]).toMatchObject({
+        method: TopUpMethod.MTN_MOMO,
+        label: 'MTN MoMo',
+        number: '+224 660 11 11 11',
+      });
+    });
+
+    it('returns an empty array, not an error, when nothing is configured', () => {
+      configGet.mockReturnValue(undefined);
+
+      expect(service.listPaymentMethods()).toEqual([]);
+    });
+
+    it('treats a number left blank in the environment as unconfigured', () => {
+      configGet.mockImplementation((key: string) =>
+        key === 'MOBILE_MONEY_ORANGE_NUMBER' ? '   ' : undefined,
+      );
+
+      expect(service.listPaymentMethods()).toEqual([]);
+    });
+
+    it('sets accountName to null when MOBILE_MONEY_ACCOUNT_NAME is not configured', () => {
+      configGet.mockImplementation((key: string) =>
+        key === 'MOBILE_MONEY_ORANGE_NUMBER' ? '+224 620 00 00 00' : undefined,
+      );
+
+      const methods = service.listPaymentMethods();
+
+      expect(methods[0].accountName).toBeNull();
+    });
+
+    it('reports accountName on every configured method when MOBILE_MONEY_ACCOUNT_NAME is set', () => {
+      configGet.mockImplementation((key: string) => {
+        if (key === 'MOBILE_MONEY_ORANGE_NUMBER') return '+224 620 00 00 00';
+        if (key === 'MOBILE_MONEY_ACCOUNT_NAME') return 'Zendou SARL';
+        return undefined;
+      });
+
+      const methods = service.listPaymentMethods();
+
+      expect(methods[0].accountName).toBe('Zendou SARL');
+    });
+  });
+
   describe('createTopUpRequest', () => {
+    it('refuses a method that has no configured number with a 400', async () => {
+      configGet.mockReturnValue(undefined);
+
+      await expect(
+        service.createTopUpRequest(
+          'user_1',
+          dtoWith({ method: TopUpMethod.MTN_MOMO }),
+        ),
+      ).rejects.toThrow(new BadRequestException(INVALID_METHOD_MESSAGE));
+
+      expect(create).not.toHaveBeenCalled();
+    });
+
+    it('still accepts a configured method (unchanged 201 path)', async () => {
+      findFirst.mockResolvedValue(null);
+      create.mockResolvedValue({ id: 'topup_1' });
+
+      await expect(
+        service.createTopUpRequest('user_1', dtoWith()),
+      ).resolves.toEqual({ id: 'topup_1' });
+    });
+
     it('rejects an unknown pack with a 400', async () => {
       await expect(
         service.createTopUpRequest('user_1', dtoWith({ packId: 'ghost' })),

@@ -1,7 +1,12 @@
 import { z } from 'zod';
 import { API_KEY_FAILURES_PER_MINUTE_DEFAULT } from '../api-keys/api-keys.constants';
 import { LOGIN_LOCKOUT_DEFAULTS } from '../auth/auth.constants';
-import { DEFAULT_WELCOME_CREDITS } from '../billing/billing.constants';
+import {
+  DEFAULT_WELCOME_CREDITS,
+  PHONE_ALLOWED_CHARS_REGEX,
+  PHONE_MAX_DIGITS,
+  PHONE_MIN_DIGITS,
+} from '../billing/billing.constants';
 import { parseEmailAddress } from '../emails/email-address';
 import { MAX_RAW_MESSAGE_BYTES } from '../emails/emails.constants';
 import {
@@ -176,6 +181,42 @@ const normalizeCookieDomain = (value: unknown): unknown => {
 
   return normalized === '' ? undefined : normalized;
 };
+
+/**
+ * Numéro Mobile Money Zendou (`MOBILE_MONEY_ORANGE_NUMBER`,
+ * `MOBILE_MONEY_MTN_NUMBER`, B22) : même contrainte de forme que le numéro du
+ * client dans `CreateTopUpRequestDto` - chiffres, espaces et « + »
+ * uniquement, 8 à 15 chiffres (`PHONE_ALLOWED_CHARS_REGEX`/
+ * `PHONE_MIN_DIGITS`/`PHONE_MAX_DIGITS`, `billing.constants.ts`), pas une
+ * seconde règle à tenir synchronisée. **Optionnelle** : absente, la méthode
+ * correspondante n'est simplement pas proposée
+ * (`BillingService.listPaymentMethods`) - mais présente et mal formée, elle
+ * fait échouer le démarrage plutôt que d'être affichée telle quelle à un
+ * client qui s'apprête à y envoyer de l'argent.
+ */
+const mobileMoneyNumberFromEnv = () =>
+  z.preprocess(
+    emptyToUndefined,
+    z
+      .string()
+      .trim()
+      .refine(
+        (value) => {
+          if (!PHONE_ALLOWED_CHARS_REGEX.test(value)) {
+            return false;
+          }
+
+          const digitCount = (value.match(/\d/g) ?? []).length;
+          return (
+            digitCount >= PHONE_MIN_DIGITS && digitCount <= PHONE_MAX_DIGITS
+          );
+        },
+        {
+          message: `doit être un numéro valide : chiffres, espaces et « + » uniquement, avec ${PHONE_MIN_DIGITS} à ${PHONE_MAX_DIGITS} chiffres`,
+        },
+      )
+      .optional(),
+  );
 
 const baseEnvSchema = z.object({
   NODE_ENV: z
@@ -448,6 +489,32 @@ const baseEnvSchema = z.object({
    * cahier §12. `0` désactive le bonus.
    */
   WELCOME_CREDITS: nonNegativeIntFromEnv(DEFAULT_WELCOME_CREDITS),
+
+  // ─── Mobile Money (numéros Zendou pour la recharge client, B22) ───
+
+  /**
+   * Numéro Zendou Orange Money vers lequel le client envoie sa recharge.
+   * Donnée de configuration, pas une constante de code : ce numéro dépend
+   * d'un compte marchand ouvert indépendamment d'un déploiement de code.
+   * Voir `mobileMoneyNumberFromEnv` ci-dessus pour la validation de forme.
+   */
+  MOBILE_MONEY_ORANGE_NUMBER: mobileMoneyNumberFromEnv(),
+
+  /** Numéro Zendou MTN MoMo. Mêmes règles que `MOBILE_MONEY_ORANGE_NUMBER`. */
+  MOBILE_MONEY_MTN_NUMBER: mobileMoneyNumberFromEnv(),
+
+  /**
+   * Nom du bénéficiaire affiché au client à côté du numéro configuré, pour
+   * qu'il vérifie l'identité du compte avant de valider son transfert.
+   * Partagé entre les deux méthodes ci-dessus. **Optionnel** : absent,
+   * `accountName` vaut `null` sur `GET /v1/billing/payment-methods` - aucune
+   * méthode n'est bloquée pour son absence, il ne fait que renforcer la
+   * confiance du client quand il est renseigné.
+   */
+  MOBILE_MONEY_ACCOUNT_NAME: z.preprocess(
+    emptyToUndefined,
+    z.string().trim().optional(),
+  ),
 
   // ─── Adresse d'expédition de test (bac à sable, façon Resend) ───
 

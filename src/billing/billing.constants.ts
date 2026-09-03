@@ -1,3 +1,5 @@
+import { TopUpMethod } from '@prisma/client';
+
 /** Valeur inscrite dans `CreditEntry.reason` lors d'une recharge approuvée. */
 export const CREDIT_REASON_TOPUP = 'TOPUP';
 
@@ -49,3 +51,30 @@ export const TOPUP_REQUEST_ALREADY_REVIEWED_MESSAGE =
   'Cette demande a déjà été traitée.';
 
 export const ADMIN_FORBIDDEN_MESSAGE = 'Réservé aux administrateurs.';
+
+/**
+ * Libellé affiché au client pour chaque méthode de paiement, sur
+ * `GET /v1/billing/payment-methods`. Reprend tel quel le choix déjà fait
+ * côté frontend (`frontend/src/lib/status.ts`) - pas de seconde
+ * nomenclature à tenir synchronisée.
+ */
+export const PAYMENT_METHOD_LABELS: Record<TopUpMethod, string> = {
+  [TopUpMethod.ORANGE_MONEY]: 'Orange Money',
+  [TopUpMethod.MTN_MOMO]: 'MTN MoMo',
+};
+
+/**
+ * Variable d'environnement qui porte le numéro Zendou de chaque méthode de
+ * paiement (voir `env.schema.ts`, B22). Une méthode dont la variable est
+ * absente ou vide n'est pas une méthode configurée : `BillingService` ne la
+ * propose ni sur `GET /v1/billing/payment-methods`, ni ne l'accepte sur
+ * `POST /v1/billing/topup-requests` (`INVALID_METHOD_MESSAGE`) - le client ne
+ * doit jamais pouvoir déclarer un virement vers un numéro qui n'existe pas.
+ */
+export const PAYMENT_METHOD_ENV_KEYS: Record<TopUpMethod, string> = {
+  [TopUpMethod.ORANGE_MONEY]: 'MOBILE_MONEY_ORANGE_NUMBER',
+  [TopUpMethod.MTN_MOMO]: 'MOBILE_MONEY_MTN_NUMBER',
+};
+
+/** Variable d'environnement du nom de bénéficiaire, partagée entre méthodes. */
+export const MOBILE_MONEY_ACCOUNT_NAME_ENV_KEY = 'MOBILE_MONEY_ACCOUNT_NAME';

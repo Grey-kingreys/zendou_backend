@@ -43,6 +43,19 @@ export interface RawEntriesListQuery {
   limit?: string;
 }
 
+/**
+ * Méthode de paiement configurée, exposée par
+ * `GET /v1/billing/payment-methods`. N'apparaît dans la liste que si son
+ * numéro Zendou est configuré côté serveur (`PAYMENT_METHOD_ENV_KEYS`,
+ * `billing.constants.ts`) - aucune méthode « non disponible » n'y figure.
+ */
+export interface PaymentMethodItem {
+  method: TopUpMethod;
+  label: string;
+  number: string;
+  accountName: string | null;
+}
+
 /** Demande de recharge telle qu'exposée au client qui l'a créée. */
 export interface TopUpRequestItem {
   id: string;

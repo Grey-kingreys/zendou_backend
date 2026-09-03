@@ -3,7 +3,8 @@ import {
   ConflictException,
   Injectable,
 } from '@nestjs/common';
-import { TopUpStatus } from '@prisma/client';
+import { ConfigService } from '@nestjs/config';
+import { TopUpMethod, TopUpStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { CREDIT_PACKS, findPack, type CreditPack } from './packs';
 import {
@@ -11,10 +12,14 @@ import {
   DEFAULT_LIMIT,
   DEFAULT_PAGE,
   DUPLICATE_TRANSACTION_REF_MESSAGE,
+  INVALID_METHOD_MESSAGE,
   INVALID_PHONE_MESSAGE,
   MAX_LIMIT,
+  MOBILE_MONEY_ACCOUNT_NAME_ENV_KEY,
   PACK_NOT_FOUND_MESSAGE,
   PACK_NOT_PURCHASABLE_MESSAGE,
+  PAYMENT_METHOD_ENV_KEYS,
+  PAYMENT_METHOD_LABELS,
   PHONE_ALLOWED_CHARS_REGEX,
   PHONE_MAX_DIGITS,
   PHONE_MIN_DIGITS,
@@ -24,6 +29,7 @@ import type {
   BalanceSummary,
   CreditEntryItem,
   PaginatedCreditEntries,
+  PaymentMethodItem,
   RawEntriesListQuery,
   TopUpRequestItem,
 } from './billing.types';
@@ -54,7 +60,10 @@ const TOPUP_REQUEST_SELECT = {
  */
 @Injectable()
 export class BillingService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly configService: ConfigService,
+  ) {}
 
   /**
    * Le solde et ses composantes sont dérivés du ledger, jamais stockés.
@@ -143,6 +152,38 @@ export class BillingService {
   }
 
   /**
+   * Méthodes de paiement réellement utilisables : celles dont le numéro
+   * Zendou est configuré côté serveur (`PAYMENT_METHOD_ENV_KEYS`, B22). Une
+   * méthode sans numéro configuré est absente du tableau, jamais renvoyée
+   * avec un numéro vide - le client ne doit jamais voir une méthode vers
+   * laquelle Zendou ne peut pas encore recevoir d'argent. `accountName` est
+   * partagé entre toutes les méthodes configurées, `null` s'il est absent.
+   */
+  listPaymentMethods(): PaymentMethodItem[] {
+    const accountName = this.readConfiguredString(
+      MOBILE_MONEY_ACCOUNT_NAME_ENV_KEY,
+    );
+
+    return Object.values(TopUpMethod).reduce<PaymentMethodItem[]>(
+      (methods, method) => {
+        const number = this.readConfiguredNumber(method);
+
+        if (number) {
+          methods.push({
+            method,
+            label: PAYMENT_METHOD_LABELS[method],
+            number,
+            accountName: accountName ?? null,
+          });
+        }
+
+        return methods;
+      },
+      [],
+    );
+  }
+
+  /**
    * Enregistre une déclaration de paiement Mobile Money en attente de
    * validation manuelle par un admin. `credits`/`amountGnf` viennent
    * toujours du pack côté serveur, jamais du corps de la requête.
@@ -159,6 +200,16 @@ export class BillingService {
 
     if (!pack.purchasable) {
       throw new BadRequestException(PACK_NOT_PURCHASABLE_MESSAGE);
+    }
+
+    // Une méthode sans numéro Zendou configuré n'est pas une méthode
+    // valide pour ce déploiement : accepter la demande ferait croire au
+    // client qu'un virement vers un numéro inexistant sera vu par
+    // quelqu'un. Même message que la validation de forme du DTO
+    // (`INVALID_METHOD_MESSAGE`) : du point de vue du client, les deux cas
+    // se valent - « cette méthode n'est pas utilisable ».
+    if (!this.readConfiguredNumber(dto.method)) {
+      throw new BadRequestException(INVALID_METHOD_MESSAGE);
     }
 
     if (!this.isValidPhoneNumber(dto.phoneNumber)) {
@@ -200,6 +251,22 @@ export class BillingService {
       select: TOPUP_REQUEST_SELECT,
       orderBy: { createdAt: 'desc' },
     });
+  }
+
+  /** Numéro Zendou configuré pour une méthode, ou `undefined` si absent. */
+  private readConfiguredNumber(method: TopUpMethod): string | undefined {
+    return this.readConfiguredString(PAYMENT_METHOD_ENV_KEYS[method]);
+  }
+
+  /**
+   * Valeur d'une variable d'environnement, retenue seulement si elle
+   * n'est pas vide une fois les espaces retirés - même convention que
+   * `emptyToUndefined` dans `env.schema.ts` : une valeur laissée vide
+   * équivaut à absente.
+   */
+  private readConfiguredString(key: string): string | undefined {
+    const raw = this.configService.get<string>(key)?.trim();
+    return raw ? raw : undefined;
   }
 
   /** Chiffres, espaces et « + » uniquement, avec 8 à 15 chiffres. */

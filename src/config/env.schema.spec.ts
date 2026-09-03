@@ -552,3 +552,73 @@ describe('validateEnv - le port 25 est refusé par configuration (E5)', () => {
     expect(env.SMTP_PORTS_TLS).toEqual([465]);
   });
 });
+
+describe('validateEnv - MOBILE_MONEY_ORANGE_NUMBER / MOBILE_MONEY_MTN_NUMBER / MOBILE_MONEY_ACCOUNT_NAME (B22)', () => {
+  it('boots with none of the three configured', () => {
+    const env = validateEnv({ ...BASE_ENV });
+
+    expect(env.MOBILE_MONEY_ORANGE_NUMBER).toBeUndefined();
+    expect(env.MOBILE_MONEY_MTN_NUMBER).toBeUndefined();
+    expect(env.MOBILE_MONEY_ACCOUNT_NAME).toBeUndefined();
+  });
+
+  it('accepts a well-formed number for each method', () => {
+    const env = validateEnv({
+      ...BASE_ENV,
+      MOBILE_MONEY_ORANGE_NUMBER: '+224 620 00 00 00',
+      MOBILE_MONEY_MTN_NUMBER: '620000000',
+    });
+
+    expect(env.MOBILE_MONEY_ORANGE_NUMBER).toBe('+224 620 00 00 00');
+    expect(env.MOBILE_MONEY_MTN_NUMBER).toBe('620000000');
+  });
+
+  it('accepts MOBILE_MONEY_ACCOUNT_NAME as a free-form string', () => {
+    const env = validateEnv({
+      ...BASE_ENV,
+      MOBILE_MONEY_ACCOUNT_NAME: 'Zendou SARL',
+    });
+
+    expect(env.MOBILE_MONEY_ACCOUNT_NAME).toBe('Zendou SARL');
+  });
+
+  it('treats an empty string as absent for all three variables', () => {
+    const env = validateEnv({
+      ...BASE_ENV,
+      MOBILE_MONEY_ORANGE_NUMBER: '',
+      MOBILE_MONEY_MTN_NUMBER: '',
+      MOBILE_MONEY_ACCOUNT_NAME: '',
+    });
+
+    expect(env.MOBILE_MONEY_ORANGE_NUMBER).toBeUndefined();
+    expect(env.MOBILE_MONEY_MTN_NUMBER).toBeUndefined();
+    expect(env.MOBILE_MONEY_ACCOUNT_NAME).toBeUndefined();
+  });
+
+  it.each([['MOBILE_MONEY_ORANGE_NUMBER'], ['MOBILE_MONEY_MTN_NUMBER']])(
+    'refuses to boot when %s contains letters',
+    (variable) => {
+      expect(() =>
+        validateEnv({ ...BASE_ENV, [variable]: '622-abc-1122' }),
+      ).toThrow(new RegExp(variable));
+    },
+  );
+
+  it.each([['MOBILE_MONEY_ORANGE_NUMBER'], ['MOBILE_MONEY_MTN_NUMBER']])(
+    'refuses to boot when %s has too few digits',
+    (variable) => {
+      expect(() => validateEnv({ ...BASE_ENV, [variable]: '1234' })).toThrow(
+        new RegExp(variable),
+      );
+    },
+  );
+
+  it.each([['MOBILE_MONEY_ORANGE_NUMBER'], ['MOBILE_MONEY_MTN_NUMBER']])(
+    'refuses to boot when %s has too many digits',
+    (variable) => {
+      expect(() =>
+        validateEnv({ ...BASE_ENV, [variable]: '1'.repeat(16) }),
+      ).toThrow(new RegExp(variable));
+    },
+  );
+});

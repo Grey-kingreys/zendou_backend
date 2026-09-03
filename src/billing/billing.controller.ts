@@ -16,6 +16,7 @@ import type { CreditPack } from './packs';
 import type {
   BalanceSummary,
   PaginatedCreditEntries,
+  PaymentMethodItem,
   RawEntriesListQuery,
   TopUpRequestItem,
 } from './billing.types';
@@ -44,6 +45,11 @@ export class BillingController {
   @Get('packs')
   listPacks(): CreditPack[] {
     return this.billingService.listPacks();
+  }
+
+  @Get('payment-methods')
+  listPaymentMethods(): PaymentMethodItem[] {
+    return this.billingService.listPaymentMethods();
   }
 
   @Post('topup-requests')

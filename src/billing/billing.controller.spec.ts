@@ -24,6 +24,7 @@ describe('BillingController', () => {
     getBalance: jest.fn(),
     listEntries: jest.fn(),
     listPacks: jest.fn(),
+    listPaymentMethods: jest.fn(),
     createTopUpRequest: jest.fn(),
     listTopUpRequests: jest.fn(),
   };
@@ -83,6 +84,21 @@ describe('BillingController', () => {
 
     expect(controller.listPacks()).toEqual([]);
     expect(billingService.listPacks).toHaveBeenCalled();
+  });
+
+  it('returns the configured payment methods from the service', () => {
+    const methods = [
+      {
+        method: TopUpMethod.ORANGE_MONEY,
+        label: 'Orange Money',
+        number: '+224 620 00 00 00',
+        accountName: null,
+      },
+    ];
+    billingService.listPaymentMethods.mockReturnValue(methods);
+
+    expect(controller.listPaymentMethods()).toEqual(methods);
+    expect(billingService.listPaymentMethods).toHaveBeenCalled();
   });
 
   it('delegates top-up request creation to the service, scoped to the current user', async () => {
