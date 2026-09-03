@@ -41,6 +41,22 @@ const activeUser: AuthUser = {
   testSenderAddress: null,
 };
 
+/**
+ * Compteur d'échecs qui ne bloque jamais. `RedisThrottlerStorage` est une
+ * dépendance obligatoire du garde depuis le correctif de câblage ; les blocs
+ * qui ne mesurent pas la limite s'en donnent une version inerte.
+ */
+const permissiveThrottlerStorage = {
+  increment: jest.fn(() =>
+    Promise.resolve({
+      totalHits: 1,
+      timeToExpire: 60,
+      isBlocked: false,
+      timeToBlockExpire: 0,
+    }),
+  ),
+};
+
 const responseMock = { setHeader: jest.fn() };
 
 function contextFor(
@@ -88,6 +104,10 @@ describe('ApiKeyAuthGuard', () => {
         },
         { provide: ConfigService, useValue: { get: configGet } },
         SecretHashingService,
+        {
+          provide: RedisThrottlerStorage,
+          useValue: permissiveThrottlerStorage,
+        },
       ],
     }).compile();
 
@@ -516,6 +536,10 @@ describe('ApiKeyAuthGuard - poivre et migration paresseuse (E3)', () => {
           },
         },
         SecretHashingService,
+        {
+          provide: RedisThrottlerStorage,
+          useValue: permissiveThrottlerStorage,
+        },
       ],
     }).compile();
 

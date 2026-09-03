@@ -7,7 +7,6 @@ import {
   HttpStatus,
   Injectable,
   Logger,
-  Optional,
   UnauthorizedException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -53,35 +52,25 @@ export class ApiKeyAuthGuard implements CanActivate {
   private readonly logger = new Logger(ApiKeyAuthGuard.name);
   private readonly failuresPerMinute: number;
 
-  /** Hachage des empreintes, poivre compris (E3). */
-  private readonly secretHashing: SecretHashingService;
-
   constructor(
     private readonly prisma: PrismaService,
     private readonly configService: ConfigService,
     /**
      * Compteur partagé des échecs par IP.
      *
-     * Optionnel **au sens de l'injection uniquement** : `ApiKeysModule`
-     * l'apporte toujours en important `RateLimitCoreModule`. Le marquer
-     * facultatif évite qu'un banc de test qui monte ce garde à la main pour
-     * une tout autre raison (le filtre d'erreur global, par exemple) doive
-     * déclarer un stockage Redis dont il n'a que faire. Absent, le garde se
-     * comporte exactement comme avant le lot C : 401, sans comptage.
+     * Dépendance **obligatoire**, et c'est le correctif d'un défaut mesuré en
+     * production : marquée `@Optional()`, une erreur de visibilité de module ne
+     * faisait pas échouer le démarrage, elle laissait ce champ à `undefined` -
+     * et la limite d'échecs ne se déclenchait jamais, sans un mot dans les
+     * journaux. Une protection anti-abus ne doit pas pouvoir être absente en
+     * silence : mieux vaut un conteneur qui refuse de démarrer. C'est
+     * `ApiKeysModule` qui la rend visible, en réexportant
+     * `RateLimitCoreModule` (voir le commentaire de ce module).
      */
-    @Optional()
-    private readonly throttlerStorage?: RedisThrottlerStorage,
-    /**
-     * Même raison que ci-dessus : `ApiKeysModule` l'apporte toujours, mais un
-     * banc de test qui monte ce garde à la main pour une autre raison n'a pas
-     * à le déclarer. Le repli construit la même classe à partir de la même
-     * configuration : le comportement est identique, jamais dégradé.
-     */
-    @Optional()
-    secretHashing?: SecretHashingService,
+    private readonly throttlerStorage: RedisThrottlerStorage,
+    /** Hachage des empreintes, poivre compris (E3). */
+    private readonly secretHashing: SecretHashingService,
   ) {
-    this.secretHashing =
-      secretHashing ?? new SecretHashingService(this.configService);
     this.failuresPerMinute =
       this.configService.get<number>(
         'RATE_LIMIT_API_KEY_FAILURES_PER_MINUTE',
@@ -209,10 +198,6 @@ export class ApiKeyAuthGuard implements CanActivate {
     context: ExecutionContext,
     request: ApiKeyAuthenticatedRequest,
   ): Promise<HttpException> {
-    if (!this.throttlerStorage) {
-      return new UnauthorizedException(INVALID_API_KEY_MESSAGE);
-    }
-
     const ip = resolveClientIp(request);
 
     try {
