@@ -274,6 +274,10 @@ describe('Envoi système (intégration EmailsService ↔ ReputationService)', ()
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         EmailsService,
+        // `ReputationService` reçoit le **vrai** `EmailsService` : c'est tout
+        // l'intérêt de ce montage, et l'alerte de suspension (E2) emprunte
+        // donc le vrai chemin d'envoi système. Sans `ALERTS_EMAIL_TO` ni
+        // `ADMIN_EMAIL` dans la configuration, elle se contente d'un `warn`.
         ReputationService,
         { provide: PrismaService, useValue: store },
         { provide: getQueueToken(EMAIL_SEND_QUEUE), useValue: queue },

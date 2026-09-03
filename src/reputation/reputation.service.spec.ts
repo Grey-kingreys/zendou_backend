@@ -1,6 +1,8 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { Logger, NotFoundException } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { EmailStatus, UserStatus } from '@prisma/client';
+import { EmailsService } from '../emails/emails.service';
 import { PrismaService } from '../prisma/prisma.service';
 import {
   permanentBounceFixture,
@@ -15,6 +17,7 @@ import {
   RECOMPUTE_LIMIT_TTL_SECONDS,
   REPUTATION_REDIS,
   SENT_EMAIL_STATUSES,
+  SUSPENSION_ALERT_NO_RECIPIENT_MESSAGE,
 } from './reputation.constants';
 import { ReputationService } from './reputation.service';
 
@@ -64,6 +67,13 @@ describe('ReputationService', () => {
   const userFindUnique = jest.fn();
   const userUpdate = jest.fn();
   const redisSet = jest.fn();
+  const sendSystem = jest.fn();
+
+  /**
+   * Configuration lue par le service. Vide par défaut : aucune alerte n'a de
+   * destinataire, et les tests d'évaluation restent ce qu'ils étaient.
+   */
+  let configValues: Record<string, string> = {};
 
   let errorLog: jest.SpyInstance;
   let warnLog: jest.SpyInstance;
@@ -116,6 +126,8 @@ describe('ReputationService', () => {
     count.mockResolvedValue(0);
     userUpdate.mockResolvedValue({ id: 'user_1' });
     redisSet.mockResolvedValue('OK');
+    configValues = {};
+    sendSystem.mockResolvedValue({ status: 'queued', id: 'e_0123456789ab' });
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -128,6 +140,11 @@ describe('ReputationService', () => {
           },
         },
         { provide: REPUTATION_REDIS, useValue: { set: redisSet } },
+        {
+          provide: ConfigService,
+          useValue: { get: (key: string) => configValues[key] },
+        },
+        { provide: EmailsService, useValue: { sendSystem } },
       ],
     }).compile();
 
@@ -312,6 +329,239 @@ describe('ReputationService', () => {
       await expect(service.evaluate('ghost')).rejects.toBeInstanceOf(
         NotFoundException,
       );
+    });
+  });
+
+  /**
+   * E2 - alerte email à l'administrateur à chaque suspension automatique.
+   *
+   * Une suspension automatique est aujourd'hui invisible ailleurs que dans les
+   * journaux : un client peut être coupé des heures avant que quiconque ne
+   * s'en aperçoive. L'alerte est le signal qui manquait, et elle ne doit
+   * jamais, dans aucune de ses pannes, empêcher la sanction.
+   */
+  describe('alerte de suspension automatique (E2)', () => {
+    const ADMIN_EMAIL = 'admin@zendou.dev';
+
+    /** Fenêtre qui franchit le seuil de rebonds : 6 durs sur 100 envois. */
+    function givenSuspendingWindow(): void {
+      groupBy.mockResolvedValue(
+        statusRows({ [EmailStatus.SENT]: 94, [EmailStatus.BOUNCED]: 6 }),
+      );
+      givenHardBounces(6);
+    }
+
+    /** Charge utile du seul envoi système attendu. */
+    function alertPayload(): {
+      userId: string;
+      to: string;
+      subject: string;
+      html?: string;
+      text?: string;
+    } {
+      expect(sendSystem).toHaveBeenCalledTimes(1);
+
+      const [payload] = sendSystem.mock.calls[0] as [
+        {
+          userId: string;
+          to: string;
+          subject: string;
+          html?: string;
+          text?: string;
+        },
+      ];
+
+      return payload;
+    }
+
+    beforeEach(() => {
+      configValues = {
+        ALERTS_EMAIL_TO: ADMIN_EMAIL,
+        APP_BASE_URL: 'https://app.zendou.dev',
+      };
+      // Le compte évalué, puis le compte destinataire de l'alerte : la
+      // recherche par email rend l'administrateur.
+      userFindUnique.mockImplementation(
+        ({ where }: { where: { id?: string; email?: string } }) =>
+          Promise.resolve(
+            where.email === ADMIN_EMAIL
+              ? { id: 'user_admin' }
+              : {
+                  id: 'user_1',
+                  email: 'contact@boutique-awa.gn',
+                  status: UserStatus.ACTIVE,
+                  dailySendLimit: 200,
+                  reputationResetAt: null,
+                  createdAt: agedDays(1),
+                },
+          ),
+      );
+    });
+
+    it('expédie une alerte au destinataire configuré, une seule fois', async () => {
+      givenSuspendingWindow();
+
+      await service.evaluate('user_1');
+
+      const payload = alertPayload();
+      expect(payload.to).toBe(ADMIN_EMAIL);
+      // Tracée sur le compte de l'administrateur, qui la reçoit - jamais sur
+      // celui du client suspendu.
+      expect(payload.userId).toBe('user_admin');
+    });
+
+    it('nomme le compte suspendu dans le sujet', async () => {
+      givenSuspendingWindow();
+
+      await service.evaluate('user_1');
+
+      expect(alertPayload().subject).toContain('contact@boutique-awa.gn');
+    });
+
+    it('porte le lien de la fiche admin et le taux constaté dans le corps', async () => {
+      givenSuspendingWindow();
+
+      await service.evaluate('user_1');
+
+      const payload = alertPayload();
+      expect(payload.text).toContain(
+        'https://app.zendou.dev/admin/comptes/user_1',
+      );
+      expect(payload.html).toContain(
+        'https://app.zendou.dev/admin/comptes/user_1',
+      );
+      expect(payload.text).toContain('6.00 %');
+    });
+
+    it('retombe sur FRONTEND_ORIGIN quand APP_BASE_URL est absente, sans doubler la barre oblique', async () => {
+      configValues = {
+        ALERTS_EMAIL_TO: ADMIN_EMAIL,
+        FRONTEND_ORIGIN: 'https://zendou.dev/',
+      };
+      givenSuspendingWindow();
+
+      await service.evaluate('user_1');
+
+      expect(alertPayload().text).toContain(
+        'https://zendou.dev/admin/comptes/user_1',
+      );
+    });
+
+    it('retombe sur ADMIN_EMAIL quand ALERTS_EMAIL_TO est absente', async () => {
+      configValues = { ADMIN_EMAIL };
+      givenSuspendingWindow();
+
+      await service.evaluate('user_1');
+
+      expect(alertPayload().to).toBe(ADMIN_EMAIL);
+    });
+
+    /**
+     * L'invariant qui compte : la suspension est déjà écrite quand l'alerte
+     * part. Une panne d'envoi ne peut donc pas la défaire, ni remonter au
+     * webhook SNS qui a déclenché l'évaluation.
+     */
+    it('suspend quand même si l’envoi échoue, et journalise l’échec', async () => {
+      sendSystem.mockRejectedValue(new Error('SES injoignable'));
+      givenSuspendingWindow();
+
+      const metrics = await service.evaluate('user_1');
+
+      expect(metrics.verdict).toBe('SUSPEND');
+      expect(userUpdate).toHaveBeenCalledWith(SUSPENSION_WRITE);
+      // Deux lignes d'erreur : la suspension elle-même, puis l'alerte perdue.
+      expect(errorLog).toHaveBeenCalledTimes(2);
+      const [line] = errorLog.mock.calls[1] as [string];
+      expect(line).toContain('Alerte de suspension non expédiée');
+      expect(line).toContain(ADMIN_EMAIL);
+    });
+
+    it('traite une alerte mise en liste de suppression comme un échec, sans défaire la suspension', async () => {
+      sendSystem.mockResolvedValue({ status: 'suppressed' });
+      givenSuspendingWindow();
+
+      await service.evaluate('user_1');
+
+      expect(userUpdate).toHaveBeenCalledWith(SUSPENSION_WRITE);
+      expect(errorLog).toHaveBeenCalledTimes(2);
+    });
+
+    it('journalise l’échec sans envoyer quand aucun compte Zendou ne porte l’adresse d’alerte', async () => {
+      userFindUnique.mockImplementation(
+        ({ where }: { where: { id?: string; email?: string } }) =>
+          Promise.resolve(
+            where.email
+              ? null
+              : {
+                  id: 'user_1',
+                  email: 'contact@boutique-awa.gn',
+                  status: UserStatus.ACTIVE,
+                  dailySendLimit: 200,
+                  reputationResetAt: null,
+                  createdAt: agedDays(1),
+                },
+          ),
+      );
+      givenSuspendingWindow();
+
+      await service.evaluate('user_1');
+
+      expect(sendSystem).not.toHaveBeenCalled();
+      expect(userUpdate).toHaveBeenCalledWith(SUSPENSION_WRITE);
+      expect(errorLog).toHaveBeenCalledTimes(2);
+    });
+
+    it('sans destinataire configuré : un warn, et rien d’autre', async () => {
+      configValues = {};
+      givenSuspendingWindow();
+
+      await service.evaluate('user_1');
+
+      expect(sendSystem).not.toHaveBeenCalled();
+      expect(warnLog).toHaveBeenCalledTimes(1);
+      expect(warnLog).toHaveBeenCalledWith(
+        SUSPENSION_ALERT_NO_RECIPIENT_MESSAGE,
+      );
+      // La suspension, elle, a bien eu lieu et reste journalisée.
+      expect(userUpdate).toHaveBeenCalledWith(SUSPENSION_WRITE);
+      expect(errorLog).toHaveBeenCalledTimes(1);
+    });
+
+    it('n’envoie rien sur un compte déjà suspendu (branche idempotente)', async () => {
+      userFindUnique.mockImplementation(
+        ({ where }: { where: { id?: string; email?: string } }) =>
+          Promise.resolve(
+            where.email === ADMIN_EMAIL
+              ? { id: 'user_admin' }
+              : {
+                  id: 'user_1',
+                  email: 'contact@boutique-awa.gn',
+                  status: UserStatus.SUSPENDED,
+                  dailySendLimit: 200,
+                  reputationResetAt: null,
+                  createdAt: agedDays(1),
+                },
+          ),
+      );
+      givenSuspendingWindow();
+
+      const metrics = await service.evaluate('user_1');
+
+      expect(metrics.verdict).toBe('SUSPEND');
+      expect(userUpdate).not.toHaveBeenCalled();
+      expect(sendSystem).not.toHaveBeenCalled();
+    });
+
+    it('n’envoie rien sur un simple avertissement, seulement sur une suspension', async () => {
+      groupBy.mockResolvedValue(
+        statusRows({ [EmailStatus.SENT]: 97, [EmailStatus.BOUNCED]: 3 }),
+      );
+      givenHardBounces(3);
+
+      const metrics = await service.evaluate('user_1');
+
+      expect(metrics.verdict).toBe('WARNING');
+      expect(sendSystem).not.toHaveBeenCalled();
     });
   });
 

@@ -8,6 +8,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import Redis from 'ioredis';
 import { AuthModule } from '../auth/auth.module';
+import { EmailsCoreModule } from '../emails/emails-core.module';
 import { ReputationController } from './reputation.controller';
 import { REPUTATION_REDIS } from './reputation.constants';
 import { ReputationService } from './reputation.service';
@@ -19,10 +20,18 @@ import { ReputationService } from './reputation.service';
  * `@Global` comme `PrismaModule` : le service est injecté depuis des points
  * transverses (webhook SNS, worker d'envoi) sans que ces modules aient à
  * déclarer une dépendance à la protection anti-abus.
+ *
+ * `EmailsCoreModule` (et non `EmailsModule`) porte l'expédition de l'alerte de
+ * suspension automatique (E2) : le second importe `ApiKeysModule`, qui importe
+ * `AuthModule`. Le premier ne dépend que de la file BullMQ, n'importe pas
+ * `ReputationModule` et n'injecte pas `ReputationService` : aucun cycle, donc
+ * aucun `forwardRef`. C'est la même raison qui fait qu'`AuthModule` l'importe
+ * lui aussi, et `reputation-emails.module.spec.ts` le prouve en compilant les
+ * deux modules ensemble.
  */
 @Global()
 @Module({
-  imports: [AuthModule],
+  imports: [AuthModule, EmailsCoreModule],
   controllers: [ReputationController],
   providers: [
     {

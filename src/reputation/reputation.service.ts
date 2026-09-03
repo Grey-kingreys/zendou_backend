@@ -1,9 +1,12 @@
 import { Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { EmailStatus, UserStatus } from '@prisma/client';
 import type Redis from 'ioredis';
+import { EmailsService } from '../emails/emails.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { HARD_BOUNCE_ERROR_PREFIX } from '../sns-webhook/sns-webhook.types';
 import {
+  ADMIN_ACCOUNT_PATH,
   DEFAULT_DAILY_SEND_LIMIT,
   MAX_BOUNCE_RATE,
   MAX_COMPLAINT_RATE,
@@ -14,6 +17,7 @@ import {
   REPUTATION_WINDOW_DAYS,
   SEND_LIMIT_TIERS,
   SENT_EMAIL_STATUSES,
+  SUSPENSION_ALERT_NO_RECIPIENT_MESSAGE,
   WARNING_THRESHOLD_RATIO,
 } from './reputation.constants';
 import type {
@@ -22,6 +26,7 @@ import type {
   ReputationUser,
   ReputationVerdict,
 } from './reputation.types';
+import { buildSuspensionAlertEmail } from './suspension-alert.template';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -53,6 +58,13 @@ export class ReputationService {
   constructor(
     private readonly prisma: PrismaService,
     @Inject(REPUTATION_REDIS) private readonly redis: Redis,
+    private readonly configService: ConfigService,
+    // Injection directe, sans `forwardRef` : `EmailsCoreModule` ne dépend que
+    // de la file BullMQ (c'est sa raison d'être), il n'importe pas
+    // `ReputationModule` et n'injecte pas `ReputationService`. Le cycle
+    // n'existe donc pas, et un test de compilation de modules le prouve
+    // (`reputation-emails.module.spec.ts`).
+    private readonly emailsService: EmailsService,
   ) {}
 
   /**
@@ -233,6 +245,11 @@ export class ReputationService {
       return;
     }
 
+    // Composé une seule fois : l'email d'alerte doit dire **exactement** ce
+    // que la fiche admin affiche. Deux formulations pour un même événement,
+    // c'est un doute de plus au moment de trancher.
+    const reason = buildSuspensionReason(metrics);
+
     // `suspendedAt`/`suspensionReason` sont posés ici comme ils le sont par
     // une suspension administrative : l'écran admin affiche la même chose,
     // quelle que soit l'origine de la suspension.
@@ -241,7 +258,7 @@ export class ReputationService {
       data: {
         status: UserStatus.SUSPENDED,
         suspendedAt: new Date(),
-        suspensionReason: buildSuspensionReason(metrics),
+        suspensionReason: reason,
       },
     });
 
@@ -254,6 +271,117 @@ export class ReputationService {
         `${describeMetrics(metrics)} ; seuils : rebonds ${formatRate(MAX_BOUNCE_RATE)}, ` +
         `plaintes ${formatRate(MAX_COMPLAINT_RATE)}, volume minimum ${MIN_VOLUME_FOR_SANCTION}`,
     );
+
+    await this.alertAdministrator(user, metrics, reason);
+  }
+
+  /**
+   * Prévient l'administrateur qu'un compte vient d'être suspendu (E2).
+   *
+   * 🔴 **Ne rejette jamais.** La suspension est déjà écrite quand cette méthode
+   * s'exécute : une panne d'envoi (SES injoignable, adresse en liste de
+   * suppression, `SYSTEM_EMAIL_FROM` mal configurée) ne doit pas remonter au
+   * webhook SNS ni au worker, et surtout pas donner l'impression que la
+   * sanction n'a pas eu lieu. L'échec est journalisé, puis avalé - même
+   * invariant que `SmtpCertAlertService`.
+   *
+   * Sans destinataire configuré : un `warn`, et rien d'autre. La suspension
+   * reste dans les journaux, où l'exploitation la trouvera.
+   *
+   * Attendue plutôt que détachée (`void`) : l'appelante a déjà écrit tout ce
+   * qu'elle avait à écrire, rien ne l'attend derrière, et une promesse
+   * détachée rendrait le comportement dépendant de l'ordonnancement - donc
+   * intestable et invérifiable en production.
+   */
+  private async alertAdministrator(
+    user: ReputationUser,
+    metrics: ReputationMetrics,
+    reason: string,
+  ): Promise<void> {
+    const to = this.resolveAlertRecipient();
+
+    if (!to) {
+      this.logger.warn(SUSPENSION_ALERT_NO_RECIPIENT_MESSAGE);
+      return;
+    }
+
+    try {
+      // `sendSystem` trace la ligne `Email` sur un compte : le destinataire
+      // doit exister dans Zendou. C'est naturellement le cas d'`ADMIN_EMAIL`
+      // (créé par `AdminSeedService`) ; pour une `ALERTS_EMAIL_TO` arbitraire,
+      // on le dit plutôt que d'échouer sur une contrainte de clé étrangère.
+      const recipient = await this.prisma.user.findUnique({
+        where: { email: to },
+        select: { id: true },
+      });
+
+      if (!recipient) {
+        throw new Error(
+          `aucun compte Zendou ne porte l'adresse ${to} (ALERTS_EMAIL_TO / ADMIN_EMAIL)`,
+        );
+      }
+
+      const { subject, html, text } = buildSuspensionAlertEmail({
+        email: user.email,
+        userId: user.id,
+        reason,
+        metrics,
+        adminUrl: `${this.appBaseUrl()}${ADMIN_ACCOUNT_PATH}/${user.id}`,
+      });
+
+      const result = await this.emailsService.sendSystem({
+        userId: recipient.id,
+        to,
+        subject,
+        html,
+        text,
+      });
+
+      if (result.status === 'suppressed') {
+        throw new Error(`${to} est sur la liste de suppression`);
+      }
+
+      this.logger.log(`Alerte de suspension expédiée à ${to} : ${subject}`);
+    } catch (error: unknown) {
+      this.logger.error(
+        `Alerte de suspension non expédiée à ${to} pour le compte ${user.email} (${user.id})`,
+        error instanceof Error ? error.stack : String(error),
+      );
+    }
+  }
+
+  /**
+   * Destinataire des alertes : `ALERTS_EMAIL_TO`, à défaut `ADMIN_EMAIL`.
+   *
+   * Normalisé comme partout ailleurs (`auth.service.ts`, `admin-seed.service`,
+   * `smtp-cert-alert.service`) pour retrouver le compte quelle que soit la
+   * casse de la variable. Aucune variable nouvelle : ce sont celles dont
+   * l'exploitation dispose déjà pour les alertes du relais SMTP.
+   */
+  private resolveAlertRecipient(): string | null {
+    const configured =
+      this.configService.get<string>('ALERTS_EMAIL_TO') ??
+      this.configService.get<string>('ADMIN_EMAIL');
+    const normalized = configured?.trim().toLowerCase();
+
+    return normalized ? normalized : null;
+  }
+
+  /**
+   * Base des liens : `APP_BASE_URL`, à défaut `FRONTEND_ORIGIN` - la même
+   * résolution que les emails de confirmation d'adresse
+   * (`email-confirmation.service.ts`). Aucune URL n'est écrite en dur, et la
+   * barre oblique finale est retirée pour ne pas produire de « // » au milieu
+   * du lien.
+   */
+  private appBaseUrl(): string {
+    const configured = (
+      this.configService.get<string>('APP_BASE_URL') ?? ''
+    ).trim();
+    const base =
+      configured || (this.configService.get<string>('FRONTEND_ORIGIN') ?? '');
+
+    return base.trim().replace(/\/+$/, '');
   }
 
   private async loadUser(userId: string): Promise<ReputationUser> {
