@@ -51,7 +51,10 @@ describe('ApiKeysService', () => {
   let capturedUpdateArgs: UpdateArgs | undefined;
   let capturedDeleteArgs: DeleteArgs | undefined;
 
-  const findUnique = jest.fn();
+  // E7 : le service ne charge plus une ligne par identifiant seul - il
+  // demande à la base la ligne { id, userId }. Le double suit donc la même
+  // méthode que le code de production.
+  const findFirst = jest.fn();
   const findMany = jest.fn((args: FindManyArgs) => {
     capturedFindManyArgs = args;
     return Promise.resolve([listedKey]);
@@ -91,7 +94,7 @@ describe('ApiKeysService', () => {
         {
           provide: PrismaService,
           useValue: {
-            apiKey: { findUnique, findMany, update, create, delete: deleteFn },
+            apiKey: { findFirst, findMany, update, create, delete: deleteFn },
           },
         },
       ],
@@ -140,7 +143,7 @@ describe('ApiKeysService', () => {
 
   describe('revoke', () => {
     it('throws 404 when the key does not exist', async () => {
-      findUnique.mockResolvedValue(null);
+      findFirst.mockResolvedValue(null);
 
       await expect(
         service.revoke('user_1', 'key_missing'),
@@ -150,21 +153,23 @@ describe('ApiKeysService', () => {
     });
 
     it('throws 404 when the key belongs to another user', async () => {
-      findUnique.mockResolvedValue({
-        id: 'key_1',
-        userId: 'user_2',
-        revokedAt: null,
-      });
+      // La base ne rend rien : le filtre { id, userId } ne matche pas.
+      findFirst.mockResolvedValue(null);
 
       await expect(service.revoke('user_1', 'key_1')).rejects.toMatchObject(
         new NotFoundException(API_KEY_NOT_FOUND_MESSAGE),
       );
 
+      // E7 : la propriété est demandée à la base, pas vérifiée après coup.
+      expect(findFirst).toHaveBeenCalledWith({
+        where: { id: 'key_1', userId: 'user_1' },
+        select: { id: true, revokedAt: true },
+      });
       expect(update).not.toHaveBeenCalled();
     });
 
     it('sets revokedAt on an active key', async () => {
-      findUnique.mockResolvedValue({
+      findFirst.mockResolvedValue({
         id: 'key_1',
         userId: 'user_1',
         revokedAt: null,
@@ -178,7 +183,7 @@ describe('ApiKeysService', () => {
     });
 
     it('is idempotent when the key is already revoked', async () => {
-      findUnique.mockResolvedValue({
+      findFirst.mockResolvedValue({
         id: 'key_1',
         userId: 'user_1',
         revokedAt: new Date('2026-01-01T00:00:00.000Z'),
@@ -192,7 +197,7 @@ describe('ApiKeysService', () => {
 
   describe('purge', () => {
     it('throws 404 when the key does not exist', async () => {
-      findUnique.mockResolvedValue(null);
+      findFirst.mockResolvedValue(null);
 
       await expect(
         service.purge('user_1', 'key_missing'),
@@ -202,21 +207,21 @@ describe('ApiKeysService', () => {
     });
 
     it('throws 404 when the key belongs to another user', async () => {
-      findUnique.mockResolvedValue({
-        id: 'key_1',
-        userId: 'user_2',
-        revokedAt: new Date('2026-01-01T00:00:00.000Z'),
-      });
+      findFirst.mockResolvedValue(null);
 
       await expect(service.purge('user_1', 'key_1')).rejects.toMatchObject(
         new NotFoundException(API_KEY_NOT_FOUND_MESSAGE),
       );
 
+      expect(findFirst).toHaveBeenCalledWith({
+        where: { id: 'key_1', userId: 'user_1' },
+        select: { id: true, revokedAt: true },
+      });
       expect(deleteFn).not.toHaveBeenCalled();
     });
 
     it('refuses to delete an active key', async () => {
-      findUnique.mockResolvedValue({
+      findFirst.mockResolvedValue({
         id: 'key_1',
         userId: 'user_1',
         revokedAt: null,
@@ -230,7 +235,7 @@ describe('ApiKeysService', () => {
     });
 
     it('deletes a revoked key', async () => {
-      findUnique.mockResolvedValue({
+      findFirst.mockResolvedValue({
         id: 'key_1',
         userId: 'user_1',
         revokedAt: new Date('2026-01-01T00:00:00.000Z'),
@@ -252,7 +257,7 @@ describe('ApiKeysService', () => {
     };
 
     it('throws 404 when the key does not exist', async () => {
-      findUnique.mockResolvedValue(null);
+      findFirst.mockResolvedValue(null);
 
       await expect(
         service.rotate('user_1', 'key_missing'),
@@ -262,17 +267,26 @@ describe('ApiKeysService', () => {
     });
 
     it('throws 404 when the key belongs to another user', async () => {
-      findUnique.mockResolvedValue({ ...rotatableKey, userId: 'user_2' });
+      findFirst.mockResolvedValue(null);
 
       await expect(service.rotate('user_1', 'key_1')).rejects.toMatchObject(
         new NotFoundException(API_KEY_NOT_FOUND_MESSAGE),
       );
 
+      expect(findFirst).toHaveBeenCalledWith({
+        where: { id: 'key_1', userId: 'user_1' },
+        select: {
+          id: true,
+          name: true,
+          createdAt: true,
+          revokedAt: true,
+        },
+      });
       expect(update).not.toHaveBeenCalled();
     });
 
     it('refuses to rotate a revoked key', async () => {
-      findUnique.mockResolvedValue({
+      findFirst.mockResolvedValue({
         ...rotatableKey,
         revokedAt: new Date('2026-01-01T00:00:00.000Z'),
       });
@@ -285,7 +299,7 @@ describe('ApiKeysService', () => {
     });
 
     it('regenerates prefix/keyHash while keeping id, name and createdAt', async () => {
-      findUnique.mockResolvedValue(rotatableKey);
+      findFirst.mockResolvedValue(rotatableKey);
 
       const result = await service.rotate('user_1', 'key_1');
 
@@ -381,7 +395,7 @@ describe('ApiKeysService - empreinte poivrée persistée (E3)', () => {
       createdAt: new Date('2026-01-01T00:00:00.000Z'),
       revokedAt: null,
     });
-    findUnique.mockResolvedValue({
+    findFirst.mockResolvedValue({
       id: 'key_1',
       userId: 'user_1',
       name: 'Prod',

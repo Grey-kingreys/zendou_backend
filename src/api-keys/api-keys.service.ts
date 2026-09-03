@@ -18,6 +18,17 @@ import {
 import { CreateApiKeyDto } from './dto/create-api-key.dto';
 import { SecretHashingService } from './secret-hashing.service';
 
+/**
+ * E7 - la propriété est établie **dans la requête** (`findFirst` filtre sur
+ * `{ id, userId }`), jamais par une comparaison JavaScript sur une ligne
+ * chargée par identifiant seul. La différence n'est pas cosmétique : une
+ * lecture par `id` seul rend la ligne d'autrui au processus, et il ne reste
+ * qu'un `if` entre elle et la réponse - un `if` qu'une refonte peut déplacer,
+ * oublier ou court-circuiter. Ici, la base ne rend simplement rien.
+ *
+ * Les `update`/`delete` qui suivent ciblent toujours l'`id` seul : la
+ * propriété est déjà établie à ce point.
+ */
 @Injectable()
 export class ApiKeysService {
   constructor(
@@ -72,12 +83,12 @@ export class ApiKeysService {
    * 404 si la clé n'existe pas ou n'appartient pas à `userId`.
    */
   async revoke(userId: string, id: string): Promise<void> {
-    const apiKey = await this.prisma.apiKey.findUnique({
-      where: { id },
-      select: { id: true, userId: true, revokedAt: true },
+    const apiKey = await this.prisma.apiKey.findFirst({
+      where: { id, userId },
+      select: { id: true, revokedAt: true },
     });
 
-    if (!apiKey || apiKey.userId !== userId) {
+    if (!apiKey) {
       throw new NotFoundException(API_KEY_NOT_FOUND_MESSAGE);
     }
 
@@ -99,12 +110,12 @@ export class ApiKeysService {
    * `userId` ; 409 si elle est encore active.
    */
   async purge(userId: string, id: string): Promise<void> {
-    const apiKey = await this.prisma.apiKey.findUnique({
-      where: { id },
-      select: { id: true, userId: true, revokedAt: true },
+    const apiKey = await this.prisma.apiKey.findFirst({
+      where: { id, userId },
+      select: { id: true, revokedAt: true },
     });
 
-    if (!apiKey || apiKey.userId !== userId) {
+    if (!apiKey) {
       throw new NotFoundException(API_KEY_NOT_FOUND_MESSAGE);
     }
 
@@ -124,18 +135,17 @@ export class ApiKeysService {
    * est révoquée (une clé morte ne se régénère pas).
    */
   async rotate(userId: string, id: string): Promise<RotateApiKeyResponse> {
-    const apiKey = await this.prisma.apiKey.findUnique({
-      where: { id },
+    const apiKey = await this.prisma.apiKey.findFirst({
+      where: { id, userId },
       select: {
         id: true,
-        userId: true,
         name: true,
         createdAt: true,
         revokedAt: true,
       },
     });
 
-    if (!apiKey || apiKey.userId !== userId) {
+    if (!apiKey) {
       throw new NotFoundException(API_KEY_NOT_FOUND_MESSAGE);
     }
 
