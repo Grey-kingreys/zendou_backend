@@ -60,7 +60,10 @@ export interface AnonymizationResult {
  * conserve les traces de paiement (`CreditEntry`, `TopUpRequest`) pour la
  * comptabilité, comme le promet la politique de confidentialité.
  *
- * En une transaction : suppression des domaines, clés API, identifiants SMTP
+ * En une transaction : suppression des domaines, clés API, identifiants SMTP,
+ * des lignes `Suppression` propres au compte (elles portent son adresse
+ * d'origine et celles de ses destinataires, rattachées à son id ; le compte ne
+ * pouvant plus envoyer, elles ne protègent plus rien),
  * et lignes `Email` (adresses de destinataires = données de tiers ; le corps
  * n'est jamais stocké), réécriture du compte, ligne d'audit. Puis, hors de la
  * transaction et seulement après son succès : destruction des identités SES
@@ -177,6 +180,9 @@ export class AccountAnonymizationService {
       await tx.apiKey.deleteMany({ where: { userId } });
       await tx.smtpCredential.deleteMany({ where: { userId } });
       await tx.domain.deleteMany({ where: { userId } });
+      // Seulement les lignes rattachées à ce compte : les suppressions
+      // globales (`userId` nul) et celles des autres comptes restent.
+      await tx.suppression.deleteMany({ where: { userId } });
 
       if (origin.kind === 'admin') {
         // Ni l'email ni le nom d'origine : le but est d'effacer. La cible

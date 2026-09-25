@@ -259,10 +259,32 @@ describe('AccountAnonymizationService', () => {
       );
     });
 
-    it('conserve la ligne de suppression et le journal d’audit antérieur', async () => {
+    it('supprime les lignes de suppression du compte, garde les globales et celles des autres', async () => {
+      db.seed('suppression', {
+        id: 'sup_global',
+        address: ORIGINAL_EMAIL,
+        userId: null,
+        reason: 'MANUAL',
+      });
+      db.seed('suppression', {
+        id: 'sup_witness',
+        address: 'x@y.gn',
+        userId: 'witness',
+        reason: 'HARD_BOUNCE',
+      });
+
       await service.anonymize('u1', admin);
 
-      expect(db.tables.suppression).toHaveLength(1);
+      expect(db.tables.suppression.map((row) => row.id).sort()).toEqual([
+        'sup_global',
+        'sup_witness',
+      ]);
+      expect(JSON.stringify(rowsOf('suppression', 'u1'))).toBe('[]');
+    });
+
+    it('conserve le journal d’audit antérieur', async () => {
+      await service.anonymize('u1', admin);
+
       expect(
         db.tables.adminAction.find((row) => row.id === 'aa0'),
       ).toBeDefined();
