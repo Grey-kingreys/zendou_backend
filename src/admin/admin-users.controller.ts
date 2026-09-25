@@ -90,8 +90,8 @@ export class AdminUsersController {
 
   /**
    * Anonymisation du compte (ANON-1), réponse à une demande d'effacement :
-   * données personnelles effacées, traces de paiement conservées. Refus en
-   * 409 : soi-même, compte ADMIN, compte déjà anonymisé ; 404 si inconnu.
+   * données personnelles effacées, traces de paiement conservées. Refus :
+   * soi-même 400 ; compte ADMIN et compte déjà anonymisé 409 ; inconnu 404.
    */
   @Post(':id/anonymize')
   @HttpCode(HttpStatus.OK)

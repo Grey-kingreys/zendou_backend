@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   ConflictException,
   Injectable,
   Logger,
@@ -79,7 +80,7 @@ export class AccountAnonymizationService {
   /**
    * Anonymise le compte `userId`.
    *
-   * Refus (origine `admin`) : soi-même 409, compte ADMIN 409, déjà anonymisé
+   * Refus (origine `admin`) : soi-même 400, compte ADMIN 409, déjà anonymisé
    * 409, inconnu 404. Origine `inactivity` : un compte qui n'est plus
    * éligible renvoie `null`, sans rien écrire.
    */
@@ -87,8 +88,9 @@ export class AccountAnonymizationService {
     userId: string,
     origin: AnonymizationOrigin,
   ): Promise<AnonymizationResult | null> {
+    // 400 comme les autres refus de soi (suspension, crédit, suppression).
     if (origin.kind === 'admin' && origin.adminId === userId) {
-      throw new ConflictException(SELF_ANONYMIZE_MESSAGE);
+      throw new BadRequestException(SELF_ANONYMIZE_MESSAGE);
     }
 
     const outcome = await this.prisma.$transaction(async (tx) => {

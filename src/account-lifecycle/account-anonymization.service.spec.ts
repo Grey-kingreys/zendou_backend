@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   ConflictException,
   ExecutionContext,
   NotFoundException,
@@ -317,7 +318,7 @@ describe('AccountAnonymizationService', () => {
   });
 
   describe('refus', () => {
-    it('refuse en 409 un admin qui s’anonymise lui-même, sans rien écrire', async () => {
+    it('refuse en 400 un admin qui s’anonymise lui-même, sans rien écrire', async () => {
       db.seed('user', {
         id: 'admin_2',
         email: 'a2@zendou.app',
@@ -329,7 +330,10 @@ describe('AccountAnonymizationService', () => {
 
       await expect(
         service.anonymize('admin_2', { kind: 'admin', adminId: 'admin_2' }),
-      ).rejects.toThrow(new ConflictException(SELF_ANONYMIZE_MESSAGE));
+      ).rejects.toThrow(new BadRequestException(SELF_ANONYMIZE_MESSAGE));
+      await expect(
+        service.anonymize('admin_2', { kind: 'admin', adminId: 'admin_2' }),
+      ).rejects.toMatchObject({ status: 400 });
       expect(db.tables).toEqual(before);
     });
 
@@ -346,6 +350,9 @@ describe('AccountAnonymizationService', () => {
       await expect(service.anonymize('admin_3', admin)).rejects.toThrow(
         new ConflictException(ADMIN_ANONYMIZE_MESSAGE),
       );
+      await expect(service.anonymize('admin_3', admin)).rejects.toMatchObject({
+        status: 409,
+      });
       expect(db.tables).toEqual(before);
     });
 
