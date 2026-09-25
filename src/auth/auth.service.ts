@@ -121,15 +121,25 @@ export class AuthService {
     // plusieurs dizaines de millisecondes par tentative.
     await this.loginLockout.assertNotLocked(email);
 
-    const record = await this.prisma.user.findUnique({
+    const found = await this.prisma.user.findUnique({
       where: { email },
-      select: AUTH_USER_RECORD_SELECT,
+      select: { ...AUTH_USER_RECORD_SELECT, anonymizedAt: true },
     });
 
-    if (!record) {
+    if (!found) {
       // Email inconnu compté exactement comme un mot de passe faux : la
       // différence de traitement serait, à elle seule, un oracle d'existence
       // de compte.
+      await this.loginLockout.recordFailure(email);
+      throw new UnauthorizedException(INVALID_CREDENTIALS_MESSAGE);
+    }
+
+    const { anonymizedAt, ...record } = found;
+
+    if (anonymizedAt instanceof Date) {
+      // Compte anonymisé (ANON-1) : traité comme inconnu. Sans cela, son
+      // adresse de remplacement répondrait « ce compte utilise Google »
+      // (mot de passe effacé), un oracle sur un compte qui n'existe plus.
       await this.loginLockout.recordFailure(email);
       throw new UnauthorizedException(INVALID_CREDENTIALS_MESSAGE);
     }

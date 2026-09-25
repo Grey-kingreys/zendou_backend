@@ -9,6 +9,7 @@ import { AdminActionType, UserRole, UserStatus } from '@prisma/client';
 import * as argon2 from 'argon2';
 import { ApiKeyAuthGuard } from '../api-keys/api-key-auth.guard';
 import { SecretHashingService } from '../api-keys/secret-hashing.service';
+import { INVALID_CREDENTIALS_MESSAGE } from '../auth/auth.constants';
 import { AuthService } from '../auth/auth.service';
 import { SessionAuthGuard } from '../auth/session-auth.guard';
 import type { DomainsService } from '../domains/domains.service';
@@ -525,6 +526,18 @@ describe('AccountAnonymizationService', () => {
       await expect(
         authService.login({ email: ORIGINAL_EMAIL, password: PASSWORD }),
       ).rejects.toThrow(UnauthorizedException);
+      expect(sessionCreate).not.toHaveBeenCalled();
+    });
+
+    it('adresse de remplacement : réponse générique, sans oracle « compte Google »', async () => {
+      await service.anonymize('u1', admin);
+
+      await expect(
+        authService.login({
+          email: 'anonymise-u1@anonymise.invalid',
+          password: PASSWORD,
+        }),
+      ).rejects.toThrow(new UnauthorizedException(INVALID_CREDENTIALS_MESSAGE));
       expect(sessionCreate).not.toHaveBeenCalled();
     });
 
