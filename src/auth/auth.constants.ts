@@ -97,3 +97,24 @@ export const LOGIN_LOCKOUT_DEFAULTS = {
    */
   WINDOW_SECONDS: 900,
 } as const;
+
+/**
+ * Discriminant stable des refus « ce compte n'a pas de mot de passe » (B30),
+ * porté dans le corps d'erreur sous la clé `code`, comme les motifs de refus
+ * d'envoi (`SEND_REFUSAL`). Le message peut être reformulé, le code non.
+ */
+export const PASSWORD_NOT_SET_CODE = 'PASSWORD_NOT_SET';
+
+/**
+ * 401 de `POST /v1/auth/login` sur un compte sans mot de passe (créé par
+ * Google, ou rattaché à Google alors qu'il n'était pas confirmé). Volontairement
+ * distinct de `INVALID_CREDENTIALS_MESSAGE` : « mot de passe incorrect »
+ * enverrait l'utilisateur vers une réinitialisation inutile. Pas d'oracle
+ * nouveau : `register` répond déjà 409 sur une adresse existante.
+ */
+export const PASSWORD_NOT_SET_LOGIN_MESSAGE =
+  'Ce compte utilise la connexion Google. Cliquez sur « Continuer avec Google ».';
+
+/** 400 de `POST /v1/auth/change-password` sur un compte sans mot de passe. */
+export const PASSWORD_NOT_SET_CHANGE_MESSAGE =
+  "Ce compte n'a pas de mot de passe : il utilise la connexion Google. Aucun mot de passe à changer.";

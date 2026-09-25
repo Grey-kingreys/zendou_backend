@@ -46,6 +46,16 @@ const authUser: AuthUser = {
   testSenderAddress: null,
 };
 
+/**
+ * `AuthUser` tel que le rendent register / login / updateProfile pour un
+ * compte à mot de passe, non rattaché à Google (B30).
+ */
+const publicUser: AuthUser = {
+  ...authUser,
+  hasPassword: true,
+  googleLinked: false,
+};
+
 describe('AuthService', () => {
   let service: AuthService;
   let capturedCreateArgs: CreateArgs | undefined;
@@ -54,7 +64,11 @@ describe('AuthService', () => {
   const update = jest.fn();
   const create = jest.fn((args: CreateArgs) => {
     capturedCreateArgs = args;
-    return Promise.resolve(authUser);
+    return Promise.resolve({
+      ...authUser,
+      passwordHash: args.data.passwordHash,
+      googleSub: null,
+    });
   });
   const sessionService = {
     create: jest.fn(),
@@ -131,7 +145,7 @@ describe('AuthService', () => {
       expect(stored.email).toBe('aissatou@example.com');
 
       expect(sessionService.create).toHaveBeenCalledWith('user_1');
-      expect(result).toEqual({ user: authUser, token: 'session-token' });
+      expect(result).toEqual({ user: publicUser, token: 'session-token' });
       expect(result.user).not.toHaveProperty('passwordHash');
     }, 15000);
 
@@ -167,7 +181,7 @@ describe('AuthService', () => {
           password: 'motdepasse-solide',
           name: 'Aïssatou Diallo',
         }),
-      ).resolves.toEqual({ user: authUser, token: 'session-token' });
+      ).resolves.toEqual({ user: publicUser, token: 'session-token' });
     }, 15000);
 
     it('rejects a duplicate email with a 409 and does not create the user', async () => {
@@ -226,7 +240,7 @@ describe('AuthService', () => {
         expect.objectContaining({ where: { email: 'aissatou@example.com' } }),
       );
       expect(result.token).toBe('session-token');
-      expect(result.user).toEqual(authUser);
+      expect(result.user).toEqual(publicUser);
       expect(result.user).not.toHaveProperty('passwordHash');
     }, 15000);
 
@@ -534,7 +548,7 @@ describe('AuthService', () => {
       });
 
       expect(Object.keys(result).sort()).toEqual(
-        Object.keys({ ...authUser, testSenderAddress: null }).sort(),
+        Object.keys({ ...publicUser, testSenderAddress: null }).sort(),
       );
     });
   });

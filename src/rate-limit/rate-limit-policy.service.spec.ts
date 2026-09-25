@@ -1,6 +1,7 @@
 import type { ExecutionContext } from '@nestjs/common';
 import type { ConfigService } from '@nestjs/config';
 import { AuthController } from '../auth/auth.controller';
+import { GoogleAuthController } from '../auth/google-auth.controller';
 import { DomainsController } from '../domains/domains.controller';
 import { EmailsController } from '../emails/emails.controller';
 import { HealthController } from '../health/health.controller';
@@ -151,6 +152,22 @@ describe('buildRateLimitPolicies', () => {
     );
   });
 
+  it('compte les deux routes Google par IP, sous le budget par défaut (B30)', () => {
+    expect(policies[RATE_LIMIT_POLICY.GOOGLE_AUTH].tracker).toBe(
+      TRACKER_KIND.IP,
+    );
+    expect(policies[RATE_LIMIT_POLICY.GOOGLE_AUTH].exempt).toBe(false);
+    expect(
+      policies[RATE_LIMIT_POLICY.GOOGLE_AUTH].windows[RATE_LIMIT_WINDOW.MINUTE],
+    ).toEqual({
+      limit: RATE_LIMIT_DEFAULTS.GOOGLE_AUTH_PER_MINUTE,
+      ttl: MINUTE_WINDOW_MS,
+    });
+    expect(RATE_LIMIT_DEFAULTS.GOOGLE_AUTH_PER_MINUTE).toBeLessThan(
+      RATE_LIMIT_DEFAULTS.DEFAULT_PER_MINUTE,
+    );
+  });
+
   it('laisse passer SNS plus largement que le budget par défaut', () => {
     // Bloquer AWS trop tôt nous ferait perdre bounces et plaintes : sa limite
     // doit rester au-dessus du plafond générique.
@@ -237,6 +254,7 @@ describe('buildRateLimitPolicies', () => {
       'RATE_LIMIT_DNS_CHECK_PER_HOUR',
       'RATE_LIMIT_DOMAIN_CHECK_PER_HOUR',
       'RATE_LIMIT_EMAILS_PER_MINUTE',
+      'RATE_LIMIT_GOOGLE_AUTH_PER_MINUTE',
       'RATE_LIMIT_LOGIN_PER_HOUR',
       'RATE_LIMIT_LOGIN_PER_MINUTE',
       'RATE_LIMIT_REGISTER_PER_DAY',
@@ -275,6 +293,12 @@ describe('RateLimitPolicyService', () => {
     expect(
       resolver.policyFor(contextOf(CspReportController, 'receive')).id,
     ).toBe(RATE_LIMIT_POLICY.CSP_REPORT);
+    expect(
+      resolver.policyFor(contextOf(GoogleAuthController, 'start')).id,
+    ).toBe(RATE_LIMIT_POLICY.GOOGLE_AUTH);
+    expect(
+      resolver.policyFor(contextOf(GoogleAuthController, 'callback')).id,
+    ).toBe(RATE_LIMIT_POLICY.GOOGLE_AUTH);
   });
 
   it('retombe sur la politique par défaut pour une route non décorée', () => {

@@ -19,6 +19,14 @@ export {
   EMAIL_CONFIRMATION_TTL_HOURS,
   EMAIL_NOT_VERIFIED_MESSAGE,
 } from './email-confirmation.constants';
-export { AUTH_USER_SELECT } from './auth.types';
-export type { AuthUser, AuthenticatedRequest } from './auth.types';
+export {
+  AUTH_USER_RECORD_SELECT,
+  AUTH_USER_SELECT,
+  toAuthUser,
+} from './auth.types';
+export type {
+  AuthUser,
+  AuthUserRecord,
+  AuthenticatedRequest,
+} from './auth.types';
 export { resolveTestSenderAddress } from './test-sender-address';

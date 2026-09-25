@@ -63,6 +63,8 @@ export const RATE_LIMIT_POLICY = {
   SNS_WEBHOOK: 'sns-webhook',
   /** `POST /v1/csp-report` */
   CSP_REPORT: 'csp-report',
+  /** `GET /v1/auth/google` et `GET /v1/auth/google/callback` (B30) */
+  GOOGLE_AUTH: 'google-auth',
   /** `GET /health` — jamais compté (voir plus bas). */
   EXEMPT: 'exempt',
 } as const;
@@ -168,6 +170,21 @@ export const RATE_LIMIT_DEFAULTS = {
    * sans laisser quiconque remplir le disque.
    */
   CSP_REPORT_PER_MINUTE: 30,
+  /**
+   * `RATE_LIMIT_GOOGLE_AUTH_PER_MINUTE` (B30) - départ vers Google et rappel,
+   * comptés par IP (routes publiques, il n'y a ni utilisateur ni email à
+   * viser avant le retour de Google).
+   *
+   * Pourquoi une politique dédiée : `LOGIN` et `REGISTER` comptent aussi par
+   * email visé, absent ici, et leurs budgets (5/min, 3/h par IP) puniraient
+   * tout un NAT opérateur guinéen pour une connexion qui coûte deux requêtes.
+   * Le défaut global (120/min) est trop large pour une route publique qui
+   * écrit un état dans Redis à chaque appel et déclenche un appel sortant
+   * vers Google au rappel. 30/min laisse passer une quinzaine de connexions
+   * Google par minute derrière une même IP ; la création de comptes en masse
+   * est de toute façon bornée par le coût d'un compte Google.
+   */
+  GOOGLE_AUTH_PER_MINUTE: 30,
 } as const;
 
 /** Nombre de proxys de confiance par défaut (Dokploy/Traefik en pose un). */

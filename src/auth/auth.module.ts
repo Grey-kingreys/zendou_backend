@@ -8,6 +8,8 @@ import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
 import { EmailConfirmationService } from './email-confirmation.service';
 import { EmailVerifiedGuard } from './email-verified.guard';
+import { GoogleAuthController } from './google-auth.controller';
+import { GoogleOAuthService } from './google-oauth.service';
 import { LoginLockoutService } from './login-lockout.service';
 import { SessionAuthGuard } from './session-auth.guard';
 import { SessionService } from './session.service';
@@ -19,7 +21,7 @@ import { SessionService } from './session.service';
  */
 @Module({
   imports: [CaptchaModule, EmailsCoreModule],
-  controllers: [AuthController],
+  controllers: [AuthController, GoogleAuthController],
   providers: [
     {
       provide: SESSION_REDIS,
@@ -43,6 +45,8 @@ import { SessionService } from './session.service';
     // Partage le client Redis des sessions : mêmes contraintes de
     // disponibilité, même politique de repli, un seul pool de connexions.
     LoginLockoutService,
+    // Même client Redis que les sessions pour l'état OAuth (B30).
+    GoogleOAuthService,
   ],
   exports: [
     AuthService,

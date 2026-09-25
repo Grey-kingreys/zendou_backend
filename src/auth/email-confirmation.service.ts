@@ -193,27 +193,49 @@ export class EmailConfirmationService {
         throw new BadRequestException(INVALID_CONFIRMATION_TOKEN_MESSAGE);
       }
 
-      const now = new Date();
+      const creditsGranted = await this.markVerified(tx, user.id, new Date());
 
-      // Usage unique : seule la transaction qui fait basculer `emailVerifiedAt`
-      // de NULL à une date poursuit. Une seconde, concurrente, compte 0.
-      const confirmed = await tx.user.updateMany({
-        where: { id: user.id, emailVerifiedAt: null },
-        data: { emailVerifiedAt: now },
-      });
-
-      if (confirmed.count === 0) {
+      if (creditsGranted === null) {
         throw new ConflictException(ALREADY_CONFIRMED_MESSAGE);
       }
 
-      const creditsGranted = await this.grantWelcomeCredits(tx, user.id, now);
-
-      this.logger.log(
-        `Adresse confirmée pour l'utilisateur ${user.id} — ${creditsGranted} crédits de bienvenue accordés`,
-      );
-
       return { confirmed: true as const, creditsGranted };
     });
+  }
+
+  /**
+   * Chemin de confirmation commun : fait basculer `emailVerifiedAt` de NULL à
+   * `now`, puis accorde le crédit de bienvenue. À appeler **dans** une
+   * transaction. Utilisé par `confirm` (lien reçu par email) et par le
+   * rattachement Google d'un compte non confirmé (B30), où Google atteste
+   * l'adresse à la place du lien.
+   *
+   * Rend `null` si le compte était déjà confirmé (rien n'est écrit), sinon
+   * le nombre de crédits réellement accordés.
+   */
+  async markVerified(
+    tx: Prisma.TransactionClient,
+    userId: string,
+    now: Date,
+  ): Promise<number | null> {
+    // Usage unique : seule la transaction qui fait basculer `emailVerifiedAt`
+    // de NULL à une date poursuit. Une seconde, concurrente, compte 0.
+    const confirmed = await tx.user.updateMany({
+      where: { id: userId, emailVerifiedAt: null },
+      data: { emailVerifiedAt: now },
+    });
+
+    if (confirmed.count === 0) {
+      return null;
+    }
+
+    const creditsGranted = await this.grantWelcomeCredits(tx, userId, now);
+
+    this.logger.log(
+      `Adresse confirmée pour l'utilisateur ${userId} - ${creditsGranted} crédits de bienvenue accordés`,
+    );
+
+    return creditsGranted;
   }
 
   /**
@@ -225,8 +247,12 @@ export class EmailConfirmationService {
    * configuration (`WELCOME_CREDITS`) ; `0` n'écrit aucune ligne de ledger,
    * mais pose quand même le verrou — remonter la valeur plus tard ne doit pas
    * rouvrir un droit sur les comptes déjà passés par ici.
+   *
+   * Publique pour la création d'un compte par Google (B30), confirmé
+   * d'emblée : même verrou, même motif, même montant, dans la transaction
+   * de création.
    */
-  private async grantWelcomeCredits(
+  async grantWelcomeCredits(
     tx: Prisma.TransactionClient,
     userId: string,
     now: Date,

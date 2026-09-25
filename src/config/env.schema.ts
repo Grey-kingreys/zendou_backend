@@ -35,6 +35,10 @@ import {
 /** `true`, `1`, `yes`, `on` (insensible à la casse) valent vrai ; tout le reste faux. */
 const TRUTHY_VALUES = ['1', 'true', 'yes', 'on'];
 
+/** Refus d'une configuration Google partielle (B30). */
+export const GOOGLE_PARTIAL_CONFIG_MESSAGE =
+  'GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET et GOOGLE_REDIRECT_URI doivent être renseignées ensemble, ou aucune';
+
 /** Nom par défaut du compte admin créé au démarrage si `ADMIN_NAME` est absente. */
 export const DEFAULT_ADMIN_NAME = 'Administrateur Zendou';
 
@@ -314,6 +318,13 @@ const baseEnvSchema = z.object({
   RATE_LIMIT_RESEND_CONFIRMATION_PER_HOUR: positiveIntFromEnv(
     RATE_LIMIT_DEFAULTS.RESEND_CONFIRMATION_PER_HOUR,
   ),
+  /**
+   * « Continuer avec Google » (`GET /v1/auth/google` et son rappel), comptés
+   * par IP. Voir `RATE_LIMIT_DEFAULTS.GOOGLE_AUTH_PER_MINUTE`.
+   */
+  RATE_LIMIT_GOOGLE_AUTH_PER_MINUTE: positiveIntFromEnv(
+    RATE_LIMIT_DEFAULTS.GOOGLE_AUTH_PER_MINUTE,
+  ),
 
   // ─── Verrouillage progressif de la connexion (auth/login-lockout.service) ───
 
@@ -489,6 +500,33 @@ const baseEnvSchema = z.object({
    * cahier §12. `0` désactive le bonus.
    */
   WELCOME_CREDITS: nonNegativeIntFromEnv(DEFAULT_WELCOME_CREDITS),
+
+  // ─── Connexion Google (B30) ───
+
+  /**
+   * Identifiant OAuth Google (console Google Cloud). Les trois variables
+   * `GOOGLE_*` vont ensemble ou pas du tout (voir le `refine` plus bas).
+   * Absentes, la fonction est désactivée : `GET /v1/auth/providers` répond
+   * `google: false` et le bouton disparaît du front.
+   */
+  GOOGLE_CLIENT_ID: z.preprocess(
+    emptyToUndefined,
+    z.string().trim().min(1).optional(),
+  ),
+  /** Secret du client OAuth Google. Ne jamais le commiter. */
+  GOOGLE_CLIENT_SECRET: z.preprocess(
+    emptyToUndefined,
+    z.string().trim().min(1).optional(),
+  ),
+  /**
+   * URI de redirection déclarée chez Google, **à l'identique** :
+   * `https://api.zendou.app/v1/auth/google/callback` en production. URL
+   * absolue, en `https` quand `NODE_ENV=production` (voir le `refine`).
+   */
+  GOOGLE_REDIRECT_URI: z.preprocess(
+    emptyToUndefined,
+    z.string().trim().url('doit être une URL absolue').optional(),
+  ),
 
   // ─── Mobile Money (numéros Zendou pour la recharge client, B22) ───
 
@@ -791,7 +829,40 @@ export const envSchema = baseEnvSchema
       path: ['SMTP_PORTS_STARTTLS'],
       message: SMTP_NO_LISTENING_PORT_MESSAGE,
     },
-  );
+  )
+  // B30 - une configuration Google partielle démarrerait une fonction qui
+  // échoue au premier clic. Les trois variables ensemble, ou aucune.
+  .refine(
+    (env) =>
+      new Set([
+        Boolean(env.GOOGLE_CLIENT_ID),
+        Boolean(env.GOOGLE_CLIENT_SECRET),
+        Boolean(env.GOOGLE_REDIRECT_URI),
+      ]).size === 1,
+    {
+      path: ['GOOGLE_CLIENT_ID'],
+      message: GOOGLE_PARTIAL_CONFIG_MESSAGE,
+    },
+  )
+  // Le `code` d'autorisation transite par cette URI : jamais en clair en
+  // production.
+  .refine(
+    (env) =>
+      env.NODE_ENV !== 'production' ||
+      !env.GOOGLE_REDIRECT_URI ||
+      env.GOOGLE_REDIRECT_URI.startsWith('https://'),
+    {
+      path: ['GOOGLE_REDIRECT_URI'],
+      message: 'doit être en https quand NODE_ENV=production',
+    },
+  )
+  // Le rappel redirige le navigateur vers `${APP_BASE_URL}${next}` : sans
+  // base explicite, la destination d'une connexion réussie serait devinée.
+  .refine((env) => !env.GOOGLE_CLIENT_ID || Boolean(env.APP_BASE_URL), {
+    path: ['APP_BASE_URL'],
+    message:
+      'est obligatoire quand la connexion Google est configurée (destination du rappel)',
+  });
 
 export type EnvConfig = z.infer<typeof envSchema>;
 

@@ -12,8 +12,12 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { UserStatus } from '@prisma/client';
 import type { Response } from 'express';
-import { AUTH_USER_SELECT, resolveTestSenderAddress } from '../auth';
-import type { AuthUser } from '../auth';
+import {
+  AUTH_USER_RECORD_SELECT,
+  resolveTestSenderAddress,
+  toAuthUser,
+} from '../auth';
+import type { AuthUserRecord } from '../auth';
 import { PrismaService } from '../prisma/prisma.service';
 import { TOO_MANY_REQUESTS_MESSAGE } from '../rate-limit/rate-limit.constants';
 import {
@@ -36,7 +40,7 @@ import { SecretHashingService } from './secret-hashing.service';
 interface AuthenticatedApiKey {
   id: string;
   revokedAt: Date | null;
-  user: AuthUser;
+  user: AuthUserRecord;
 }
 
 /**
@@ -99,7 +103,7 @@ export class ApiKeyAuthGuard implements CanActivate {
         select: {
           id: true,
           revokedAt: true,
-          user: { select: AUTH_USER_SELECT },
+          user: { select: AUTH_USER_RECORD_SELECT },
         },
       });
 
@@ -136,10 +140,10 @@ export class ApiKeyAuthGuard implements CanActivate {
     // aujourd'hui, mais `request.user` est typé `AuthUser` : on complète ce
     // champ ici aussi, par cohérence, pour ne pas laisser un `AuthUser`
     // structurellement incomplet circuler dans la requête.
-    request.user = {
-      ...apiKey.user,
-      testSenderAddress: resolveTestSenderAddress(this.configService),
-    };
+    request.user = toAuthUser(
+      apiKey.user,
+      resolveTestSenderAddress(this.configService),
+    );
     request.apiKeyId = apiKey.id;
 
     // Fire-and-forget : ne doit jamais ralentir/bloquer la requête entrante.

@@ -12,7 +12,11 @@ import {
   SMTP_NO_LISTENING_PORT_MESSAGE,
   SMTP_TLS_CERTIFICATE_REQUIRED_MESSAGE,
 } from '../smtp/smtp-relay.constants';
-import { SMTP_PORT_25_REFUSED_MESSAGE, validateEnv } from './env.schema';
+import {
+  GOOGLE_PARTIAL_CONFIG_MESSAGE,
+  SMTP_PORT_25_REFUSED_MESSAGE,
+  validateEnv,
+} from './env.schema';
 
 const BASE_ENV = {
   DATABASE_URL: 'postgresql://zendou:zendou@localhost:5433/zendou',
@@ -621,4 +625,72 @@ describe('validateEnv - MOBILE_MONEY_ORANGE_NUMBER / MOBILE_MONEY_MTN_NUMBER / M
       ).toThrow(new RegExp(variable));
     },
   );
+});
+
+describe('validateEnv - GOOGLE_* (B30)', () => {
+  const GOOGLE = {
+    GOOGLE_CLIENT_ID: 'id-de-test.apps.googleusercontent.com',
+    GOOGLE_CLIENT_SECRET: 'secret-de-test',
+    GOOGLE_REDIRECT_URI: 'http://localhost:4000/v1/auth/google/callback',
+    APP_BASE_URL: 'http://localhost:3000',
+  };
+
+  it('absentes : fonction désactivée, démarrage normal', () => {
+    const env = validateEnv({ ...BASE_ENV });
+    expect(env.GOOGLE_CLIENT_ID).toBeUndefined();
+    expect(env.RATE_LIMIT_GOOGLE_AUTH_PER_MINUTE).toBe(
+      RATE_LIMIT_DEFAULTS.GOOGLE_AUTH_PER_MINUTE,
+    );
+  });
+
+  it('les trois ensemble, avec APP_BASE_URL : accepté', () => {
+    expect(validateEnv({ ...BASE_ENV, ...GOOGLE }).GOOGLE_CLIENT_ID).toBe(
+      GOOGLE.GOOGLE_CLIENT_ID,
+    );
+  });
+
+  it.each(['GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET', 'GOOGLE_REDIRECT_URI'])(
+    'configuration partielle (sans %s) refusée',
+    (missing) => {
+      expect(() =>
+        validateEnv({ ...BASE_ENV, ...GOOGLE, [missing]: '' }),
+      ).toThrow(GOOGLE_PARTIAL_CONFIG_MESSAGE);
+    },
+  );
+
+  it('GOOGLE_REDIRECT_URI relative refusée', () => {
+    expect(() =>
+      validateEnv({
+        ...BASE_ENV,
+        ...GOOGLE,
+        GOOGLE_REDIRECT_URI: '/v1/auth/google/callback',
+      }),
+    ).toThrow('GOOGLE_REDIRECT_URI');
+  });
+
+  it('GOOGLE_REDIRECT_URI en http refusée en production, https acceptée', () => {
+    expect(() =>
+      validateEnv({
+        ...BASE_ENV,
+        ...PRODUCTION_REQUIRED,
+        ...GOOGLE,
+        NODE_ENV: 'production',
+      }),
+    ).toThrow('doit être en https quand NODE_ENV=production');
+    expect(
+      validateEnv({
+        ...BASE_ENV,
+        ...PRODUCTION_REQUIRED,
+        ...GOOGLE,
+        NODE_ENV: 'production',
+        GOOGLE_REDIRECT_URI: 'https://api.zendou.app/v1/auth/google/callback',
+      }).GOOGLE_REDIRECT_URI,
+    ).toBe('https://api.zendou.app/v1/auth/google/callback');
+  });
+
+  it('APP_BASE_URL obligatoire quand Google est configuré', () => {
+    expect(() =>
+      validateEnv({ ...BASE_ENV, ...GOOGLE, APP_BASE_URL: '' }),
+    ).toThrow('APP_BASE_URL');
+  });
 });

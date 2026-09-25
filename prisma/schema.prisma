@@ -47,7 +47,10 @@ enum SuppressionReason {
 model User {
   id             String     @id @default(cuid())
   email          String     @unique
-  passwordHash   String
+  /// Empreinte argon2id du mot de passe. `null` pour un compte qui n'a pas de
+  /// mot de passe : créé par « Continuer avec Google », ou rattaché à Google
+  /// alors qu'il n'était pas confirmé (mot de passe effacé, voir B30).
+  passwordHash   String?
   name           String
   company        String?
   declaredUsage  String?
@@ -90,6 +93,11 @@ model User {
   /// compte » : le crédit n'est écrit que par la transaction qui réussit à
   /// passer cette colonne de `null` à une date.
   welcomeCreditsGrantedAt DateTime?
+
+  /// Identifiant Google stable (claim `sub` de l'`id_token`, B30). `null` tant
+  /// que le compte n'est pas rattaché à Google. Unique : un compte Google ne
+  /// peut ouvrir qu'un seul compte Zendou.
+  googleSub String? @unique
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

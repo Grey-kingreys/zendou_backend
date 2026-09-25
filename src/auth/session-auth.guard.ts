@@ -8,7 +8,11 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { UserStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
-import { AUTH_USER_SELECT, AuthenticatedRequest } from './auth.types';
+import {
+  AUTH_USER_RECORD_SELECT,
+  AuthenticatedRequest,
+  toAuthUser,
+} from './auth.types';
 import { readSessionCookie } from './session-cookie';
 import { SessionService } from './session.service';
 import { resolveTestSenderAddress } from './test-sender-address';
@@ -43,7 +47,7 @@ export class SessionAuthGuard implements CanActivate {
 
     const selected = await this.prisma.user.findUnique({
       where: { id: userId },
-      select: AUTH_USER_SELECT,
+      select: AUTH_USER_RECORD_SELECT,
     });
 
     if (!selected) {
@@ -59,10 +63,10 @@ export class SessionAuthGuard implements CanActivate {
     // `testSenderAddress` n'est pas une colonne Prisma : voir la
     // documentation de `AuthUser.testSenderAddress` (`auth.types.ts`). C'est
     // ce chemin qui alimente `GET /v1/auth/me`.
-    request.user = {
-      ...selected,
-      testSenderAddress: resolveTestSenderAddress(this.configService),
-    };
+    request.user = toAuthUser(
+      selected,
+      resolveTestSenderAddress(this.configService),
+    );
     request.sessionToken = token;
 
     return true;

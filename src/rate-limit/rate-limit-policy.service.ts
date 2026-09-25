@@ -214,6 +214,20 @@ export function buildRateLimitPolicies(
       },
     },
 
+    [RATE_LIMIT_POLICY.GOOGLE_AUTH]: {
+      id: RATE_LIMIT_POLICY.GOOGLE_AUTH,
+      tracker: TRACKER_KIND.IP,
+      exempt: false,
+      windows: {
+        [RATE_LIMIT_WINDOW.MINUTE]: perMinute(
+          read(
+            'RATE_LIMIT_GOOGLE_AUTH_PER_MINUTE',
+            RATE_LIMIT_DEFAULTS.GOOGLE_AUTH_PER_MINUTE,
+          ),
+        ),
+      },
+    },
+
     [RATE_LIMIT_POLICY.EXEMPT]: {
       id: RATE_LIMIT_POLICY.EXEMPT,
       tracker: TRACKER_KIND.IP,

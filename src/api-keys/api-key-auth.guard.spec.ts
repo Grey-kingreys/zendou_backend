@@ -39,6 +39,10 @@ const activeUser: AuthUser = {
   // TEST_EMAIL_FROM non configurée par défaut dans ces tests (voir le mock
   // de ConfigService ci-dessous) : `resolveTestSenderAddress` renvoie `null`.
   testSenderAddress: null,
+  // Le double de base ne porte pas les colonnes `passwordHash` / `googleSub` :
+  // `toAuthUser` lit alors les deux présences comme fausses (B30).
+  hasPassword: false,
+  googleLinked: false,
 };
 
 /**

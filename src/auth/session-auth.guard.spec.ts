@@ -24,6 +24,23 @@ const activeUser: AuthUser = {
   // TEST_EMAIL_FROM non configurée par défaut dans ces tests (voir le mock
   // de ConfigService ci-dessous) : `resolveTestSenderAddress` renvoie `null`.
   testSenderAddress: null,
+  // Dérivés de `passwordHash` / `googleSub` de `activeRow` ci-dessous (B30).
+  hasPassword: true,
+  googleLinked: false,
+};
+
+/** Ligne telle que la base la rend (`AUTH_USER_RECORD_SELECT`). */
+const activeRow = {
+  id: activeUser.id,
+  email: activeUser.email,
+  name: activeUser.name,
+  company: activeUser.company,
+  declaredUsage: activeUser.declaredUsage,
+  role: activeUser.role,
+  status: activeUser.status,
+  createdAt: activeUser.createdAt,
+  passwordHash: '$argon2id$v=19$m=65536,t=3,p=4$fake',
+  googleSub: null,
 };
 
 function contextFor(request: Partial<AuthenticatedRequest>): ExecutionContext {
@@ -87,7 +104,7 @@ describe('SessionAuthGuard', () => {
 
   it('injects the current user on the request for a valid session', async () => {
     sessionService.resolve.mockResolvedValue('user_1');
-    findUnique.mockResolvedValue(activeUser);
+    findUnique.mockResolvedValue(activeRow);
 
     const request: Partial<AuthenticatedRequest> = {
       cookies: { [SESSION_COOKIE_NAME]: 'tok' },
@@ -103,7 +120,7 @@ describe('SessionAuthGuard', () => {
   it('attaches the sandbox sender address (bare form) when TEST_EMAIL_FROM is configured', async () => {
     configGet.mockReturnValue('Zendou Test <test@mail.kingreys.fr>');
     sessionService.resolve.mockResolvedValue('user_1');
-    findUnique.mockResolvedValue(activeUser);
+    findUnique.mockResolvedValue(activeRow);
 
     const request: Partial<AuthenticatedRequest> = {
       cookies: { [SESSION_COOKIE_NAME]: 'tok' },
@@ -120,7 +137,7 @@ describe('SessionAuthGuard', () => {
   it('reports null when TEST_EMAIL_FROM is absent', async () => {
     configGet.mockReturnValue(undefined);
     sessionService.resolve.mockResolvedValue('user_1');
-    findUnique.mockResolvedValue(activeUser);
+    findUnique.mockResolvedValue(activeRow);
 
     const request: Partial<AuthenticatedRequest> = {
       cookies: { [SESSION_COOKIE_NAME]: 'tok' },
@@ -131,10 +148,32 @@ describe('SessionAuthGuard', () => {
     expect(request.user).toHaveProperty('testSenderAddress', null);
   });
 
+  it('expose hasPassword / googleLinked sans jamais publier passwordHash ni googleSub (B30)', async () => {
+    sessionService.resolve.mockResolvedValue('user_1');
+    findUnique.mockResolvedValue({
+      ...activeRow,
+      passwordHash: null,
+      googleSub: 'google-sub-123',
+    });
+
+    const request: Partial<AuthenticatedRequest> = {
+      cookies: { [SESSION_COOKIE_NAME]: 'tok' },
+    };
+
+    await guard.canActivate(contextFor(request));
+
+    expect(request.user).toMatchObject({
+      hasPassword: false,
+      googleLinked: true,
+    });
+    expect(request.user).not.toHaveProperty('passwordHash');
+    expect(request.user).not.toHaveProperty('googleSub');
+  });
+
   it('throws 403 when the account is suspended', async () => {
     sessionService.resolve.mockResolvedValue('user_1');
     findUnique.mockResolvedValue({
-      ...activeUser,
+      ...activeRow,
       status: UserStatus.SUSPENDED,
     });
 

@@ -2,7 +2,11 @@ import { timingSafeEqual } from 'crypto';
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { SecretHashingService } from '../api-keys';
-import { AUTH_USER_SELECT, resolveTestSenderAddress } from '../auth';
+import {
+  AUTH_USER_RECORD_SELECT,
+  resolveTestSenderAddress,
+  toAuthUser,
+} from '../auth';
 import { PrismaService } from '../prisma/prisma.service';
 import { smtpReplyToError } from './smtp-reply.adapter';
 import { SMTP_REPLY_AUTH_INVALID_CREDENTIALS } from './smtp-reply';
@@ -76,7 +80,7 @@ export class SmtpAuthService {
         username: true,
         secretHash: true,
         revokedAt: true,
-        user: { select: AUTH_USER_SELECT },
+        user: { select: AUTH_USER_RECORD_SELECT },
       },
     });
 
@@ -136,10 +140,10 @@ export class SmtpAuthService {
       // `testSenderAddress` n'est pas une colonne Prisma : même complément que
       // dans `ApiKeyAuthGuard`, pour ne pas laisser circuler un `AuthUser`
       // structurellement incomplet (S7 s'en servira pour le bac à sable).
-      user: {
-        ...credential.user,
-        testSenderAddress: resolveTestSenderAddress(this.configService),
-      },
+      user: toAuthUser(
+        credential.user,
+        resolveTestSenderAddress(this.configService),
+      ),
     };
   }
 
