@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { AccountLifecycleModule } from '../account-lifecycle/account-lifecycle.module';
 import { AuthModule } from '../auth/auth.module';
 import { AdminGuard } from '../billing/admin/admin.guard';
 import { AdminStatsController } from './admin-stats.controller';
@@ -16,7 +17,7 @@ import { AdminUsersService } from './admin-users.service';
  * du rôle admin pour toute l'API.
  */
 @Module({
-  imports: [AuthModule],
+  imports: [AuthModule, AccountLifecycleModule],
   controllers: [AdminUsersController, AdminStatsController],
   providers: [AdminGuard, AdminUsersService, AdminStatsService],
 })

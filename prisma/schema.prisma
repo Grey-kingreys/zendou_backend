@@ -99,6 +99,23 @@ model User {
   /// peut ouvrir qu'un seul compte Zendou.
   googleSub String? @unique
 
+  /// Date d'anonymisation du compte (ANON-1), `null` tant qu'il ne l'est pas.
+  /// Marqueur d'intention : c'est lui, et non le motif de suspension, qui dit
+  /// « ce compte est anonymisé ». Le compte est aussi passé `SUSPENDED`, pour
+  /// que tous les gardes existants le refusent sans avoir à connaître ce champ.
+  anonymizedAt DateTime?
+
+  /// Dernière activité du titulaire (ANON-1) : connexion (mot de passe,
+  /// Google, session) ou envoi client accepté (API ou SMTP). Écrite au plus
+  /// une fois par heure et par compte. `null` = aucune activité connue : on
+  /// se rabat alors sur `createdAt`, jamais sur « inactif depuis toujours ».
+  lastActivityAt DateTime?
+
+  /// Date d'envoi de l'avertissement « compte inactif » (ANON-1). Un seul
+  /// avertissement par période d'inactivité : levé dès que le compte redevient
+  /// actif.
+  inactivityWarningSentAt DateTime?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -111,6 +128,9 @@ model User {
 
   adminActionsPerformed AdminAction[] @relation("AdminActionsPerformed")
   adminActionsReceived  AdminAction[] @relation("AdminActionsReceived")
+
+  /// Sert la recherche quotidienne des comptes inactifs (ANON-1).
+  @@index([lastActivityAt])
 }
 
 model ApiKey {
@@ -295,6 +315,7 @@ enum AdminActionType {
   APPROVE_TOPUP
   REJECT_TOPUP
   DELETE_USER
+  ANONYMIZE_USER
 }
 
 /// Journal d'audit des actions administratives : qui a fait quoi, sur qui,

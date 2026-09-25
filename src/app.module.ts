@@ -17,6 +17,7 @@ import { SnsWebhookModule } from './sns-webhook/sns-webhook.module';
 import { CspReportModule } from './csp-report';
 import { BillingModule } from './billing/billing.module';
 import { AdminModule } from './admin';
+import { AccountLifecycleModule } from './account-lifecycle/account-lifecycle.module';
 import { SeedModule } from './seed/seed.module';
 import { RateLimitModule } from './rate-limit';
 import { RetentionModule } from './retention/retention.module';
@@ -60,6 +61,8 @@ import { EMAIL_SEND_QUEUE } from './queues/queues';
     CspReportModule,
     BillingModule,
     AdminModule,
+    // Anonymisation des comptes (ANON-1).
+    AccountLifecycleModule,
     SeedModule,
   ],
 })

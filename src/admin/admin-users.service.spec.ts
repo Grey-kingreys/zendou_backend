@@ -10,6 +10,8 @@ import {
   UserRole,
   UserStatus,
 } from '@prisma/client';
+import { AccountAnonymizationService } from '../account-lifecycle/account-anonymization.service';
+import { ANONYMIZED_CANNOT_REACTIVATE_MESSAGE } from '../account-lifecycle/account-lifecycle.constants';
 import { SessionService } from '../auth';
 import { CREDIT_REASON_WELCOME_BONUS } from '../billing/billing.constants';
 import { PrismaService } from '../prisma/prisma.service';
@@ -70,6 +72,7 @@ describe('AdminUsersService', () => {
   const actionCount = jest.fn();
   const $transaction = jest.fn();
   const destroyAllForUser = jest.fn();
+  const anonymize = jest.fn();
 
   /** Tous les appels Prisma du service, pour compter le coût d'une page. */
   const prismaCalls = [
@@ -169,6 +172,10 @@ describe('AdminUsersService', () => {
         AdminUsersService,
         { provide: PrismaService, useValue: prisma },
         { provide: SessionService, useValue: sessionService },
+        {
+          provide: AccountAnonymizationService,
+          useValue: { anonymize },
+        },
       ],
     }).compile();
 
@@ -424,6 +431,52 @@ describe('AdminUsersService', () => {
 
       expect($transaction).not.toHaveBeenCalled();
       expect(totalPrismaCalls()).toBe(0);
+    });
+  });
+
+  describe('anonymize', () => {
+    it('delegates with the admin origin and serialises the date', async () => {
+      const anonymizedAt = new Date('2026-09-25T10:00:00.000Z');
+      anonymize.mockResolvedValue({ anonymizedAt, remainingActions: [] });
+
+      const result = await service.anonymize('admin_1', 'u1');
+
+      expect(anonymize).toHaveBeenCalledWith('u1', {
+        kind: 'admin',
+        adminId: 'admin_1',
+      });
+      expect(result).toEqual({
+        anonymizedAt: '2026-09-25T10:00:00.000Z',
+        remainingActions: [],
+      });
+    });
+
+    it('passes the remaining actions through, never swallowing them', async () => {
+      anonymize.mockResolvedValue({
+        anonymizedAt: NOW,
+        remainingActions: ['Supprimer à la main...'],
+      });
+
+      const result = await service.anonymize('admin_1', 'u1');
+
+      expect(result.remainingActions).toEqual(['Supprimer à la main...']);
+    });
+  });
+
+  describe('reactivate (anonymized account)', () => {
+    it('refuses to reactivate an anonymized account (409), writing nothing', async () => {
+      userFindUnique.mockResolvedValue({
+        id: 'u1',
+        status: UserStatus.SUSPENDED,
+        suspensionReason: 'Compte anonymisé',
+        anonymizedAt: NOW,
+      });
+
+      await expect(service.reactivate('admin_1', 'u1', {})).rejects.toThrow(
+        new ConflictException(ANONYMIZED_CANNOT_REACTIVATE_MESSAGE),
+      );
+      expect(userUpdate).not.toHaveBeenCalled();
+      expect(actionCreate).not.toHaveBeenCalled();
     });
   });
 

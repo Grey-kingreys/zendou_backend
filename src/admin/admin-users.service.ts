@@ -11,6 +11,8 @@ import {
   UserRole,
   UserStatus,
 } from '@prisma/client';
+import { AccountAnonymizationService } from '../account-lifecycle/account-anonymization.service';
+import { ANONYMIZED_CANNOT_REACTIVATE_MESSAGE } from '../account-lifecycle/account-lifecycle.constants';
 import { SessionService } from '../auth';
 import { CREDIT_REASON_WELCOME_BONUS } from '../billing/billing.constants';
 import { PrismaService } from '../prisma/prisma.service';
@@ -36,6 +38,7 @@ import {
 import type {
   AdminCreditResult,
   AdminQuotaResult,
+  AdminUserAnonymizeResult,
   AdminUserActionResult,
   AdminUserDeleteResult,
   AdminUserDetail,
@@ -95,6 +98,7 @@ export class AdminUsersService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly sessionService: SessionService,
+    private readonly anonymization: AccountAnonymizationService,
   ) {}
 
   /**
@@ -292,11 +296,22 @@ export class AdminUsersService {
     return this.prisma.$transaction(async (tx) => {
       const current = await tx.user.findUnique({
         where: { id },
-        select: { id: true, status: true, suspensionReason: true },
+        select: {
+          id: true,
+          status: true,
+          suspensionReason: true,
+          anonymizedAt: true,
+        },
       });
 
       if (!current) {
         throw new NotFoundException(USER_NOT_FOUND_MESSAGE);
+      }
+
+      // Un compte anonymisé reste suspendu pour de bon (ANON-1) : le
+      // réactiver rouvrirait une coquille vide, sans titulaire joignable.
+      if (current.anonymizedAt) {
+        throw new ConflictException(ANONYMIZED_CANNOT_REACTIVATE_MESSAGE);
       }
 
       if (current.status === UserStatus.ACTIVE) {
@@ -433,6 +448,32 @@ export class AdminUsersService {
         actionId: action.id,
       };
     });
+  }
+
+  /**
+   * Anonymisation sur demande d'effacement (ANON-1). Toute la logique vit
+   * dans `AccountAnonymizationService`, partagée avec le traitement des
+   * comptes inactifs.
+   */
+  async anonymize(
+    adminId: string,
+    id: string,
+  ): Promise<AdminUserAnonymizeResult> {
+    const result = await this.anonymization.anonymize(id, {
+      kind: 'admin',
+      adminId,
+    });
+
+    // L'origine `admin` lève ou réussit : `null` est réservé au traitement
+    // automatique (compte devenu inéligible).
+    if (!result) {
+      throw new Error(`Anonymisation de ${id} sans résultat`);
+    }
+
+    return {
+      anonymizedAt: result.anonymizedAt.toISOString(),
+      remainingActions: result.remainingActions,
+    };
   }
 
   /**

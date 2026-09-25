@@ -99,6 +99,17 @@ export interface AdminCreditResult {
 }
 
 /** Réponse de `DELETE /v1/admin/users/:id` : le compte a réellement disparu. */
+/**
+ * Réponse de `POST /v1/admin/users/:id/anonymize` (ANON-1).
+ * `remainingActions` : ce qui n'a pas pu être fait hors de la base (identité
+ * SES non détruite, sessions non révoquées), en français, à faire à la main.
+ * Vide quand tout est fait.
+ */
+export interface AdminUserAnonymizeResult {
+  anonymizedAt: string;
+  remainingActions: string[];
+}
+
 export interface AdminUserDeleteResult {
   id: string;
   email: string;

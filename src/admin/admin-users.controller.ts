@@ -21,6 +21,7 @@ import { SuspendUserDto } from './dto/suspend-user.dto';
 import { UpdateQuotaDto } from './dto/update-quota.dto';
 import type {
   AdminCreditResult,
+  AdminUserAnonymizeResult,
   AdminQuotaResult,
   AdminUserActionResult,
   AdminUserDetail,
@@ -85,6 +86,20 @@ export class AdminUsersController {
     @CurrentUser() admin: AuthUser,
   ): Promise<AdminCreditResult> {
     return this.adminUsersService.grantCredits(admin.id, id, dto);
+  }
+
+  /**
+   * Anonymisation du compte (ANON-1), réponse à une demande d'effacement :
+   * données personnelles effacées, traces de paiement conservées. Refus en
+   * 409 : soi-même, compte ADMIN, compte déjà anonymisé ; 404 si inconnu.
+   */
+  @Post(':id/anonymize')
+  @HttpCode(HttpStatus.OK)
+  anonymize(
+    @Param('id') id: string,
+    @CurrentUser() admin: AuthUser,
+  ): Promise<AdminUserAnonymizeResult> {
+    return this.adminUsersService.anonymize(admin.id, id);
   }
 
   /**

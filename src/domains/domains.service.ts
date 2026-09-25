@@ -152,6 +152,17 @@ export class DomainsService {
   }
 
   /**
+   * Détruit l'identité SES d'un domaine dont la ligne a déjà été supprimée
+   * par ailleurs (anonymisation d'un compte, ANON-1). Même appel au même
+   * driver que {@link remove} : la seule différence est que la ligne `Domain`
+   * n'existe plus, donc aucun contrôle de propriétaire n'est possible ici.
+   * Lève si SES échoue : l'appelant doit le dire, jamais l'avaler.
+   */
+  async deleteSesIdentity(name: string): Promise<void> {
+    await this.sesDriver.deleteIdentity(name);
+  }
+
+  /**
    * Charge un domaine en le restreignant au propriétaire : le domaine d'un
    * autre client est traité comme inexistant.
    */
