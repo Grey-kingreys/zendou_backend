@@ -42,6 +42,7 @@ function userRow(id: string, overrides: Record<string, unknown> = {}) {
     dailySendLimit: 200,
     createdAt: new Date('2026-07-01T00:00:00.000Z'),
     suspendedAt: null,
+    anonymizedAt: null,
     ...overrides,
   };
 }
@@ -431,6 +432,40 @@ describe('AdminUsersService', () => {
 
       expect($transaction).not.toHaveBeenCalled();
       expect(totalPrismaCalls()).toBe(0);
+    });
+  });
+
+  describe('anonymizedAt exposé (ANON-1)', () => {
+    const anonymizedAt = new Date('2026-09-25T10:00:00.000Z');
+
+    it('est sélectionné et renvoyé par la liste', async () => {
+      userFindMany.mockResolvedValue([userRow('u1', { anonymizedAt })]);
+      userCount.mockResolvedValue(1);
+
+      const result = await service.list({});
+
+      const [args] = userFindMany.mock.calls[0] as [
+        { select: Record<string, boolean> },
+      ];
+      expect(args.select.anonymizedAt).toBe(true);
+      expect(result.items[0].anonymizedAt).toEqual(anonymizedAt);
+    });
+
+    it('est sélectionné et renvoyé par la fiche', async () => {
+      userFindUnique.mockResolvedValue({
+        ...userRow('u1', { anonymizedAt }),
+        suspensionReason: null,
+        reputationResetAt: null,
+        declaredUsage: null,
+      });
+
+      const result = await service.detail('u1');
+
+      const [args] = userFindUnique.mock.calls[0] as [
+        { select: Record<string, boolean> },
+      ];
+      expect(args.select.anonymizedAt).toBe(true);
+      expect(result.anonymizedAt).toEqual(anonymizedAt);
     });
   });
 

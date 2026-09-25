@@ -29,6 +29,12 @@ export interface AdminUserRow {
   dailySendLimit: number;
   createdAt: Date;
   suspendedAt: Date | null;
+  /**
+   * Date d'anonymisation (ANON-1), `null` pour un compte qui ne l'est pas.
+   * Permet à l'écran admin de griser l'action et d'afficher l'état sans
+   * déduire quoi que ce soit de l'adresse.
+   */
+  anonymizedAt: Date | null;
 }
 
 /** Ligne de la liste admin : le compte, son solde et son volume récent. */

@@ -64,6 +64,7 @@ const USER_ROW_SELECT = {
   dailySendLimit: true,
   createdAt: true,
   suspendedAt: true,
+  anonymizedAt: true,
 } satisfies Record<keyof AdminUserRow, true>;
 
 /** Colonnes renvoyées par les actions qui changent l'état d'un compte. */
