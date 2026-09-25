@@ -10,3 +10,13 @@ export const EMAIL_SEND_QUEUE = 'email-send';
  * seul endroit.
  */
 export const SMTP_CERT_CHECK_QUEUE = 'smtp-cert-check';
+
+/**
+ * File de la tâche répétable de rétention (RET-12 : purge des jobs en échec
+ * et du journal des envois). Même raisonnement que {@link SMTP_CERT_CHECK_QUEUE} :
+ * elle n'est pas déclarée dans `AppModule`, son propre planificateur la crée.
+ * Contrairement à la surveillance du certificat, ce planificateur est **actif
+ * dans tous les environnements** (garantie produit, pas une option), voir
+ * `retention.module.ts`.
+ */
+export const RETENTION_QUEUE = 'retention-purge';
