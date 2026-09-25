@@ -172,6 +172,19 @@ async function seedAccount(db: InMemoryPrisma) {
     phoneNumber: '+224620000000',
     transactionRef: 'OM-123',
     status: 'APPROVED',
+    rejectionReason: null,
+  });
+  db.seed('topUpRequest', {
+    id: 't2',
+    userId: 'u1',
+    packId: 'growth',
+    credits: 30000,
+    amountGnf: 90000,
+    method: 'MTN_MOMO',
+    phoneNumber: '+224 664 12 34 56',
+    transactionRef: 'MOMO-9',
+    status: 'REJECTED',
+    rejectionReason: 'Référence introuvable, rappeler Awa au 664 12 34 56',
   });
   db.seed('suppression', {
     id: 'sup1',
@@ -245,7 +258,7 @@ describe('AccountAnonymizationService', () => {
       expect(rowsOf('email', 'u1')).toEqual([]);
     });
 
-    it('conserve à l’identique les traces de paiement (CreditEntry, TopUpRequest)', async () => {
+    it('conserve à l’identique les mouvements de crédits', async () => {
       const before = db.snapshot();
 
       await service.anonymize('u1', admin);
@@ -254,9 +267,25 @@ describe('AccountAnonymizationService', () => {
         before.creditEntry.filter((row) => row.userId === 'u1'),
       );
       expect(rowsOf('creditEntry', 'u1')).toHaveLength(3);
-      expect(rowsOf('topUpRequest', 'u1')).toEqual(
-        before.topUpRequest.filter((row) => row.userId === 'u1'),
-      );
+    });
+
+    it('conserve les recharges, numéro masqué et motif de refus effacé', async () => {
+      const before = db.snapshot();
+
+      await service.anonymize('u1', admin);
+
+      const expected = before.topUpRequest
+        .filter((row) => row.userId === 'u1')
+        .map((row) => ({
+          ...row,
+          phoneNumber: row.id === 't1' ? '+224****0000' : '+224****3456',
+          rejectionReason: null,
+        }));
+      expect(rowsOf('topUpRequest', 'u1')).toEqual(expected);
+      const stored = JSON.stringify(db.tables.topUpRequest);
+      expect(stored).not.toContain('620000000');
+      expect(stored).not.toContain('664 12 34 56');
+      expect(stored).not.toContain('Awa');
     });
 
     it('supprime les lignes de suppression du compte, garde les globales et celles des autres', async () => {

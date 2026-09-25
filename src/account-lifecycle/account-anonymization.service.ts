@@ -17,6 +17,7 @@ import {
   ANONYMIZED_ON_REQUEST_REASON,
   SELF_ANONYMIZE_MESSAGE,
   anonymizedEmail,
+  maskPhoneNumber,
 } from './account-lifecycle.constants';
 
 /** Message 404, identique à celui des autres routes admin. */
@@ -63,7 +64,8 @@ export interface AnonymizationResult {
  * En une transaction : suppression des domaines, clés API, identifiants SMTP,
  * des lignes `Suppression` propres au compte (elles portent son adresse
  * d'origine et celles de ses destinataires, rattachées à son id ; le compte ne
- * pouvant plus envoyer, elles ne protègent plus rien),
+ * pouvant plus envoyer, elles ne protègent plus rien), masquage du numéro
+ * Mobile Money et effacement du motif de refus des demandes de recharge,
  * et lignes `Email` (adresses de destinataires = données de tiers ; le corps
  * n'est jamais stocké), réécriture du compte, ligne d'audit. Puis, hors de la
  * transaction et seulement après son succès : destruction des identités SES
@@ -183,6 +185,24 @@ export class AccountAnonymizationService {
       // Seulement les lignes rattachées à ce compte : les suppressions
       // globales (`userId` nul) et celles des autres comptes restent.
       await tx.suppression.deleteMany({ where: { userId } });
+
+      // Traces de paiement conservées pour la comptabilité, mais sans ce
+      // qui identifie le payeur : numéro Mobile Money masqué, motif de refus
+      // (texte libre de l'admin) effacé. Montants, pack, méthode, référence
+      // opérateur et dates restent.
+      const topUps = await tx.topUpRequest.findMany({
+        where: { userId },
+        select: { id: true, phoneNumber: true },
+      });
+      for (const topUp of topUps) {
+        await tx.topUpRequest.update({
+          where: { id: topUp.id },
+          data: {
+            phoneNumber: maskPhoneNumber(topUp.phoneNumber),
+            rejectionReason: null,
+          },
+        });
+      }
 
       if (origin.kind === 'admin') {
         // Ni l'email ni le nom d'origine : le but est d'effacer. La cible

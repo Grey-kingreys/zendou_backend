@@ -60,6 +60,33 @@ export function anonymizedEmail(userId: string): string {
   return `anonymise-${userId}@${ANONYMIZED_EMAIL_DOMAIN}`;
 }
 
+/**
+ * Masque un numéro de téléphone Mobile Money conservé dans une trace de
+ * paiement (ANON-1) : seuls l'indicatif (`+` suivi de 3 chiffres, celui de la
+ * Guinée) et les 4 derniers chiffres restent, séparés par `****` comme dans
+ * `maskSecret`. Assez pour rapprocher une recharge d'un relevé opérateur avec
+ * `transactionRef`, plus assez pour joindre ou identifier le payeur.
+ *
+ * `+224621112233` devient `+224****2233`. Un numéro trop court pour que ce
+ * découpage cache quoi que ce soit est masqué en entier, sauf ses 4 derniers
+ * chiffres s'il en a plus de 4.
+ */
+export function maskPhoneNumber(value: string): string {
+  const digits = value.replace(/\D/g, '');
+  const last4 = digits.slice(-4);
+
+  if (digits.length <= 4) {
+    return '****';
+  }
+
+  const prefix =
+    value.trim().startsWith('+') && digits.length > 7
+      ? `+${digits.slice(0, 3)}`
+      : '';
+
+  return `${prefix}****${last4}`;
+}
+
 /** Nom affiché d'un compte anonymisé. */
 export const ANONYMIZED_NAME = 'Compte anonymisé';
 
