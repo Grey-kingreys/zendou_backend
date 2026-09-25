@@ -18,6 +18,7 @@ import {
   DAILY_LIMIT_REACHED_MESSAGE,
   DOMAIN_NOT_VERIFIED_MESSAGE,
   EMAIL_SEND_JOB,
+  FAILED_EMAIL_JOB_RETENTION_SECONDS,
   INSUFFICIENT_CREDITS_MESSAGE,
   INVALID_FROM_MESSAGE,
   INVALID_REPLY_TO_MESSAGE,
@@ -545,6 +546,7 @@ describe('EmailsService', () => {
           attempts: SEND_JOB_ATTEMPTS,
           backoff: { type: 'exponential', delay: SEND_JOB_BACKOFF_DELAY_MS },
           removeOnComplete: true,
+          removeOnFail: { age: FAILED_EMAIL_JOB_RETENTION_SECONDS },
         },
       );
     });

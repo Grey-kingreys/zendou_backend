@@ -32,6 +32,7 @@ import {
   EMAIL_PUBLIC_ID_BYTES,
   EMAIL_PUBLIC_ID_PREFIX,
   EMAIL_SEND_JOB,
+  FAILED_EMAIL_JOB_RETENTION_SECONDS,
   INSUFFICIENT_CREDITS_MESSAGE,
   INVALID_FROM_MESSAGE,
   INVALID_REPLY_TO_MESSAGE,
@@ -433,6 +434,11 @@ export class EmailsService {
         attempts: SEND_JOB_ATTEMPTS,
         backoff: { type: 'exponential', delay: SEND_JOB_BACKOFF_DELAY_MS },
         removeOnComplete: true,
+        // Politique de confidentialité (25/09) : un job en échec définitif ne
+        // garde son corps dans Redis que 7 jours. Voir
+        // `FAILED_EMAIL_JOB_RETENTION_SECONDS` pour ce que ce champ couvre et
+        // ne couvre pas.
+        removeOnFail: { age: FAILED_EMAIL_JOB_RETENTION_SECONDS },
       },
     );
 
@@ -559,6 +565,9 @@ export class EmailsService {
         attempts: SEND_JOB_ATTEMPTS,
         backoff: { type: 'exponential', delay: SEND_JOB_BACKOFF_DELAY_MS },
         removeOnComplete: true,
+        // Même politique que l'envoi client (voir plus haut) : même file,
+        // même worker, même promesse de purge à 7 jours.
+        removeOnFail: { age: FAILED_EMAIL_JOB_RETENTION_SECONDS },
       },
     );
 

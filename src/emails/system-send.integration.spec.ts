@@ -9,6 +9,7 @@ import { REPUTATION_REDIS } from '../reputation/reputation.constants';
 import { ReputationService } from '../reputation/reputation.service';
 import { HARD_BOUNCE_ERROR_PREFIX } from '../sns-webhook/sns-webhook.types';
 import type { SendEmailDto } from './dto/send-email.dto';
+import { FAILED_EMAIL_JOB_RETENTION_SECONDS } from './emails.constants';
 import { EmailsService, SystemSenderUnavailableError } from './emails.service';
 
 const USER_ID = 'user_1';
@@ -467,6 +468,7 @@ describe('Envoi système (intégration EmailsService ↔ ReputationService)', ()
           jobId: result.id,
           attempts: 5,
           removeOnComplete: true,
+          removeOnFail: { age: FAILED_EMAIL_JOB_RETENTION_SECONDS },
         }),
       );
 

@@ -66,6 +66,22 @@ export const SEND_JOB_ATTEMPTS = 5;
 /** Délai de base du backoff exponentiel entre deux tentatives (30 s). */
 export const SEND_JOB_BACKOFF_DELAY_MS = 30_000;
 
+/**
+ * Durée de conservation, dans Redis, du corps d'un job d'envoi qui a épuisé
+ * toutes ses tentatives (politique de confidentialité, décision du porteur du
+ * 25/09 : « emails en échec : corps purgé 7 j »). BullMQ exprime
+ * `removeOnFail.age` en **secondes**, contrairement à `retention.constants.ts`
+ * (BullMQ `queue.clean`, en millisecondes) : ne pas mélanger les deux unités.
+ *
+ * Ce réglage ne couvre que les jobs qui échouent **après** son introduction :
+ * un job déjà en échec avant le déploiement garde la politique sous laquelle
+ * il a été créé (aucune limite). Le rattrapage des jobs déjà en échec est le
+ * rôle du nettoyage quotidien (`RetentionService`, `retention.service.ts`),
+ * qui appelle `queue.clean(…, 'failed')` sans égard à la date de création du
+ * job.
+ */
+export const FAILED_EMAIL_JOB_RETENTION_SECONDS = 7 * 24 * 60 * 60;
+
 /** Longueur maximale d'un message d'erreur persisté sur l'email. */
 export const ERROR_MESSAGE_MAX_LENGTH = 1_000;
 

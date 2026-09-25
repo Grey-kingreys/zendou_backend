@@ -11,7 +11,10 @@ import {
   UserStatus,
 } from '@prisma/client';
 import { createTransport } from 'nodemailer';
-import { EMAIL_SEND_JOB } from '../emails/emails.constants';
+import {
+  EMAIL_SEND_JOB,
+  FAILED_EMAIL_JOB_RETENTION_SECONDS,
+} from '../emails/emails.constants';
 import { EmailsService } from '../emails/emails.service';
 import type { EmailSendJobData } from '../emails/emails.types';
 import { PrismaService } from '../prisma/prisma.service';
@@ -585,7 +588,10 @@ describe('Relais SMTP — pipeline de bout en bout (B6/S7)', () => {
       expect(relay.queue.add).toHaveBeenCalledWith(
         EMAIL_SEND_JOB,
         expect.objectContaining({ emailId: 'email_1', kind: 'raw' }),
-        expect.objectContaining({ jobId: publicId }),
+        expect.objectContaining({
+          jobId: publicId,
+          removeOnFail: { age: FAILED_EMAIL_JOB_RETENTION_SECONDS },
+        }),
       );
 
       const job = onlyJob();
