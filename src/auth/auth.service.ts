@@ -8,6 +8,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { Prisma } from '@prisma/client';
 import * as argon2 from 'argon2';
+import { recordAccountActivity } from '../account-lifecycle/account-activity';
 import { PrismaService } from '../prisma/prisma.service';
 import {
   EMAIL_ALREADY_USED_MESSAGE,
@@ -161,6 +162,7 @@ export class AuthService {
     );
 
     const token = await this.sessionService.create(user.id);
+    this.recordActivity(user.id);
 
     return { user, token };
   }
@@ -214,8 +216,23 @@ export class AuthService {
     );
 
     const token = await this.sessionService.create(user.id);
+    this.recordActivity(user.id);
 
     return { user, token };
+  }
+
+  /**
+   * Une connexion est une activité (ANON-1) : elle repousse l'anonymisation
+   * pour inactivité et lève un avertissement en cours. Hors du chemin
+   * critique : un échec d'écriture ne doit jamais faire échouer la connexion.
+   */
+  private recordActivity(userId: string): void {
+    void recordAccountActivity(this.prisma, userId).catch((error: unknown) => {
+      this.logger.warn(
+        `Enregistrement de l'activité en échec pour l'utilisateur ${userId}`,
+        error instanceof Error ? error.stack : String(error),
+      );
+    });
   }
 
   private resolveGoogleAccount(identity: GoogleIdentity): Promise<string> {

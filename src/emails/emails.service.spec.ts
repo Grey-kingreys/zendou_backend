@@ -72,7 +72,7 @@ describe('EmailsService', () => {
   const suppression = { findFirst: jest.fn() };
   const creditEntry = { aggregate: jest.fn(), create: jest.fn() };
   const email = { create: jest.fn(), count: jest.fn() };
-  const user = { findUnique: jest.fn() };
+  const user = { findUnique: jest.fn(), updateMany: jest.fn() };
   const queue = { add: jest.fn() };
 
   /** Configuration des envois système ; réglée par test. */
@@ -111,6 +111,7 @@ describe('EmailsService', () => {
       return Promise.resolve({ id: 'email_1', publicId: args.data.publicId });
     });
     queue.add.mockResolvedValue({ id: 'job_1' });
+    user.updateMany.mockResolvedValue({ count: 1 });
     prisma.$transaction.mockImplementation(
       (run: (tx: typeof prisma) => Promise<unknown>) => run(prisma),
     );
@@ -125,6 +126,75 @@ describe('EmailsService', () => {
     }).compile();
 
     service = module.get(EmailsService);
+  });
+
+  /**
+   * ANON-1 : un envoi client accepté est une activité du titulaire. Au plus
+   * une écriture par heure : une activité connue de moins d'une heure ne
+   * coûte aucune requête.
+   */
+  describe('activité du compte', () => {
+    const flush = () => new Promise((resolve) => setImmediate(resolve));
+    const HOUR_MS = 60 * 60 * 1000;
+
+    it('enregistre l’activité après un envoi accepté quand elle date de plus d’une heure', async () => {
+      user.findUnique.mockResolvedValue({
+        dailySendLimit: 200,
+        email: 'aissatou@exemple.gn',
+        lastActivityAt: new Date(Date.now() - 2 * HOUR_MS),
+      });
+
+      await service.send(USER_ID, dtoWith());
+      await flush();
+
+      expect(user.updateMany).toHaveBeenCalledTimes(1);
+      const [args] = user.updateMany.mock.calls[0] as [
+        { where: Record<string, unknown>; data: Record<string, unknown> },
+      ];
+      expect(args.where).toMatchObject({ id: USER_ID, anonymizedAt: null });
+      expect(args.data.lastActivityAt).toBeInstanceOf(Date);
+      expect(args.data.inactivityWarningSentAt).toBeNull();
+    });
+
+    it('n’écrit rien quand l’activité connue a moins d’une heure', async () => {
+      user.findUnique.mockResolvedValue({
+        dailySendLimit: 200,
+        email: 'aissatou@exemple.gn',
+        lastActivityAt: new Date(Date.now() - 30 * 60 * 1000),
+      });
+
+      await service.send(USER_ID, dtoWith());
+      await flush();
+
+      expect(user.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('enregistre aussi un envoi accepté vers une adresse supprimée', async () => {
+      suppression.findFirst.mockResolvedValue({ id: 'sup_1' });
+
+      await service.send(USER_ID, dtoWith());
+      await flush();
+
+      expect(user.updateMany).toHaveBeenCalledTimes(1);
+    });
+
+    it('n’enregistre rien pour un envoi refusé', async () => {
+      await expect(
+        service.send(USER_ID, dtoWith({ from: 'pas-un-email' })),
+      ).rejects.toThrow(BadRequestException);
+      await flush();
+
+      expect(user.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('un échec d’écriture ne remet pas l’envoi en cause', async () => {
+      user.updateMany.mockRejectedValue(new Error('base indisponible'));
+
+      await expect(service.send(USER_ID, dtoWith())).resolves.toMatchObject({
+        status: 'queued',
+      });
+      await flush();
+    });
   });
 
   describe('validation', () => {

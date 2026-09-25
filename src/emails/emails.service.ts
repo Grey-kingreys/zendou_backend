@@ -58,6 +58,7 @@ import type {
   SystemSendResult,
 } from './emails.types';
 import type { SendEmailDto } from './dto/send-email.dto';
+import { recordAccountActivity } from '../account-lifecycle/account-activity';
 import { isAddressSuppressed } from './suppressions';
 
 /**
@@ -248,7 +249,7 @@ export class EmailsService {
     userId: string,
     input: AcceptEmailInput,
   ): Promise<SendEmailResponse> {
-    await this.assertAccountMaySend(userId);
+    const { lastActivityAt } = await this.assertAccountMaySend(userId);
 
     const from = parseEmailAddress(input.from);
 
@@ -374,6 +375,8 @@ export class EmailsService {
         select: { publicId: true },
       });
 
+      this.recordActivity(userId, lastActivityAt);
+
       return { id: suppressed.publicId, status: 'suppressed' };
     }
 
@@ -442,7 +445,26 @@ export class EmailsService {
       },
     );
 
+    this.recordActivity(userId, lastActivityAt);
+
     return { id: email.publicId, status: 'queued' };
+  }
+
+  /**
+   * Un envoi client accepté est une activité (ANON-1). Aucune requête si
+   * l'activité connue a moins d'une heure ; sinon une écriture, hors du
+   * chemin critique : l'envoi est déjà accepté, rien ne doit le remettre en
+   * cause.
+   */
+  private recordActivity(userId: string, known: Date | null): void {
+    void recordAccountActivity(this.prisma, userId, new Date(), known).catch(
+      (error: unknown) => {
+        this.logger.warn(
+          `Enregistrement de l'activité en échec pour l'utilisateur ${userId}`,
+          error instanceof Error ? error.stack : String(error),
+        );
+      },
+    );
   }
 
   /**
@@ -589,10 +611,12 @@ export class EmailsService {
    * Rien ne change pour l'API : les gardes refusent déjà plus tôt, en 403, et
    * ce contrôle ne peut donc jamais s'y déclencher.
    */
-  private async assertAccountMaySend(userId: string): Promise<void> {
+  private async assertAccountMaySend(
+    userId: string,
+  ): Promise<{ lastActivityAt: Date | null }> {
     const account = await this.prisma.user.findUnique({
       where: { id: userId },
-      select: { status: true, emailVerifiedAt: true },
+      select: { status: true, emailVerifiedAt: true, lastActivityAt: true },
     });
 
     if (account?.status === UserStatus.SUSPENDED) {
@@ -620,6 +644,8 @@ export class EmailsService {
         (body) => new ForbiddenException(body),
       );
     }
+
+    return { lastActivityAt: account?.lastActivityAt ?? null };
   }
 
   /**

@@ -61,7 +61,7 @@ import { EMAIL_SEND_QUEUE } from './queues/queues';
     CspReportModule,
     BillingModule,
     AdminModule,
-    // Anonymisation des comptes (ANON-1).
+    // Anonymisation et traitement quotidien des comptes inactifs (ANON-1).
     AccountLifecycleModule,
     SeedModule,
   ],

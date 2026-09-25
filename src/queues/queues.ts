@@ -20,3 +20,10 @@ export const SMTP_CERT_CHECK_QUEUE = 'smtp-cert-check';
  * `retention.module.ts`.
  */
 export const RETENTION_QUEUE = 'retention-purge';
+
+/**
+ * File du traitement quotidien des comptes inactifs (ANON-1). Même montage
+ * que `SMTP_CERT_CHECK_QUEUE` : file et worker créés par le planificateur, pas
+ * déclarés dans `AppModule`.
+ */
+export const ACCOUNT_INACTIVITY_QUEUE = 'account-inactivity';

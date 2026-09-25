@@ -4,3 +4,4 @@ export type {
   AnonymizationOrigin,
   AnonymizationResult,
 } from './account-anonymization.service';
+export { recordAccountActivity } from './account-activity';
