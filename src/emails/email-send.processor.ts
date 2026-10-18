@@ -102,6 +102,7 @@ export class EmailSendProcessor extends WorkerHost {
               // le worker ne fait que la transmettre, comme les corps.
               replyTo: job.data.replyTo,
               headers: job.data.headers,
+              toDisplay: job.data.toDisplay,
             },
       );
 

@@ -285,10 +285,14 @@ export class EmailsService {
       );
     }
 
-    // Un seul destinataire en v1, et sous forme d'adresse nue.
-    const toAddress = normalizeEmailAddress(input.to);
+    // Un seul destinataire en v1, sous les deux formes du `From:` (adresse nue
+    // ou « Nom <adresse> »). L'adresse nue en minuscules reste la clé partout
+    // (suppression, bac à sable, ligne `Email`) ; le nom d'affichage ne sert
+    // qu'à la remise à SES (`toDisplay`).
+    const to = parseEmailAddress(input.to);
+    const toAddress = to?.address;
 
-    if (!toAddress) {
+    if (!to || !toAddress) {
       throw refuse(
         SEND_REFUSAL.INVALID_TO,
         HttpStatus.BAD_REQUEST,
@@ -453,6 +457,8 @@ export class EmailsService {
             // sans reply-to reste **exactement** celle d'avant, comme pour
             // `kind` (rien à migrer au redéploiement).
             ...(replyTo.length > 0 ? { replyTo: replyTo[0] } : {}),
+            // Nom d'affichage du destinataire : seulement s'il y en a un.
+            ...(to.name ? { toDisplay: formatEmailAddress(to) } : {}),
             // Même principe : le job d'un envoi sans en-têtes reste identique.
             ...(input.content.headers &&
             Object.keys(input.content.headers).length > 0

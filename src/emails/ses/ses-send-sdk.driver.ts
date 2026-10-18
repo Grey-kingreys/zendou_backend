@@ -97,7 +97,11 @@ export class SesSendSdkDriver implements SesSendDriver {
           // adresse de la ligne `Email` traitée. C'est ce qui rend l'éventail
           // multi-destinataires exact et la fuite d'un `Bcc:` resté dans les
           // octets bruts structurellement impossible : SES ne livre qu'ici.
-          Destination: { ToAddresses: [payload.to] },
+          Destination: {
+            ToAddresses: [
+              (payload.kind === 'simple' && payload.toDisplay) || payload.to,
+            ],
+          },
           Content: buildContent(payload),
           // Contenu `Simple` seulement : c'est SES qui compose le MIME, donc
           // lui qui doit poser l'en-tête `Reply-To:`. En `Raw`, l'en-tête est

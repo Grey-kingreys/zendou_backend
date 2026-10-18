@@ -148,6 +148,31 @@ describe('SesSendSdkDriver', () => {
       expect(lastInput().Content?.Simple).not.toHaveProperty('Headers');
     });
 
+    it('remet le destinataire avec son nom d’affichage quand il y en a un', async () => {
+      await driverWith().send(
+        simplePayload({ toDisplay: 'Client Test <client@exemple.gn>' }),
+      );
+
+      expect(lastInput().Destination?.ToAddresses).toEqual([
+        'Client Test <client@exemple.gn>',
+      ]);
+    });
+
+    it('ne remet que l’adresse nue sans nom d’affichage', async () => {
+      await driverWith().send(simplePayload());
+
+      expect(lastInput().Destination?.ToAddresses).toEqual([TO]);
+    });
+
+    it('ignore toDisplay sur le chemin Raw', async () => {
+      await driverWith().send({
+        ...rawPayload(),
+        toDisplay: 'Pirate <autre@exemple.gn>',
+      } as SesSendRawPayload);
+
+      expect(lastInput().Destination?.ToAddresses).toEqual([TO]);
+    });
+
     // ─── (e) adresse de réponse (E1) ──────────────────────────────────────
     it('pose ReplyToAddresses quand une adresse de réponse accompagne l’envoi', async () => {
       await driverWith().send(

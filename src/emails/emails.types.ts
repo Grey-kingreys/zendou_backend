@@ -35,6 +35,12 @@ export interface SimpleEmailSendJobData {
    * octets du client. Ajouté au job seulement s'il y en a.
    */
   headers?: Record<string, string>;
+  /**
+   * Destinataire sous la forme `Nom <adresse>`, quand le client a fourni un
+   * nom d'affichage. L'adresse nue reste celle de la ligne `Email` ; ceci ne
+   * sert qu'à `Destination.ToAddresses` chez SES. Absent sans nom.
+   */
+  toDisplay?: string;
 }
 
 /**

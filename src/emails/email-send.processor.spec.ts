@@ -137,6 +137,19 @@ describe('EmailSendProcessor', () => {
     );
   });
 
+  it('transmet au driver le nom d’affichage du destinataire porté par le job', async () => {
+    await processor.process(
+      jobFor({ toDisplay: 'Client Test <client@exemple.gn>' }),
+    );
+
+    expect(driver.send).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'simple',
+        toDisplay: 'Client Test <client@exemple.gn>',
+      }),
+    );
+  });
+
   it('n’invente aucune adresse de réponse quand le job n’en porte pas', async () => {
     await processor.process(jobFor());
 

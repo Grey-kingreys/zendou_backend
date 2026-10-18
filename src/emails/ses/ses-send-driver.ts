@@ -39,6 +39,12 @@ export interface SesSendSimplePayload extends SesSendEnvelope {
    * `Content.Simple.Headers` : l'API reste en contenu Simple, jamais en Raw.
    */
   headers?: Record<string, string>;
+  /**
+   * Destinataire sous la forme `Nom <adresse>`, remis à SES à la place de
+   * `to` quand le client a fourni un nom d'affichage. `to` reste l'adresse nue
+   * de la ligne `Email`.
+   */
+  toDisplay?: string;
 }
 
 /**

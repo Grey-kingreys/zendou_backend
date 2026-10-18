@@ -1221,6 +1221,85 @@ describe('EmailsService - expéditeur, adresse de réponse et codes de refus (E1
     });
   });
 
+  // ─── destinataire sous la forme « Nom <adresse> » ───────────────────────
+  describe('destinataire avec nom d’affichage', () => {
+    const flush = () => new Promise((resolve) => setImmediate(resolve));
+
+    function lastJob(): Record<string, unknown> {
+      const [, jobData] = queue.add.mock.calls[0] as [
+        string,
+        Record<string, unknown>,
+      ];
+      return jobData;
+    }
+
+    it.each([
+      [
+        'un nom simple',
+        'Client Test <Client@Exemple.GN>',
+        'Client Test <client@exemple.gn>',
+      ],
+      [
+        'un nom entre guillemets',
+        '"Diallo, Awa" <client@exemple.gn>',
+        '"Diallo, Awa" <client@exemple.gn>',
+      ],
+      [
+        'un nom non ASCII',
+        'Aïssatou Diallo <client@exemple.gn>',
+        'Aïssatou Diallo <client@exemple.gn>',
+      ],
+    ])(
+      'accepte %s : adresse nue en base, nom transmis seulement à SES',
+      async (_label, to, expectedDisplay) => {
+        const result = await service.send(USER_ID, dtoWith({ to }));
+        await flush();
+
+        expect(result.status).toBe('queued');
+        expect(capturedEmailCreate!.data.toAddress).toBe('client@exemple.gn');
+        expect(lastJob().toDisplay).toBe(expectedDisplay);
+      },
+    );
+
+    it('accepte toujours l’adresse nue, sans champ toDisplay', async () => {
+      await service.send(USER_ID, dtoWith({ to: 'Client@Exemple.GN' }));
+
+      expect(capturedEmailCreate!.data.toAddress).toBe('client@exemple.gn');
+      expect(lastJob()).not.toHaveProperty('toDisplay');
+    });
+
+    it('vérifie la liste de suppression sur l’adresse nue', async () => {
+      await service.send(
+        USER_ID,
+        dtoWith({ to: 'Client Test <Client@Exemple.GN>' }),
+      );
+
+      expect(suppression.findFirst).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            address: 'client@exemple.gn',
+          }) as unknown,
+        }),
+      );
+    });
+
+    it.each(['Nom <pas-une-adresse>', 'Nom <a@b.gn> autre chose', '<>'])(
+      'refuse %j en 400 INVALID_TO',
+      async (to) => {
+        const body = await refusalBodyOf(
+          service.send(USER_ID, dtoWith({ to })),
+        );
+
+        expect(body).toMatchObject({
+          statusCode: 400,
+          message: INVALID_TO_MESSAGE,
+          code: SEND_REFUSAL.INVALID_TO,
+        });
+        expectNoSideEffect();
+      },
+    );
+  });
+
   // ─── en-têtes personnalisés (liste blanche) ──────────────────────────────
   describe('en-têtes personnalisés', () => {
     it('met les en-têtes acceptés dans le job', async () => {

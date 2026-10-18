@@ -83,13 +83,14 @@ const VALID_BODY: SendEmailDto = {
 /**
  * Les deux requêtes du rapport d'intégration : **même code 400, même phrase
  * métier, deux chemins d'échec**. `to` en tableau échoue chez class-validator
- * (`@IsString`), `to` avec nom d'affichage échoue dans `EmailsService.accept`
- * (`normalizeEmailAddress` refuse la partie locale « Nom <client »), qui lève
- * un `BadRequestException` à la main. Les deux messages sont la même constante
+ * (`@IsString`), `to` en chaîne mais illisible (ici « Nom <client@localhost> »,
+ * domaine sans point) échoue dans `EmailsService.accept`
+ * (`parseEmailAddress` la refuse), qui lève un `BadRequestException` à la main.
+ * Le format « Nom <adresse> » valide, lui, est accepté depuis la vague 21. Les deux messages sont la même constante
  * `INVALID_TO_MESSAGE`, partagée exprès entre le DTO et le service.
  */
 const PORTEUR_TABLEAU = { ...VALID_BODY, to: ['client@exemple.gn'] };
-const PORTEUR_CHAINE = { ...VALID_BODY, to: 'Nom <client@exemple.gn>' };
+const PORTEUR_CHAINE = { ...VALID_BODY, to: 'Nom <client@localhost>' };
 
 // ---------------------------------------------------------------------------
 // Cobayes : les deux chemins qu'aucune route réelle ne permet d'atteindre à la
