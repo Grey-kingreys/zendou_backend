@@ -219,13 +219,19 @@ describe('EmailsService', () => {
       alertSentAt?: Date | null;
     }): void {
       creditEntry.findFirst.mockResolvedValue({ createdAt: LAST_CREDIT_AT });
+      // `current` est le solde après le débit. La première somme complète est
+      // celle d'`assertSufficientCredits`, lue avant le débit (1 de plus).
+      let fullSums = 0;
       creditEntry.aggregate.mockImplementation(
-        ({ where }: { where: { createdAt?: unknown } }) =>
-          Promise.resolve({
-            _sum: {
-              delta: where.createdAt ? options.afterCredit : options.current,
-            },
-          }),
+        ({ where }: { where: { createdAt?: unknown } }) => {
+          if (where.createdAt) {
+            return Promise.resolve({ _sum: { delta: options.afterCredit } });
+          }
+          fullSums += 1;
+          return Promise.resolve({
+            _sum: { delta: options.current + (fullSums === 1 ? 1 : 0) },
+          });
+        },
       );
       user.findUnique.mockResolvedValue({
         dailySendLimit: 200,
@@ -270,6 +276,57 @@ describe('EmailsService', () => {
 
     it('ne fait rien tant que le solde reste au seuil ou au-dessus', async () => {
       givenLedger({ afterCredit: 1000, current: 100 });
+
+      await service.send(USER_ID, dtoWith());
+      await flush();
+
+      expect(sendSystem).not.toHaveBeenCalled();
+    });
+
+    it('coûte peu sur le chemin courant : pas de solde relu, pas de lecture du compte', async () => {
+      givenLedger({ afterCredit: 1000, current: 500 });
+      user.findUnique.mockClear();
+
+      await service.send(USER_ID, dtoWith());
+      await flush();
+
+      // assertSufficientCredits + la somme jusqu'au dernier crédit, rien de plus.
+      expect(creditEntry.aggregate).toHaveBeenCalledTimes(2);
+      expect(creditEntry.findFirst).toHaveBeenCalledTimes(1);
+      // Compte (assertAccountMaySend) et quota seulement : pas de relecture pour l'alerte.
+      expect(user.findUnique).toHaveBeenCalledTimes(2);
+      expect(sendSystem).not.toHaveBeenCalled();
+    });
+
+    it('sort dès le marqueur quand le compte est déjà alerté : aucune somme de plus', async () => {
+      givenLedger({
+        afterCredit: 1000,
+        current: 20,
+        alertSentAt: new Date('2026-10-05T10:00:00.000Z'),
+      });
+
+      await service.send(USER_ID, dtoWith());
+      await flush();
+
+      // Seule la somme d'assertSufficientCredits.
+      expect(creditEntry.aggregate).toHaveBeenCalledTimes(1);
+    });
+
+    it('relit le solde exact avant d’alerter : un crédit arrivé entre-temps annule l’alerte', async () => {
+      givenLedger({ afterCredit: 1000, current: 80 });
+      let fullSums = 0;
+      creditEntry.aggregate.mockImplementation(
+        ({ where }: { where: { createdAt?: unknown } }) => {
+          if (where.createdAt) {
+            return Promise.resolve({ _sum: { delta: 1000 } });
+          }
+          fullSums += 1;
+          // Avant le débit : 81 ; au moment de relire : un crédit est passé.
+          return Promise.resolve({
+            _sum: { delta: fullSums === 1 ? 81 : 500 },
+          });
+        },
+      );
 
       await service.send(USER_ID, dtoWith());
       await flush();

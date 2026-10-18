@@ -271,7 +271,8 @@ export class EmailsService {
     userId: string,
     input: AcceptEmailInput,
   ): Promise<SendEmailResponse> {
-    const { lastActivityAt } = await this.assertAccountMaySend(userId);
+    const { lastActivityAt, lowBalanceAlertSentAt } =
+      await this.assertAccountMaySend(userId);
 
     const from = parseEmailAddress(input.from);
 
@@ -402,7 +403,7 @@ export class EmailsService {
       return { id: suppressed.publicId, status: 'suppressed' };
     }
 
-    await this.assertSufficientCredits(userId);
+    const balanceBefore = await this.assertSufficientCredits(userId);
     await this.assertDailyLimitNotReached(userId);
 
     const publicId = generateEmailPublicId();
@@ -473,7 +474,11 @@ export class EmailsService {
     );
 
     this.recordActivity(userId, lastActivityAt);
-    this.alertIfLowBalance(userId);
+    this.alertIfLowBalance(
+      userId,
+      balanceBefore - CREDITS_PER_EMAIL,
+      lowBalanceAlertSentAt,
+    );
 
     return { id: email.publicId, status: 'queued' };
   }
@@ -485,14 +490,24 @@ export class EmailsService {
    * Appelée après chaque débit d'envoi du point d'acceptation, donc aussi bien
    * pour l'API que pour le relais SMTP. `sendSystem` ne débite pas et n'y
    * passe jamais : l'alerte ne peut pas se déclencher elle-même.
+   *
+   * `estimatedBalance` (solde lu par `assertSufficientCredits`, moins le crédit
+   * débité) et `alertSentAt` (lu avec le compte) évitent toute relecture du
+   * grand livre sur le chemin courant.
    */
-  private alertIfLowBalance(userId: string): void {
-    void this.sendLowBalanceAlert(userId).catch((error: unknown) => {
-      this.logger.warn(
-        `Alerte de solde bas en échec pour l'utilisateur ${userId}`,
-        error instanceof Error ? error.stack : String(error),
-      );
-    });
+  private alertIfLowBalance(
+    userId: string,
+    estimatedBalance: number,
+    alertSentAt: Date | null,
+  ): void {
+    void this.sendLowBalanceAlert(userId, estimatedBalance, alertSentAt).catch(
+      (error: unknown) => {
+        this.logger.warn(
+          `Alerte de solde bas en échec pour l'utilisateur ${userId}`,
+          error instanceof Error ? error.stack : String(error),
+        );
+      },
+    );
   }
 
   /**
@@ -502,46 +517,49 @@ export class EmailsService {
    * plus récent la périme, ce qui réarme le mécanisme sans état à remettre à
    * zéro. La prise du marqueur est atomique (deux envois concurrents ne
    * produisent qu'un message).
+   *
+   * Coût par envoi, du moins au plus cher, avec sortie dès que l'alerte est
+   * exclue : une lecture du dernier crédit ; puis, si le compte n'est pas déjà
+   * alerté depuis ce crédit, une somme du grand livre jusqu'à ce crédit. Le
+   * solde courant et le marqueur sont déjà connus. Le solde exact, le compte
+   * et la prise du marqueur ne sont lus que dans le cas rare où le solde est
+   * réellement sous le seuil. Aucune borne constante ne garantit l'absence
+   * d'alerte (le seuil dépend du solde après le dernier crédit), d'où la
+   * lecture du dernier crédit.
    */
-  private async sendLowBalanceAlert(userId: string): Promise<void> {
+  private async sendLowBalanceAlert(
+    userId: string,
+    estimatedBalance: number,
+    alertSentAt: Date | null,
+  ): Promise<void> {
     const lastCredit = await this.prisma.creditEntry.findFirst({
       where: { userId, delta: { gt: 0 } },
       orderBy: { createdAt: 'desc' },
       select: { createdAt: true },
     });
 
-    if (!lastCredit) {
+    if (!lastCredit || (alertSentAt && alertSentAt >= lastCredit.createdAt)) {
       return;
     }
 
-    const account = await this.prisma.user.findUnique({
-      where: { id: userId },
-      select: { email: true, name: true, lowBalanceAlertSentAt: true },
+    const afterCredit = await this.prisma.creditEntry.aggregate({
+      where: { userId, createdAt: { lte: lastCredit.createdAt } },
+      _sum: { delta: true },
     });
-
-    if (
-      !account ||
-      (account.lowBalanceAlertSentAt &&
-        account.lowBalanceAlertSentAt >= lastCredit.createdAt)
-    ) {
-      return;
-    }
-
-    const [afterCredit, current] = await Promise.all([
-      this.prisma.creditEntry.aggregate({
-        where: { userId, createdAt: { lte: lastCredit.createdAt } },
-        _sum: { delta: true },
-      }),
-      this.prisma.creditEntry.aggregate({
-        where: { userId },
-        _sum: { delta: true },
-      }),
-    ]);
-
     const threshold = Math.max(
       LOW_BALANCE_FLOOR,
       (afterCredit._sum.delta ?? 0) * LOW_BALANCE_RATIO,
     );
+
+    if (estimatedBalance >= threshold) {
+      return;
+    }
+
+    // Cas rare : le solde exact (des envois concurrents ont pu passer).
+    const current = await this.prisma.creditEntry.aggregate({
+      where: { userId },
+      _sum: { delta: true },
+    });
     const balance = current._sum.delta ?? 0;
 
     if (balance >= threshold) {
@@ -564,6 +582,15 @@ export class EmailsService {
     }
 
     try {
+      const account = await this.prisma.user.findUnique({
+        where: { id: userId },
+        select: { email: true, name: true },
+      });
+
+      if (!account) {
+        return;
+      }
+
       const message = buildLowBalanceAlertEmail({
         name: account.name,
         balance,
@@ -581,7 +608,7 @@ export class EmailsService {
       // Envoi impossible : le marqueur est levé, le prochain débit retentera.
       await this.prisma.user.updateMany({
         where: { id: userId },
-        data: { lowBalanceAlertSentAt: account.lowBalanceAlertSentAt },
+        data: { lowBalanceAlertSentAt: alertSentAt },
       });
 
       throw error;
@@ -760,12 +787,18 @@ export class EmailsService {
    * Rien ne change pour l'API : les gardes refusent déjà plus tôt, en 403, et
    * ce contrôle ne peut donc jamais s'y déclencher.
    */
-  private async assertAccountMaySend(
-    userId: string,
-  ): Promise<{ lastActivityAt: Date | null }> {
+  private async assertAccountMaySend(userId: string): Promise<{
+    lastActivityAt: Date | null;
+    lowBalanceAlertSentAt: Date | null;
+  }> {
     const account = await this.prisma.user.findUnique({
       where: { id: userId },
-      select: { status: true, emailVerifiedAt: true, lastActivityAt: true },
+      select: {
+        status: true,
+        emailVerifiedAt: true,
+        lastActivityAt: true,
+        lowBalanceAlertSentAt: true,
+      },
     });
 
     if (account?.status === UserStatus.SUSPENDED) {
@@ -794,7 +827,10 @@ export class EmailsService {
       );
     }
 
-    return { lastActivityAt: account?.lastActivityAt ?? null };
+    return {
+      lastActivityAt: account?.lastActivityAt ?? null,
+      lowBalanceAlertSentAt: account?.lowBalanceAlertSentAt ?? null,
+    };
   }
 
   /**
@@ -1008,13 +1044,14 @@ export class EmailsService {
   private async assertSufficientCredits(
     userId: string,
     messages = 1,
-  ): Promise<void> {
+  ): Promise<number> {
     const { _sum } = await this.prisma.creditEntry.aggregate({
       where: { userId },
       _sum: { delta: true },
     });
+    const balance = _sum.delta ?? 0;
 
-    if ((_sum.delta ?? 0) < CREDITS_PER_EMAIL * messages) {
+    if (balance < CREDITS_PER_EMAIL * messages) {
       throw refuse(
         SEND_REFUSAL.INSUFFICIENT_CREDITS,
         HttpStatus.PAYMENT_REQUIRED,
@@ -1022,6 +1059,8 @@ export class EmailsService {
         (body) => new HttpException(body, HttpStatus.PAYMENT_REQUIRED),
       );
     }
+
+    return balance;
   }
 
   /**
