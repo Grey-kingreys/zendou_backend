@@ -194,6 +194,9 @@ model Domain {
   status     DomainStatus @default(PENDING)
   dkimTokens String[]
   verifiedAt DateTime?
+  /// Dernier `MailFromDomainStatus` connu de SES (PENDING, SUCCESS, FAILED,
+  /// TEMPORARY_FAILURE), `null` tant que le MAIL FROM n'a pas été lu.
+  mailFromStatus String?
   createdAt  DateTime     @default(now())
 
   @@index([userId])

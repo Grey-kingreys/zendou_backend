@@ -1,15 +1,22 @@
 import { DomainStatus } from '@prisma/client';
-import { resolve4, resolveCname, resolveTxt } from 'node:dns/promises';
+import {
+  resolve4,
+  resolveCname,
+  resolveMx,
+  resolveTxt,
+} from 'node:dns/promises';
 import { checkDomainDns, isCloudflareIp } from './dns-check';
 
 jest.mock('node:dns/promises', () => ({
   resolveCname: jest.fn(),
+  resolveMx: jest.fn(),
   resolveTxt: jest.fn(),
   resolve4: jest.fn(),
 }));
 
 const mockResolveCname = resolveCname as unknown as jest.Mock;
 const mockResolveTxt = resolveTxt as unknown as jest.Mock;
+const mockResolveMx = resolveMx as unknown as jest.Mock;
 const mockResolve4 = resolve4 as unknown as jest.Mock;
 
 /** Erreur DNS « pas de données de ce type à ce nom » (comme Node la produit). */
@@ -18,6 +25,8 @@ function notFoundError(code: 'ENOTFOUND' | 'ENODATA' = 'ENODATA'): Error {
 }
 
 const DOMAIN_NAME = 'boutique-awa.gn';
+const MAIL_FROM_NAME = `bounce.${DOMAIN_NAME}`;
+const REGION = 'eu-west-3';
 
 function domainFixture(overrides: Record<string, unknown> = {}) {
   return {
@@ -25,6 +34,7 @@ function domainFixture(overrides: Record<string, unknown> = {}) {
     name: DOMAIN_NAME,
     dkimTokens: ['abc123token'],
     status: DomainStatus.PENDING,
+    mailFromStatus: null,
     ...overrides,
   };
 }
@@ -35,6 +45,7 @@ describe('checkDomainDns', () => {
     // SPF/DMARC ne sont pas sous test dans les scénarios DKIM ci-dessous :
     // tout TXT renvoie « introuvable » par défaut, sans casser le test.
     mockResolveTxt.mockRejectedValue(notFoundError());
+    mockResolveMx.mockRejectedValue(notFoundError());
     // Idem pour le repli A générique : absent par défaut.
     mockResolve4.mockRejectedValue(notFoundError());
   });
@@ -43,7 +54,7 @@ describe('checkDomainDns', () => {
     it('classe ok un CNAME correct', async () => {
       mockResolveCname.mockResolvedValue(['abc123token.dkim.amazonses.com']);
 
-      const result = await checkDomainDns(domainFixture());
+      const result = await checkDomainDns(domainFixture(), REGION);
 
       expect(result.dkim).toHaveLength(1);
       expect(result.dkim[0]).toMatchObject({
@@ -57,7 +68,7 @@ describe('checkDomainDns', () => {
     it('classe ok malgré une casse différente et un point final', async () => {
       mockResolveCname.mockResolvedValue(['ABC123TOKEN.DKIM.AmazonSES.com.']);
 
-      const result = await checkDomainDns(domainFixture());
+      const result = await checkDomainDns(domainFixture(), REGION);
 
       expect(result.dkim[0].status).toBe('ok');
     });
@@ -66,7 +77,7 @@ describe('checkDomainDns', () => {
       mockResolveCname.mockRejectedValue(notFoundError());
       mockResolve4.mockRejectedValue(notFoundError());
 
-      const result = await checkDomainDns(domainFixture());
+      const result = await checkDomainDns(domainFixture(), REGION);
 
       expect(result.dkim[0]).toMatchObject({
         status: 'introuvable',
@@ -78,7 +89,7 @@ describe('checkDomainDns', () => {
     it('classe valeur_differente un CNAME qui pointe ailleurs', async () => {
       mockResolveCname.mockResolvedValue(['autrechose.example.com']);
 
-      const result = await checkDomainDns(domainFixture());
+      const result = await checkDomainDns(domainFixture(), REGION);
 
       expect(result.dkim[0]).toMatchObject({
         status: 'valeur_differente',
@@ -91,7 +102,7 @@ describe('checkDomainDns', () => {
       mockResolveCname.mockRejectedValue(notFoundError());
       mockResolve4.mockResolvedValue([{ address: '104.16.10.20', ttl: 300 }]);
 
-      const result = await checkDomainDns(domainFixture());
+      const result = await checkDomainDns(domainFixture(), REGION);
 
       expect(result.dkim[0]).toMatchObject({
         status: 'valeur_differente',
@@ -106,7 +117,7 @@ describe('checkDomainDns', () => {
       mockResolveCname.mockRejectedValue(notFoundError());
       mockResolve4.mockResolvedValue([{ address: '203.0.113.42', ttl: 3600 }]);
 
-      const result = await checkDomainDns(domainFixture());
+      const result = await checkDomainDns(domainFixture(), REGION);
 
       expect(result.dkim[0]).toMatchObject({
         status: 'valeur_differente',
@@ -131,6 +142,7 @@ describe('checkDomainDns', () => {
 
       const result = await checkDomainDns(
         domainFixture({ dkimTokens: [token] }),
+        REGION,
       );
 
       expect(result.dkim[0]).toMatchObject({
@@ -155,6 +167,7 @@ describe('checkDomainDns', () => {
         domainFixture({
           dkimTokens: ['token-ok', 'token-absent', 'token-absent-2'],
         }),
+        REGION,
       );
 
       expect(result.dkim).toHaveLength(3);
@@ -168,27 +181,42 @@ describe('checkDomainDns', () => {
     it('classe ok quand include:amazonses.com est présent', async () => {
       mockResolveCname.mockRejectedValue(notFoundError());
       mockResolveTxt.mockImplementation((name: string) => {
+        if (name === MAIL_FROM_NAME) {
+          return Promise.resolve([['v=spf1 include:amazonses.com ~all']]);
+        }
+        return Promise.reject(notFoundError());
+      });
+
+      const result = await checkDomainDns(domainFixture(), REGION);
+
+      expect(result.spf.status).toBe('ok');
+      expect(result.spf.name).toBe(MAIL_FROM_NAME);
+    });
+
+    it('ne regarde plus le domaine racine : un SPF Amazon à la racine seule ne suffit pas', async () => {
+      mockResolveCname.mockRejectedValue(notFoundError());
+      mockResolveTxt.mockImplementation((name: string) => {
         if (name === DOMAIN_NAME) {
           return Promise.resolve([['v=spf1 include:amazonses.com ~all']]);
         }
         return Promise.reject(notFoundError());
       });
 
-      const result = await checkDomainDns(domainFixture());
+      const result = await checkDomainDns(domainFixture(), REGION);
 
-      expect(result.spf.status).toBe('ok');
+      expect(result.spf.status).toBe('introuvable');
     });
 
     it('classe valeur_differente quand un SPF existe sans amazonses.com', async () => {
       mockResolveCname.mockRejectedValue(notFoundError());
       mockResolveTxt.mockImplementation((name: string) => {
-        if (name === DOMAIN_NAME) {
+        if (name === MAIL_FROM_NAME) {
           return Promise.resolve([['v=spf1 include:_spf.google.com ~all']]);
         }
         return Promise.reject(notFoundError());
       });
 
-      const result = await checkDomainDns(domainFixture());
+      const result = await checkDomainDns(domainFixture(), REGION);
 
       expect(result.spf.status).toBe('valeur_differente');
     });
@@ -197,9 +225,71 @@ describe('checkDomainDns', () => {
       mockResolveCname.mockRejectedValue(notFoundError());
       mockResolveTxt.mockRejectedValue(notFoundError());
 
-      const result = await checkDomainDns(domainFixture());
+      const result = await checkDomainDns(domainFixture(), REGION);
 
       expect(result.spf).toMatchObject({ status: 'introuvable', trouve: null });
+    });
+  });
+
+  describe('MX du MAIL FROM', () => {
+    const EXPECTED_HOST = `feedback-smtp.${REGION}.amazonses.com`;
+
+    it('classe ok un MX vers l hôte SES de la région configurée', async () => {
+      mockResolveCname.mockRejectedValue(notFoundError());
+      mockResolveMx.mockImplementation((name: string) =>
+        name === MAIL_FROM_NAME
+          ? Promise.resolve([{ priority: 10, exchange: `${EXPECTED_HOST}.` }])
+          : Promise.reject(notFoundError()),
+      );
+
+      const result = await checkDomainDns(domainFixture(), REGION);
+
+      expect(result.mailFromMx).toMatchObject({
+        name: MAIL_FROM_NAME,
+        status: 'ok',
+        attendu: `10 ${EXPECTED_HOST}`,
+        trouve: `10 ${EXPECTED_HOST}.`,
+      });
+    });
+
+    it('prend la région en paramètre, pas en dur', async () => {
+      mockResolveCname.mockRejectedValue(notFoundError());
+      mockResolveMx.mockResolvedValue([
+        { priority: 10, exchange: 'feedback-smtp.us-east-1.amazonses.com' },
+      ]);
+
+      const result = await checkDomainDns(domainFixture(), 'us-east-1');
+
+      expect(result.mailFromMx.status).toBe('ok');
+      expect(result.mailFromMx.attendu).toBe(
+        '10 feedback-smtp.us-east-1.amazonses.com',
+      );
+    });
+
+    it('classe valeur_differente un MX qui pointe ailleurs', async () => {
+      mockResolveCname.mockRejectedValue(notFoundError());
+      mockResolveMx.mockResolvedValue([
+        { priority: 10, exchange: 'mail.autre-fournisseur.com' },
+      ]);
+
+      const result = await checkDomainDns(domainFixture(), REGION);
+
+      expect(result.mailFromMx).toMatchObject({
+        status: 'valeur_differente',
+        trouve: '10 mail.autre-fournisseur.com',
+      });
+    });
+
+    it('classe introuvable quand aucun MX ne répond', async () => {
+      mockResolveCname.mockRejectedValue(notFoundError());
+      mockResolveMx.mockRejectedValue(notFoundError());
+
+      const result = await checkDomainDns(domainFixture(), REGION);
+
+      expect(result.mailFromMx).toMatchObject({
+        status: 'introuvable',
+        trouve: null,
+      });
     });
   });
 
@@ -213,7 +303,7 @@ describe('checkDomainDns', () => {
         return Promise.reject(notFoundError());
       });
 
-      const result = await checkDomainDns(domainFixture());
+      const result = await checkDomainDns(domainFixture(), REGION);
 
       expect(result.dmarc.status).toBe('ok');
       expect(result.dmarc.name).toBe(`_dmarc.${DOMAIN_NAME}`);
@@ -223,7 +313,7 @@ describe('checkDomainDns', () => {
       mockResolveCname.mockRejectedValue(notFoundError());
       mockResolveTxt.mockRejectedValue(notFoundError());
 
-      const result = await checkDomainDns(domainFixture());
+      const result = await checkDomainDns(domainFixture(), REGION);
 
       expect(result.dmarc).toMatchObject({
         status: 'introuvable',
@@ -236,10 +326,15 @@ describe('checkDomainDns', () => {
     mockResolveCname.mockResolvedValue(['abc123token.dkim.amazonses.com']);
 
     const result = await checkDomainDns(
-      domainFixture({ status: DomainStatus.VERIFIED }),
+      domainFixture({
+        status: DomainStatus.VERIFIED,
+        mailFromStatus: 'SUCCESS',
+      }),
+      REGION,
     );
 
     expect(result.sesStatus).toBe(DomainStatus.VERIFIED);
+    expect(result.mailFromStatus).toBe('SUCCESS');
     expect(result.domainId).toBe('dom_1');
     expect(result.domainName).toBe(DOMAIN_NAME);
     expect(result.checkedAt).toBeInstanceOf(Date);

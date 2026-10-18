@@ -1,4 +1,9 @@
-import { resolve4, resolveCname, resolveTxt } from 'node:dns/promises';
+import {
+  resolve4,
+  resolveCname,
+  resolveMx,
+  resolveTxt,
+} from 'node:dns/promises';
 import type { DomainStatus } from '@prisma/client';
 import {
   CLOUDFLARE_IPV4_RANGES,
@@ -7,12 +12,16 @@ import {
 import {
   DKIM_CNAME_SUFFIX,
   DMARC_RECORD_VALUE,
+  MAIL_FROM_MX_PRIORITY,
   SPF_RECORD_VALUE,
+  mailFromDomainOf,
+  mailFromMxHost,
 } from './domains.constants';
+import type { MailFromStatus } from './ses/ses-identity-driver';
 
 /**
- * Diagnostic DNS des enregistrements DKIM/SPF/DMARC, calculé côté Zendou par
- * résolution DNS directe — **indépendant de SES**.
+ * Diagnostic DNS des enregistrements DKIM, MAIL FROM (MX et SPF sur
+ * `bounce.<domaine>`) et DMARC, calculé côté Zendou par résolution DNS directe, **indépendant de SES**.
  *
  * Important : ce diagnostic est **informatif**. SES reste seul juge du
  * statut réel d'un domaine (`Domain.status` en base, mis à jour par
@@ -58,6 +67,17 @@ export interface TxtRecordCheck {
   ttl: number | null;
 }
 
+/** Résultat de la vérification de l'enregistrement MX du MAIL FROM. */
+export interface MxRecordCheck {
+  name: string;
+  status: DnsRecordStatus;
+  /** `<priorité> <hôte>` attendu, ex. `10 feedback-smtp.eu-west-3.amazonses.com`. */
+  attendu: string;
+  /** MX trouvés (`<priorité> <hôte>`, séparés par « | »), `null` si aucun. */
+  trouve: string | null;
+  ttl: number | null;
+}
+
 /** Diagnostic complet d'un domaine. */
 export interface DomainDnsCheckResult {
   domainId: string;
@@ -70,7 +90,12 @@ export interface DomainDnsCheckResult {
    * en attente de la validation d'Amazon » d'une vraie erreur.
    */
   sesStatus: DomainStatus;
+  /** Dernier `MailFromDomainStatus` connu de SES, `null` si jamais lu. */
+  mailFromStatus: MailFromStatus | null;
   dkim: DkimRecordCheck[];
+  /** MX du MAIL FROM personnalisé, sur `bounce.<domaine>`. */
+  mailFromMx: MxRecordCheck;
+  /** SPF du MAIL FROM personnalisé, sur `bounce.<domaine>` (plus la racine). */
   spf: TxtRecordCheck;
   dmarc: TxtRecordCheck;
 }
@@ -233,9 +258,12 @@ async function checkDkimToken(
   }
 }
 
-/** Vérifie la présence de `include:amazonses.com` dans le SPF du domaine. */
+/**
+ * Vérifie la présence de `include:amazonses.com` dans le SPF du MAIL FROM
+ * personnalisé (`bounce.<domaine>`).
+ */
 async function checkSpf(domainName: string): Promise<TxtRecordCheck> {
-  const name = domainName;
+  const name = mailFromDomainOf(domainName);
 
   try {
     const txtRecords = await resolveTxt(name);
@@ -289,6 +317,42 @@ async function checkSpf(domainName: string): Promise<TxtRecordCheck> {
   }
 }
 
+/** Vérifie le MX du MAIL FROM : il doit pointer vers l'hôte SES de la région. */
+async function checkMailFromMx(
+  domainName: string,
+  region: string,
+): Promise<MxRecordCheck> {
+  const name = mailFromDomainOf(domainName);
+  const host = mailFromMxHost(region);
+  const attendu = `${MAIL_FROM_MX_PRIORITY} ${host}`;
+
+  try {
+    const records = await resolveMx(name);
+
+    if (records.length === 0) {
+      return { name, status: 'introuvable', attendu, trouve: null, ttl: null };
+    }
+
+    const trouve = records
+      .map((record) => `${record.priority} ${record.exchange}`)
+      .join(' | ');
+    const matching = records.some((record) =>
+      dnsValuesMatch(record.exchange, host),
+    );
+
+    return {
+      name,
+      status: matching ? 'ok' : 'valeur_differente',
+      attendu,
+      trouve,
+      ttl: null,
+    };
+  } catch {
+    // Cf. checkSpf : absence confirmée ou erreur réseau, même verdict.
+    return { name, status: 'introuvable', attendu, trouve: null, ttl: null };
+  }
+}
+
 /** Vérifie la présence d'un enregistrement DMARC à `_dmarc.<domaine>`. */
 async function checkDmarc(domainName: string): Promise<TxtRecordCheck> {
   const name = `_dmarc.${domainName}`;
@@ -319,19 +383,24 @@ async function checkDmarc(domainName: string): Promise<TxtRecordCheck> {
 }
 
 /**
- * Diagnostic DNS complet d'un domaine : les 3 CNAME DKIM, le SPF et le
- * DMARC. Ne touche jamais SES — uniquement des résolutions DNS directes.
+ * Diagnostic DNS complet d'un domaine : les 3 CNAME DKIM, le MX et le SPF du
+ * MAIL FROM, et le DMARC. Ne touche jamais SES : uniquement des résolutions DNS directes.
  */
-export async function checkDomainDns(domain: {
-  id: string;
-  name: string;
-  dkimTokens: string[];
-  status: DomainStatus;
-}): Promise<DomainDnsCheckResult> {
-  const [dkim, spf, dmarc] = await Promise.all([
+export async function checkDomainDns(
+  domain: {
+    id: string;
+    name: string;
+    dkimTokens: string[];
+    status: DomainStatus;
+    mailFromStatus: MailFromStatus | null;
+  },
+  region: string,
+): Promise<DomainDnsCheckResult> {
+  const [dkim, mailFromMx, spf, dmarc] = await Promise.all([
     Promise.all(
       domain.dkimTokens.map((token) => checkDkimToken(domain.name, token)),
     ),
+    checkMailFromMx(domain.name, region),
     checkSpf(domain.name),
     checkDmarc(domain.name),
   ]);
@@ -341,7 +410,9 @@ export async function checkDomainDns(domain: {
     domainName: domain.name,
     checkedAt: new Date(),
     sesStatus: domain.status,
+    mailFromStatus: domain.mailFromStatus,
     dkim,
+    mailFromMx,
     spf,
     dmarc,
   };

@@ -80,9 +80,10 @@ describe('DevStubDriver', () => {
   });
 
   it('reports PENDING and deletes without side effect', async () => {
-    await expect(driver.getIdentityStatus('boutique-awa.gn')).resolves.toBe(
-      DomainStatus.PENDING,
-    );
+    await expect(driver.getIdentityStatus('boutique-awa.gn')).resolves.toEqual({
+      status: DomainStatus.PENDING,
+      mailFromStatus: 'PENDING',
+    });
     await expect(
       driver.deleteIdentity('boutique-awa.gn'),
     ).resolves.toBeUndefined();

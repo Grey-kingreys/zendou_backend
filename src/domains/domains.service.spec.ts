@@ -4,6 +4,7 @@ import {
   ConflictException,
   NotFoundException,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { DomainStatus, Prisma } from '@prisma/client';
 import { resolveCname } from 'node:dns/promises';
 import { PrismaService } from '../prisma/prisma.service';
@@ -18,6 +19,7 @@ import { SES_IDENTITY_DRIVER } from './ses/ses-identity-driver';
 // jamais de vrai réseau en test.
 jest.mock('node:dns/promises', () => ({
   resolveCname: jest.fn(),
+  resolveMx: jest.fn(),
   resolveTxt: jest.fn(),
   resolve4: jest.fn(),
 }));
@@ -33,7 +35,11 @@ interface DomainCreateArgs {
 
 interface DomainUpdateArgs {
   where: { id: string };
-  data: { status: DomainStatus; verifiedAt: Date | null };
+  data: {
+    status: DomainStatus;
+    verifiedAt: Date | null;
+    mailFromStatus?: string;
+  };
 }
 
 function storedDomain(overrides: Record<string, unknown> = {}) {
@@ -42,6 +48,7 @@ function storedDomain(overrides: Record<string, unknown> = {}) {
     name: 'boutique-awa.gn',
     status: DomainStatus.PENDING,
     dkimTokens: TOKENS,
+    mailFromStatus: null,
     verifiedAt: null,
     createdAt: CREATED_AT,
     ...overrides,
@@ -66,9 +73,13 @@ describe('DomainsService', () => {
     deleteIdentity: jest.fn(),
   };
 
+  /** Région SES configurée, réglée par test. */
+  let awsRegion: string | undefined;
+
   beforeEach(async () => {
     jest.clearAllMocks();
     capturedUpdateArgs = undefined;
+    awsRegion = 'eu-west-3';
     sesDriver.createIdentity.mockResolvedValue({ dkimTokens: TOKENS });
     sesDriver.deleteIdentity.mockResolvedValue(undefined);
     domain.create.mockImplementation((args: DomainCreateArgs) =>
@@ -85,6 +96,7 @@ describe('DomainsService', () => {
         id: args.where.id,
         status: args.data.status,
         verifiedAt: args.data.verifiedAt,
+        mailFromStatus: args.data.mailFromStatus ?? null,
       });
     });
 
@@ -93,6 +105,13 @@ describe('DomainsService', () => {
         DomainsService,
         { provide: PrismaService, useValue: { domain } },
         { provide: SES_IDENTITY_DRIVER, useValue: sesDriver },
+        {
+          provide: ConfigService,
+          useValue: {
+            get: (key: string) =>
+              key === 'AWS_REGION' ? awsRegion : undefined,
+          },
+        },
       ],
     }).compile();
 
@@ -141,16 +160,24 @@ describe('DomainsService', () => {
       ]);
     });
 
-    it('joins SPF and DMARC recommendations to the response', async () => {
+    it('joins MAIL FROM (MX + SPF on bounce.) and DMARC recommendations to the response', async () => {
       domain.findUnique.mockResolvedValue(null);
 
       const result = await service.create('user_1', 'boutique-awa.gn');
 
+      expect(result.mailFromDomain).toBe('bounce.boutique-awa.gn');
       expect(result.recommendedRecords).toEqual([
+        expect.objectContaining({
+          purpose: 'MX',
+          type: 'MX',
+          name: 'bounce.boutique-awa.gn',
+          value: 'feedback-smtp.eu-west-3.amazonses.com',
+          priority: 10,
+        }),
         expect.objectContaining({
           purpose: 'SPF',
           type: 'TXT',
-          name: 'boutique-awa.gn',
+          name: 'bounce.boutique-awa.gn',
           value: 'v=spf1 include:amazonses.com ~all',
         }),
         expect.objectContaining({
@@ -162,6 +189,17 @@ describe('DomainsService', () => {
       ]);
       expect(result.recommendedRecords[0].note).not.toHaveLength(0);
       expect(result.recommendedRecords[1].note).not.toHaveLength(0);
+    });
+
+    it('takes the MX region from the configuration, not a hard-coded value', async () => {
+      awsRegion = 'us-east-1';
+      domain.findUnique.mockResolvedValue(null);
+
+      const result = await service.create('user_1', 'boutique-awa.gn');
+
+      expect(result.recommendedRecords[0].value).toBe(
+        'feedback-smtp.us-east-1.amazonses.com',
+      );
     });
 
     it.each([
@@ -245,7 +283,9 @@ describe('DomainsService', () => {
         expect.objectContaining({ where: { id: 'dom_1', userId: 'user_1' } }),
       );
       expect(result.dkimRecords).toHaveLength(3);
-      expect(result.recommendedRecords).toHaveLength(2);
+      expect(result.recommendedRecords).toHaveLength(3);
+      expect(result.mailFromDomain).toBe('bounce.boutique-awa.gn');
+      expect(result.mailFromStatus).toBeNull();
     });
 
     it("returns a 404 for another user's domain", async () => {
@@ -260,7 +300,10 @@ describe('DomainsService', () => {
   describe('check', () => {
     it('moves PENDING to VERIFIED and stamps verifiedAt', async () => {
       domain.findFirst.mockResolvedValue(storedDomain());
-      sesDriver.getIdentityStatus.mockResolvedValue(DomainStatus.VERIFIED);
+      sesDriver.getIdentityStatus.mockResolvedValue({
+        status: DomainStatus.VERIFIED,
+        mailFromStatus: 'SUCCESS',
+      });
 
       const result = await service.check('user_1', 'dom_1');
 
@@ -274,11 +317,17 @@ describe('DomainsService', () => {
 
       expect(result.status).toBe(DomainStatus.VERIFIED);
       expect(result.verifiedAt).toBeInstanceOf(Date);
+      // Le statut MAIL FROM relu chez SES est persisté et exposé.
+      expect(capturedUpdateArgs!.data.mailFromStatus).toBe('SUCCESS');
+      expect(result.mailFromStatus).toBe('SUCCESS');
     });
 
     it('keeps verifiedAt null while SES still reports PENDING', async () => {
       domain.findFirst.mockResolvedValue(storedDomain());
-      sesDriver.getIdentityStatus.mockResolvedValue(DomainStatus.PENDING);
+      sesDriver.getIdentityStatus.mockResolvedValue({
+        status: DomainStatus.PENDING,
+        mailFromStatus: 'PENDING',
+      });
 
       const result = await service.check('user_1', 'dom_1');
 
@@ -286,7 +335,22 @@ describe('DomainsService', () => {
         id: 'dom_1',
         status: DomainStatus.PENDING,
         verifiedAt: null,
+        mailFromStatus: 'PENDING',
       });
+    });
+
+    it('keeps the last known MAIL FROM status when SES could not be read', async () => {
+      domain.findFirst.mockResolvedValue(
+        storedDomain({ mailFromStatus: 'SUCCESS' }),
+      );
+      sesDriver.getIdentityStatus.mockResolvedValue({
+        status: DomainStatus.PENDING,
+        mailFromStatus: null,
+      });
+
+      await service.check('user_1', 'dom_1');
+
+      expect(capturedUpdateArgs!.data).not.toHaveProperty('mailFromStatus');
     });
 
     it('does not re-stamp verifiedAt on an already verified domain', async () => {
@@ -294,7 +358,10 @@ describe('DomainsService', () => {
       domain.findFirst.mockResolvedValue(
         storedDomain({ status: DomainStatus.VERIFIED, verifiedAt }),
       );
-      sesDriver.getIdentityStatus.mockResolvedValue(DomainStatus.VERIFIED);
+      sesDriver.getIdentityStatus.mockResolvedValue({
+        status: DomainStatus.VERIFIED,
+        mailFromStatus: 'SUCCESS',
+      });
 
       const result = await service.check('user_1', 'dom_1');
 

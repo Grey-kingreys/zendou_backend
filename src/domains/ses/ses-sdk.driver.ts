@@ -1,16 +1,19 @@
 import { Logger, ServiceUnavailableException } from '@nestjs/common';
 import {
   AlreadyExistsException,
+  BehaviorOnMxFailure,
   CreateEmailIdentityCommand,
   DeleteEmailIdentityCommand,
   DkimStatus,
   GetEmailIdentityCommand,
   type GetEmailIdentityCommandOutput,
   NotFoundException,
+  PutEmailIdentityMailFromAttributesCommand,
   SESv2Client,
 } from '@aws-sdk/client-sesv2';
 import { DomainStatus } from '@prisma/client';
-import type { SesIdentityDriver } from './ses-identity-driver';
+import { mailFromDomainOf } from '../domains.constants';
+import type { IdentityState, SesIdentityDriver } from './ses-identity-driver';
 
 export interface SesSdkDriverOptions {
   region: string;
@@ -42,6 +45,8 @@ export class SesSdkDriver implements SesIdentityDriver {
       const response = await this.client.send(
         new CreateEmailIdentityCommand({ EmailIdentity: domain }),
       );
+
+      await this.putMailFrom(domain);
 
       return { dkimTokens: response.DkimAttributes?.Tokens ?? [] };
     } catch (error) {
@@ -97,24 +102,67 @@ export class SesSdkDriver implements SesIdentityDriver {
       );
     }
 
+    // Identité préexistante : le MAIL FROM n'est posé que s'il est absent.
+    if (!response.MailFromAttributes?.MailFromDomain) {
+      await this.putMailFrom(domain);
+    }
+
     return { dkimTokens };
   }
 
-  async getIdentityStatus(domain: string): Promise<DomainStatus> {
+  async getIdentityStatus(domain: string): Promise<IdentityState> {
     try {
       const response = await this.client.send(
         new GetEmailIdentityCommand({ EmailIdentity: domain }),
       );
 
-      return mapDkimStatus(response.DkimAttributes?.Status);
+      const mailFrom = response.MailFromAttributes;
+      let mailFromStatus: IdentityState['mailFromStatus'] = null;
+
+      if (mailFrom?.MailFromDomain) {
+        mailFromStatus = mailFrom.MailFromDomainStatus ?? null;
+      } else if (await this.putMailFrom(domain)) {
+        // Posé à l'instant : SES attend encore de voir le MX.
+        mailFromStatus = 'PENDING';
+      }
+
+      return {
+        status: mapDkimStatus(response.DkimAttributes?.Status),
+        mailFromStatus,
+      };
     } catch (error) {
       if (error instanceof NotFoundException) {
         // L'identité n'existe plus côté SES (supprimée hors de Zendou) :
         // la vérification ne pourra jamais aboutir en l'état.
         this.logger.warn(`Identité SES introuvable pour ${domain}`);
-        return DomainStatus.FAILED;
+        return { status: DomainStatus.FAILED, mailFromStatus: null };
       }
       throw error;
+    }
+  }
+
+  /**
+   * Pose le MAIL FROM personnalisé `bounce.<domaine>`. `USE_DEFAULT_VALUE` :
+   * tant que le client n'a pas publié le MX, SES expédie avec son MAIL FROM
+   * par défaut et rien ne casse. Un échec est journalisé et n'empêche ni la
+   * création du domaine ni son rafraîchissement : le prochain rafraîchissement
+   * réessaiera. Rend `true` si l'attribut a été posé.
+   */
+  private async putMailFrom(domain: string): Promise<boolean> {
+    try {
+      await this.client.send(
+        new PutEmailIdentityMailFromAttributesCommand({
+          EmailIdentity: domain,
+          MailFromDomain: mailFromDomainOf(domain),
+          BehaviorOnMxFailure: BehaviorOnMxFailure.USE_DEFAULT_VALUE,
+        }),
+      );
+      return true;
+    } catch (error) {
+      this.logger.warn(
+        `MAIL FROM personnalisé non posé pour ${domain} : ${error instanceof Error ? error.message : String(error)}`,
+      );
+      return false;
     }
   }
 

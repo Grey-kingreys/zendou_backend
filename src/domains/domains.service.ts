@@ -5,13 +5,16 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { DomainStatus, Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { isValidDomainName, normalizeDomainName } from './domain-name';
 import {
+  DEFAULT_AWS_REGION,
   DOMAIN_ALREADY_REGISTERED_MESSAGE,
   DOMAIN_NOT_FOUND_MESSAGE,
   INVALID_DOMAIN_NAME_MESSAGE,
+  mailFromDomainOf,
 } from './domains.constants';
 import { checkDomainDns, type DomainDnsCheckResult } from './dns-check';
 import type {
@@ -22,6 +25,7 @@ import type {
 import { buildDkimRecords, buildRecommendedRecords } from './dns-records';
 import {
   SES_IDENTITY_DRIVER,
+  type MailFromStatus,
   type SesIdentityDriver,
 } from './ses/ses-identity-driver';
 
@@ -31,6 +35,7 @@ const DOMAIN_SELECT = {
   name: true,
   status: true,
   dkimTokens: true,
+  mailFromStatus: true,
   verifiedAt: true,
   createdAt: true,
 } satisfies Prisma.DomainSelect;
@@ -44,7 +49,10 @@ const DOMAIN_SUMMARY_SELECT = {
   createdAt: true,
 } satisfies Prisma.DomainSelect;
 
-type DomainRecord = DomainSummary & { dkimTokens: string[] };
+type DomainRecord = DomainSummary & {
+  dkimTokens: string[];
+  mailFromStatus: string | null;
+};
 
 @Injectable()
 export class DomainsService {
@@ -52,6 +60,7 @@ export class DomainsService {
     private readonly prisma: PrismaService,
     @Inject(SES_IDENTITY_DRIVER)
     private readonly sesDriver: SesIdentityDriver,
+    private readonly configService: ConfigService,
   ) {}
 
   /**
@@ -84,7 +93,7 @@ export class DomainsService {
         select: DOMAIN_SELECT,
       });
 
-      return toDetail(domain);
+      return this.toDetail(domain);
     } catch (error) {
       // Course entre deux enregistrements simultanés du même domaine.
       if (
@@ -108,27 +117,45 @@ export class DomainsService {
 
   /** Détail d'un domaine du client courant, avec les enregistrements DNS. */
   async findOne(userId: string, id: string): Promise<DomainDetail> {
-    return toDetail(await this.requireOwnedDomain(userId, id));
+    return this.toDetail(await this.requireOwnedDomain(userId, id));
   }
 
   /**
    * Interroge SES et met à jour le statut local. `verifiedAt` est horodaté
-   * au premier passage à `VERIFIED`.
+   * au premier passage à `VERIFIED`. Le statut du MAIL FROM personnalisé est
+   * relu au passage (et posé côté SES s'il manquait, voir le driver).
    */
   async check(userId: string, id: string): Promise<DomainCheckResult> {
     const domain = await this.requireOwnedDomain(userId, id);
-    const status = await this.sesDriver.getIdentityStatus(domain.name);
+    const { status, mailFromStatus } = await this.sesDriver.getIdentityStatus(
+      domain.name,
+    );
 
     const verifiedAt =
       status === DomainStatus.VERIFIED
         ? (domain.verifiedAt ?? new Date())
         : domain.verifiedAt;
 
-    return this.prisma.domain.update({
+    const updated = await this.prisma.domain.update({
       where: { id: domain.id },
-      data: { status, verifiedAt },
-      select: { id: true, status: true, verifiedAt: true },
+      // Un statut MAIL FROM illisible (panne SES) ne remplace pas le dernier connu.
+      data: {
+        status,
+        verifiedAt,
+        ...(mailFromStatus ? { mailFromStatus } : {}),
+      },
+      select: {
+        id: true,
+        status: true,
+        verifiedAt: true,
+        mailFromStatus: true,
+      },
     });
+
+    return {
+      ...updated,
+      mailFromStatus: toMailFromStatus(updated.mailFromStatus),
+    };
   }
 
   /**
@@ -140,7 +167,10 @@ export class DomainsService {
   async dnsCheck(userId: string, id: string): Promise<DomainDnsCheckResult> {
     const domain = await this.requireOwnedDomain(userId, id);
 
-    return checkDomainDns(domain);
+    return checkDomainDns(
+      { ...domain, mailFromStatus: toMailFromStatus(domain.mailFromStatus) },
+      this.sesRegion(),
+    );
   }
 
   /** Supprime l'identité SES puis le domaine. */
@@ -160,6 +190,29 @@ export class DomainsService {
    */
   async deleteSesIdentity(name: string): Promise<void> {
     await this.sesDriver.deleteIdentity(name);
+  }
+
+  /** Région SES configurée, la même que celle du driver. */
+  private sesRegion(): string {
+    return (
+      (this.configService.get<string>('AWS_REGION') ?? '').trim() ||
+      DEFAULT_AWS_REGION
+    );
+  }
+
+  private toDetail(domain: DomainRecord): DomainDetail {
+    const { dkimTokens, mailFromStatus, ...summary } = domain;
+
+    return {
+      ...summary,
+      mailFromDomain: mailFromDomainOf(summary.name),
+      mailFromStatus: toMailFromStatus(mailFromStatus),
+      dkimRecords: buildDkimRecords(summary.name, dkimTokens),
+      recommendedRecords: buildRecommendedRecords(
+        summary.name,
+        this.sesRegion(),
+      ),
+    };
   }
 
   /**
@@ -183,12 +236,14 @@ export class DomainsService {
   }
 }
 
-function toDetail(domain: DomainRecord): DomainDetail {
-  const { dkimTokens, ...summary } = domain;
-
-  return {
-    ...summary,
-    dkimRecords: buildDkimRecords(summary.name, dkimTokens),
-    recommendedRecords: buildRecommendedRecords(summary.name),
-  };
+/** Colonne texte -> statut SES connu ; toute autre valeur est ignorée. */
+function toMailFromStatus(
+  value: string | null | undefined,
+): MailFromStatus | null {
+  return value === 'PENDING' ||
+    value === 'SUCCESS' ||
+    value === 'FAILED' ||
+    value === 'TEMPORARY_FAILURE'
+    ? value
+    : null;
 }

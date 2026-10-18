@@ -32,3 +32,22 @@ export const SPF_RECORD_VALUE = 'v=spf1 include:amazonses.com ~all';
 
 /** Valeur DMARC recommandée pour démarrer en mode observation. */
 export const DMARC_RECORD_VALUE = 'v=DMARC1; p=none;';
+
+/** Région SES par défaut si `AWS_REGION` n'est pas renseignée. */
+export const DEFAULT_AWS_REGION = 'eu-west-3';
+
+/** Sous-domaine du MAIL FROM personnalisé : `bounce.<domaine>`. */
+export const MAIL_FROM_SUBDOMAIN = 'bounce';
+
+/** Priorité de l'enregistrement MX du MAIL FROM, imposée par la doc SES. */
+export const MAIL_FROM_MX_PRIORITY = 10;
+
+/** Domaine MAIL FROM personnalisé d'un domaine d'envoi. */
+export function mailFromDomainOf(domain: string): string {
+  return `${MAIL_FROM_SUBDOMAIN}.${domain}`;
+}
+
+/** Hôte SES vers lequel pointe le MX du MAIL FROM, selon la région. */
+export function mailFromMxHost(region: string): string {
+  return `feedback-smtp.${region}.amazonses.com`;
+}

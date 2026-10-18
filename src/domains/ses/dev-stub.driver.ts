@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { Logger } from '@nestjs/common';
 import { DomainStatus } from '@prisma/client';
-import type { SesIdentityDriver } from './ses-identity-driver';
+import type { IdentityState, SesIdentityDriver } from './ses-identity-driver';
 
 /** Nombre de tokens DKIM générés par SES pour une identité de domaine. */
 const DKIM_TOKEN_COUNT = 3;
@@ -25,11 +25,14 @@ export class DevStubDriver implements SesIdentityDriver {
     return Promise.resolve({ dkimTokens });
   }
 
-  getIdentityStatus(domain: string): Promise<DomainStatus> {
+  getIdentityStatus(domain: string): Promise<IdentityState> {
     this.logger.log(
-      `[SES stub] getIdentityStatus(${domain}) → ${DomainStatus.PENDING}`,
+      `[SES stub] getIdentityStatus(${domain}) → ${DomainStatus.PENDING}, MAIL FROM PENDING`,
     );
-    return Promise.resolve(DomainStatus.PENDING);
+    return Promise.resolve({
+      status: DomainStatus.PENDING,
+      mailFromStatus: 'PENDING',
+    });
   }
 
   deleteIdentity(domain: string): Promise<void> {

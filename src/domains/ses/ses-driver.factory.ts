@@ -1,14 +1,12 @@
 import { Logger, Provider } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { DEFAULT_AWS_REGION } from '../domains.constants';
 import { DevStubDriver } from './dev-stub.driver';
 import { SesSdkDriver } from './ses-sdk.driver';
 import {
   SES_IDENTITY_DRIVER,
   type SesIdentityDriver,
 } from './ses-identity-driver';
-
-/** Région SES par défaut si `AWS_REGION` n'est pas renseignée. */
-const DEFAULT_AWS_REGION = 'eu-west-3';
 
 /**
  * Choisit le driver SES : sans `AWS_ACCESS_KEY_ID`, on bascule sur le stub
