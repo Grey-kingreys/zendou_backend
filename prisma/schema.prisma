@@ -116,6 +116,10 @@ model User {
   /// actif.
   inactivityWarningSentAt DateTime?
 
+  /// Date d'envoi de l'alerte « solde bas ». Une alerte par passage : elle est
+  /// de nouveau permise dès qu'un crédit positif plus récent la périme.
+  lowBalanceAlertSentAt DateTime?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 

@@ -70,7 +70,11 @@ describe('EmailsService', () => {
 
   const domain = { findFirst: jest.fn() };
   const suppression = { findFirst: jest.fn() };
-  const creditEntry = { aggregate: jest.fn(), create: jest.fn() };
+  const creditEntry = {
+    aggregate: jest.fn(),
+    create: jest.fn(),
+    findFirst: jest.fn(),
+  };
   const email = { create: jest.fn(), count: jest.fn() };
   const user = { findUnique: jest.fn(), updateMany: jest.fn() };
   const queue = { add: jest.fn() };
@@ -101,6 +105,7 @@ describe('EmailsService', () => {
     suppression.findFirst.mockResolvedValue(null);
     creditEntry.aggregate.mockResolvedValue({ _sum: { delta: 10 } });
     creditEntry.create.mockResolvedValue({ id: 'credit_1' });
+    creditEntry.findFirst.mockResolvedValue(null);
     email.count.mockResolvedValue(0);
     user.findUnique.mockResolvedValue({
       dailySendLimit: 200,
@@ -189,6 +194,213 @@ describe('EmailsService', () => {
 
     it('un échec d’écriture ne remet pas l’envoi en cause', async () => {
       user.updateMany.mockRejectedValue(new Error('base indisponible'));
+
+      await expect(service.send(USER_ID, dtoWith())).resolves.toMatchObject({
+        status: 'queued',
+      });
+      await flush();
+    });
+  });
+
+  /**
+   * Alerte de solde bas : un email système au titulaire quand un débit fait
+   * passer le solde sous 10 % du solde atteint après le dernier crédit positif
+   * (plancher 50), une seule fois par passage, sans jamais gêner l'envoi.
+   */
+  describe('alerte de solde bas', () => {
+    const flush = () => new Promise((resolve) => setImmediate(resolve));
+    const LAST_CREDIT_AT = new Date('2026-10-01T10:00:00.000Z');
+    let sendSystem: jest.SpyInstance;
+
+    /** État du grand livre : solde juste après le dernier crédit, solde actuel. */
+    function givenLedger(options: {
+      afterCredit: number;
+      current: number;
+      alertSentAt?: Date | null;
+    }): void {
+      creditEntry.findFirst.mockResolvedValue({ createdAt: LAST_CREDIT_AT });
+      creditEntry.aggregate.mockImplementation(
+        ({ where }: { where: { createdAt?: unknown } }) =>
+          Promise.resolve({
+            _sum: {
+              delta: where.createdAt ? options.afterCredit : options.current,
+            },
+          }),
+      );
+      user.findUnique.mockResolvedValue({
+        dailySendLimit: 200,
+        email: 'aissatou@exemple.gn',
+        name: 'Aïssatou',
+        lowBalanceAlertSentAt: options.alertSentAt ?? null,
+      });
+    }
+
+    beforeEach(() => {
+      configValues.APP_BASE_URL = 'https://zendou.app/';
+      sendSystem = jest
+        .spyOn(service, 'sendSystem')
+        .mockResolvedValue({ status: 'queued', id: 'e_alerte' });
+    });
+
+    it('envoie un email système au titulaire quand le solde passe sous 10 %', async () => {
+      givenLedger({ afterCredit: 1000, current: 99 });
+
+      await expect(service.send(USER_ID, dtoWith())).resolves.toMatchObject({
+        status: 'queued',
+      });
+      await flush();
+
+      expect(sendSystem).toHaveBeenCalledTimes(1);
+      const [payload] = sendSystem.mock.calls[0] as [
+        { userId: string; to: string; subject: string; text: string },
+      ];
+      expect(payload.userId).toBe(USER_ID);
+      expect(payload.to).toBe('aissatou@exemple.gn');
+      expect(payload.text).toContain('Il vous reste 99 crédits');
+      expect(payload.text).toContain('402');
+      expect(payload.text).toContain(
+        'https://zendou.app/dashboard/facturation',
+      );
+      expect(user.updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: { lowBalanceAlertSentAt: expect.any(Date) as Date },
+        }),
+      );
+    });
+
+    it('ne fait rien tant que le solde reste au seuil ou au-dessus', async () => {
+      givenLedger({ afterCredit: 1000, current: 100 });
+
+      await service.send(USER_ID, dtoWith());
+      await flush();
+
+      expect(sendSystem).not.toHaveBeenCalled();
+    });
+
+    it('ne fait rien sans aucun crédit positif', async () => {
+      creditEntry.findFirst.mockResolvedValue(null);
+
+      await service.send(USER_ID, dtoWith());
+      await flush();
+
+      expect(sendSystem).not.toHaveBeenCalled();
+    });
+
+    it("n'envoie qu'une alerte par passage : déjà alerté depuis le dernier crédit", async () => {
+      givenLedger({
+        afterCredit: 1000,
+        current: 80,
+        alertSentAt: new Date('2026-10-05T10:00:00.000Z'),
+      });
+
+      await service.send(USER_ID, dtoWith());
+      await flush();
+
+      expect(sendSystem).not.toHaveBeenCalled();
+    });
+
+    it('se réarme au crédit positif suivant', async () => {
+      givenLedger({
+        afterCredit: 1000,
+        current: 80,
+        // Alerte antérieure au dernier crédit : un nouveau passage.
+        alertSentAt: new Date('2026-09-20T10:00:00.000Z'),
+      });
+
+      await service.send(USER_ID, dtoWith());
+      await flush();
+
+      expect(sendSystem).toHaveBeenCalledTimes(1);
+      // La prise du marqueur n'est permise que si l'alerte précédente est
+      // plus ancienne que le dernier crédit.
+      expect(user.updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            OR: [
+              { lowBalanceAlertSentAt: null },
+              { lowBalanceAlertSentAt: { lt: LAST_CREDIT_AT } },
+            ],
+          }) as unknown,
+        }),
+      );
+    });
+
+    it("n'envoie rien quand un envoi concurrent a déjà pris le marqueur", async () => {
+      givenLedger({ afterCredit: 1000, current: 80 });
+      user.updateMany.mockResolvedValue({ count: 0 });
+
+      await service.send(USER_ID, dtoWith());
+      await flush();
+
+      expect(sendSystem).not.toHaveBeenCalled();
+    });
+
+    it('applique le plancher de 50 crédits quand 10 % en font moins', async () => {
+      // 10 % de 200 = 20, mais le seuil est 50.
+      givenLedger({ afterCredit: 200, current: 30 });
+      await service.send(USER_ID, dtoWith());
+      await flush();
+      expect(sendSystem).toHaveBeenCalledTimes(1);
+
+      sendSystem.mockClear();
+      givenLedger({ afterCredit: 200, current: 50 });
+      await service.send(USER_ID, dtoWith());
+      await flush();
+      expect(sendSystem).not.toHaveBeenCalled();
+    });
+
+    it('couvre aussi les débits du relais SMTP', async () => {
+      givenLedger({ afterCredit: 1000, current: 99 });
+
+      await service.acceptSmtp(USER_ID, {
+        from: 'contact@boutique-awa.gn',
+        to: 'client@exemple.gn',
+        subject: 'Bonjour',
+        raw: 'From: contact@boutique-awa.gn\r\n\r\nBonjour',
+        smtpCredentialId: 'smtp_1',
+      });
+      await flush();
+
+      expect(sendSystem).toHaveBeenCalledTimes(1);
+    });
+
+    it('un envoi système ne débite pas et ne déclenche rien', async () => {
+      givenLedger({ afterCredit: 1000, current: 10 });
+      sendSystem.mockRestore();
+      domain.findFirst.mockResolvedValue({ id: DOMAIN_ID });
+
+      await service.sendSystem({
+        userId: USER_ID,
+        to: 'aissatou@exemple.gn',
+        subject: 'Bonjour',
+        text: 'Bonjour',
+      });
+      await flush();
+
+      expect(creditEntry.create).not.toHaveBeenCalled();
+      expect(creditEntry.findFirst).not.toHaveBeenCalled();
+    });
+
+    it("un échec de l'alerte ne fait pas échouer l'envoi et lève le marqueur", async () => {
+      givenLedger({ afterCredit: 1000, current: 80 });
+      sendSystem.mockRejectedValue(new Error('SYSTEM_EMAIL_FROM absente'));
+
+      await expect(service.send(USER_ID, dtoWith())).resolves.toMatchObject({
+        status: 'queued',
+      });
+      await flush();
+
+      // Prise du marqueur, puis restitution : le prochain débit retentera.
+      const calls = user.updateMany.mock.calls as [
+        { data: { lowBalanceAlertSentAt: unknown } },
+      ][];
+      expect(
+        calls.some(([args]) => args.data.lowBalanceAlertSentAt === null),
+      ).toBe(true);
+    });
+
+    it('une panne de lecture du grand livre ne fait pas échouer l’envoi', async () => {
+      creditEntry.findFirst.mockRejectedValue(new Error('base indisponible'));
 
       await expect(service.send(USER_ID, dtoWith())).resolves.toMatchObject({
         status: 'queued',
@@ -664,7 +876,11 @@ describe('EmailsService - expéditeur, adresse de réponse et codes de refus (E1
 
   const domain = { findFirst: jest.fn() };
   const suppression = { findFirst: jest.fn() };
-  const creditEntry = { aggregate: jest.fn(), create: jest.fn() };
+  const creditEntry = {
+    aggregate: jest.fn(),
+    create: jest.fn(),
+    findFirst: jest.fn(),
+  };
   const email = { create: jest.fn(), count: jest.fn() };
   const user = { findUnique: jest.fn() };
   const queue = { add: jest.fn() };
@@ -727,6 +943,7 @@ describe('EmailsService - expéditeur, adresse de réponse et codes de refus (E1
     suppression.findFirst.mockResolvedValue(null);
     creditEntry.aggregate.mockResolvedValue({ _sum: { delta: 10 } });
     creditEntry.create.mockResolvedValue({ id: 'credit_1' });
+    creditEntry.findFirst.mockResolvedValue(null);
     email.count.mockResolvedValue(0);
     user.findUnique.mockResolvedValue({
       dailySendLimit: 200,

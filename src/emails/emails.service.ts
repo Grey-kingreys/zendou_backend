@@ -37,6 +37,8 @@ import {
   INVALID_FROM_MESSAGE,
   INVALID_REPLY_TO_MESSAGE,
   INVALID_TO_MESSAGE,
+  LOW_BALANCE_FLOOR,
+  LOW_BALANCE_RATIO,
   MAX_BODY_BYTES,
   MISSING_BODY_MESSAGE,
   REPLY_TO_NOT_VERIFIED_MESSAGE,
@@ -60,6 +62,10 @@ import type {
 import type { SendEmailDto } from './dto/send-email.dto';
 import { recordAccountActivity } from '../account-lifecycle/account-activity';
 import { validateCustomHeaders } from './email-headers';
+import {
+  buildBillingUrl,
+  buildLowBalanceAlertEmail,
+} from './low-balance-alert.template';
 import { isAddressSuppressed } from './suppressions';
 
 /**
@@ -467,8 +473,130 @@ export class EmailsService {
     );
 
     this.recordActivity(userId, lastActivityAt);
+    this.alertIfLowBalance(userId);
 
     return { id: email.publicId, status: 'queued' };
+  }
+
+  /**
+   * Alerte de solde bas, hors du chemin critique : un envoi déjà accepté ne
+   * doit jamais échouer ni attendre à cause d'elle. Tout échec est journalisé.
+   *
+   * Appelée après chaque débit d'envoi du point d'acceptation, donc aussi bien
+   * pour l'API que pour le relais SMTP. `sendSystem` ne débite pas et n'y
+   * passe jamais : l'alerte ne peut pas se déclencher elle-même.
+   */
+  private alertIfLowBalance(userId: string): void {
+    void this.sendLowBalanceAlert(userId).catch((error: unknown) => {
+      this.logger.warn(
+        `Alerte de solde bas en échec pour l'utilisateur ${userId}`,
+        error instanceof Error ? error.stack : String(error),
+      );
+    });
+  }
+
+  /**
+   * Seuil : `LOW_BALANCE_RATIO` du solde atteint juste après le dernier crédit
+   * positif, plancher `LOW_BALANCE_FLOOR`. Une alerte par passage : le
+   * marqueur `lowBalanceAlertSentAt` la tient jusqu'à ce qu'un crédit positif
+   * plus récent la périme, ce qui réarme le mécanisme sans état à remettre à
+   * zéro. La prise du marqueur est atomique (deux envois concurrents ne
+   * produisent qu'un message).
+   */
+  private async sendLowBalanceAlert(userId: string): Promise<void> {
+    const lastCredit = await this.prisma.creditEntry.findFirst({
+      where: { userId, delta: { gt: 0 } },
+      orderBy: { createdAt: 'desc' },
+      select: { createdAt: true },
+    });
+
+    if (!lastCredit) {
+      return;
+    }
+
+    const account = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { email: true, name: true, lowBalanceAlertSentAt: true },
+    });
+
+    if (
+      !account ||
+      (account.lowBalanceAlertSentAt &&
+        account.lowBalanceAlertSentAt >= lastCredit.createdAt)
+    ) {
+      return;
+    }
+
+    const [afterCredit, current] = await Promise.all([
+      this.prisma.creditEntry.aggregate({
+        where: { userId, createdAt: { lte: lastCredit.createdAt } },
+        _sum: { delta: true },
+      }),
+      this.prisma.creditEntry.aggregate({
+        where: { userId },
+        _sum: { delta: true },
+      }),
+    ]);
+
+    const threshold = Math.max(
+      LOW_BALANCE_FLOOR,
+      (afterCredit._sum.delta ?? 0) * LOW_BALANCE_RATIO,
+    );
+    const balance = current._sum.delta ?? 0;
+
+    if (balance >= threshold) {
+      return;
+    }
+
+    const claimed = await this.prisma.user.updateMany({
+      where: {
+        id: userId,
+        OR: [
+          { lowBalanceAlertSentAt: null },
+          { lowBalanceAlertSentAt: { lt: lastCredit.createdAt } },
+        ],
+      },
+      data: { lowBalanceAlertSentAt: new Date() },
+    });
+
+    if (claimed.count === 0) {
+      return;
+    }
+
+    try {
+      const message = buildLowBalanceAlertEmail({
+        name: account.name,
+        balance,
+        billingUrl: buildBillingUrl(this.appBaseUrl()),
+      });
+
+      await this.sendSystem({
+        userId,
+        to: account.email,
+        subject: message.subject,
+        html: message.html,
+        text: message.text,
+      });
+    } catch (error) {
+      // Envoi impossible : le marqueur est levé, le prochain débit retentera.
+      await this.prisma.user.updateMany({
+        where: { id: userId },
+        data: { lowBalanceAlertSentAt: account.lowBalanceAlertSentAt },
+      });
+
+      throw error;
+    }
+  }
+
+  /** Base des liens : `APP_BASE_URL`, à défaut `FRONTEND_ORIGIN`. */
+  private appBaseUrl(): string {
+    const configured = (
+      this.configService.get<string>('APP_BASE_URL') ?? ''
+    ).trim();
+
+    return (
+      configured || (this.configService.get<string>('FRONTEND_ORIGIN') ?? '')
+    );
   }
 
   /**

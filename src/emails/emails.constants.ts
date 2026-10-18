@@ -43,6 +43,15 @@ export const CREDITS_PER_EMAIL = 1;
 export const CREDIT_REASON_SEND = 'SEND';
 
 /**
+ * Alerte de solde bas : le solde passe sous cette part du solde atteint juste
+ * après le dernier crédit positif (recharge, crédit offert, bonus)...
+ */
+export const LOW_BALANCE_RATIO = 0.1;
+
+/** ...mais jamais sous ce plancher, en crédits (10 % de peu, c'est trop tard). */
+export const LOW_BALANCE_FLOOR = 50;
+
+/**
  * Message d'erreur interne quand un envoi système ne peut pas partir :
  * `SYSTEM_EMAIL_FROM` absente, illisible, ou domaine d'expédition non vérifié.
  * Jamais renvoyé tel quel au client (voir
