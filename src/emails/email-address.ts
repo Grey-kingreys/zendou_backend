@@ -26,6 +26,23 @@ const NAMED_ADDRESS_REGEX = /^(.*?)<([^<>]*)>$/;
 /** Caractères qui obligent à mettre le nom d'affichage entre guillemets. */
 const NAME_NEEDS_QUOTES_REGEX = /["(),:;<>@[\\\]]/;
 
+/**
+ * Longueur maximale d'un nom d'affichage, en points de code, avant tout
+ * encodage. Aucune limite n'est documentée dans les types de
+ * `@aws-sdk/client-sesv2` : SES rejette une adresse démesurée à l'envoi, après
+ * le débit. Borne choisie par Zendou, appliquée au canal API seulement (le
+ * relais SMTP transmet le MIME du client).
+ */
+export const DISPLAY_NAME_MAX_LENGTH = 128;
+
+/** `true` si le nom d'affichage de l'adresse dépasse {@link DISPLAY_NAME_MAX_LENGTH}. */
+export function hasOversizedDisplayName(parsed: ParsedAddress): boolean {
+  return (
+    parsed.name !== undefined &&
+    Array.from(parsed.name).length > DISPLAY_NAME_MAX_LENGTH
+  );
+}
+
 /** Adresse d'expédition analysée. */
 export interface ParsedAddress {
   /** Nom d'affichage, absent lorsque l'adresse est fournie nue. */

@@ -18,17 +18,20 @@ import {
   DAILY_LIMIT_REACHED_MESSAGE,
   DOMAIN_NOT_VERIFIED_MESSAGE,
   EMAIL_SEND_JOB,
+  FROM_NAME_TOO_LONG_MESSAGE,
   FAILED_EMAIL_JOB_RETENTION_SECONDS,
   INSUFFICIENT_CREDITS_MESSAGE,
   INVALID_FROM_MESSAGE,
   INVALID_REPLY_TO_MESSAGE,
   INVALID_TO_MESSAGE,
   MISSING_BODY_MESSAGE,
+  REPLY_TO_NAME_TOO_LONG_MESSAGE,
   REPLY_TO_NOT_VERIFIED_MESSAGE,
   SEND_JOB_ATTEMPTS,
   SEND_JOB_BACKOFF_DELAY_MS,
   SEND_REFUSAL,
   TEST_SENDER_RECIPIENT_RESTRICTED_MESSAGE,
+  TO_NAME_TOO_LONG_MESSAGE,
   TEST_SENDER_UNAVAILABLE_MESSAGE,
 } from './emails.constants';
 import {
@@ -1218,6 +1221,80 @@ describe('EmailsService - expéditeur, adresse de réponse et codes de refus (E1
         Record<string, unknown>,
       ];
       expect(jobData).not.toHaveProperty('replyTo');
+    });
+  });
+
+  // ─── plafond du nom d'affichage (from, to, replyTo) ─────────────────────
+  describe('nom d’affichage plafonné à 128 caractères', () => {
+    const names: [string, string][] = [
+      ['ASCII', 'a'],
+      ['accentué', 'é'],
+      ['hors plan de base (1 point de code)', '😀'],
+    ];
+
+    const fields: [
+      string,
+      (name: string) => Partial<SendEmailDto>,
+      string,
+      string,
+    ][] = [
+      [
+        'from',
+        (name) => ({ from: `${name} <contact@boutique-awa.gn>` }),
+        SEND_REFUSAL.INVALID_FROM,
+        FROM_NAME_TOO_LONG_MESSAGE,
+      ],
+      [
+        'to',
+        (name) => ({ to: `${name} <client@exemple.gn>` }),
+        SEND_REFUSAL.INVALID_TO,
+        TO_NAME_TOO_LONG_MESSAGE,
+      ],
+      [
+        'replyTo',
+        (name) => ({ replyTo: `${name} <sav@boutique-awa.gn>` }),
+        SEND_REFUSAL.INVALID_REPLY_TO,
+        REPLY_TO_NAME_TOO_LONG_MESSAGE,
+      ],
+    ];
+
+    describe.each(fields)('%s', (_field, build, reason, message) => {
+      it.each(names)('accepte 128 caractères (%s)', async (_label, char) => {
+        const result = await service.send(
+          USER_ID,
+          dtoWith(build(char.repeat(128))),
+        );
+
+        expect(result.status).toBe('queued');
+      });
+
+      it.each(names)(
+        'refuse 129 caractères (%s) en 400',
+        async (_label, char) => {
+          const body = await refusalBodyOf(
+            service.send(USER_ID, dtoWith(build(char.repeat(129)))),
+          );
+
+          expect(body).toMatchObject({
+            statusCode: 400,
+            message,
+            code: reason,
+          });
+          expectNoSideEffect();
+        },
+      );
+    });
+
+    it('ne plafonne pas le relais SMTP (le MIME du client n’est pas réécrit)', async () => {
+      const result = await service.acceptSmtp(USER_ID, {
+        from: `${'a'.repeat(300)} <contact@boutique-awa.gn>`,
+        to: 'client@exemple.gn',
+        subject: 'Bonjour',
+        raw: 'From: x\r\n\r\nBonjour',
+        smtpCredentialId: 'smtp_1',
+      });
+
+      expect(result.status).toBe('queued');
     });
   });
 

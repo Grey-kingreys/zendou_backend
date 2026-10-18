@@ -1,5 +1,7 @@
 import {
+  DISPLAY_NAME_MAX_LENGTH,
   formatEmailAddress,
+  hasOversizedDisplayName,
   normalizeEmailAddress,
   parseEmailAddress,
   toSesAddress,
@@ -171,5 +173,28 @@ describe('toSesAddress', () => {
       expect(word.length).toBeLessThanOrEqual(75);
     }
     expect(decodeWords(words.join(' '))).toBe(name);
+  });
+});
+
+describe('hasOversizedDisplayName', () => {
+  it('compte des points de code, pas des unités UTF-16', () => {
+    const at = (name: string) => ({ name, address: 'a@b.gn', domain: 'b.gn' });
+
+    expect(
+      hasOversizedDisplayName(at('😀'.repeat(DISPLAY_NAME_MAX_LENGTH))),
+    ).toBe(false);
+    expect(
+      hasOversizedDisplayName(at('😀'.repeat(DISPLAY_NAME_MAX_LENGTH + 1))),
+    ).toBe(true);
+    expect(hasOversizedDisplayName({ address: 'a@b.gn', domain: 'b.gn' })).toBe(
+      false,
+    );
+  });
+
+  it('borne aussi la taille de l adresse envoyée à SES après encodage RFC 2047', () => {
+    // Pire cas : 128 points de code de 4 octets, encodés puis suivis de l'adresse.
+    const worst = toSesAddress(`${'😀'.repeat(128)} <a@b.gn>`);
+
+    expect(worst.length).toBeLessThan(1000);
   });
 });

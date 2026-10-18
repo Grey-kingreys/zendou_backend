@@ -19,6 +19,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { EMAIL_SEND_QUEUE } from '../queues/queues';
 import {
   formatEmailAddress,
+  hasOversizedDisplayName,
   normalizeEmailAddress,
   parseEmailAddress,
 } from './email-address';
@@ -33,6 +34,7 @@ import {
   EMAIL_PUBLIC_ID_PREFIX,
   EMAIL_SEND_JOB,
   FAILED_EMAIL_JOB_RETENTION_SECONDS,
+  FROM_NAME_TOO_LONG_MESSAGE,
   INSUFFICIENT_CREDITS_MESSAGE,
   INVALID_FROM_MESSAGE,
   INVALID_REPLY_TO_MESSAGE,
@@ -41,6 +43,7 @@ import {
   LOW_BALANCE_RATIO,
   MAX_BODY_BYTES,
   MISSING_BODY_MESSAGE,
+  REPLY_TO_NAME_TOO_LONG_MESSAGE,
   REPLY_TO_NOT_VERIFIED_MESSAGE,
   SEND_JOB_ATTEMPTS,
   SEND_JOB_BACKOFF_DELAY_MS,
@@ -48,6 +51,7 @@ import {
   SEND_REFUSAL_REASON,
   SYSTEM_SENDER_UNAVAILABLE_MESSAGE,
   TEST_SENDER_RECIPIENT_RESTRICTED_MESSAGE,
+  TO_NAME_TOO_LONG_MESSAGE,
   TEST_SENDER_UNAVAILABLE_MESSAGE,
 } from './emails.constants';
 import type { SendRefusalReason } from './emails.constants';
@@ -274,6 +278,10 @@ export class EmailsService {
     const { lastActivityAt, lowBalanceAlertSentAt } =
       await this.assertAccountMaySend(userId);
 
+    // Plafond du nom d'affichage : canal API seulement. Le relais SMTP porte
+    // le MIME du client, qu'on ne réécrit pas.
+    const capNames = input.channel === 'API';
+
     const from = parseEmailAddress(input.from);
 
     if (!from) {
@@ -281,6 +289,15 @@ export class EmailsService {
         SEND_REFUSAL.INVALID_FROM,
         HttpStatus.BAD_REQUEST,
         INVALID_FROM_MESSAGE,
+        (body) => new BadRequestException(body),
+      );
+    }
+
+    if (capNames && hasOversizedDisplayName(from)) {
+      throw refuse(
+        SEND_REFUSAL.INVALID_FROM,
+        HttpStatus.BAD_REQUEST,
+        FROM_NAME_TOO_LONG_MESSAGE,
         (body) => new BadRequestException(body),
       );
     }
@@ -297,6 +314,15 @@ export class EmailsService {
         SEND_REFUSAL.INVALID_TO,
         HttpStatus.BAD_REQUEST,
         INVALID_TO_MESSAGE,
+        (body) => new BadRequestException(body),
+      );
+    }
+
+    if (capNames && hasOversizedDisplayName(to)) {
+      throw refuse(
+        SEND_REFUSAL.INVALID_TO,
+        HttpStatus.BAD_REQUEST,
+        TO_NAME_TOO_LONG_MESSAGE,
         (body) => new BadRequestException(body),
       );
     }
@@ -362,7 +388,11 @@ export class EmailsService {
     //
     // Placé ici, avant la liste de suppression et avant tout débit : un refus
     // ne laisse ni ligne `Email`, ni `CreditEntry`, ni job.
-    const replyTo = await this.requireVerifiedReplyTo(userId, input.replyTo);
+    const replyTo = await this.requireVerifiedReplyTo(
+      userId,
+      input.replyTo,
+      capNames,
+    );
 
     const fromAddress = formatEmailAddress(from);
     const common = {
@@ -909,6 +939,7 @@ export class EmailsService {
   private async requireVerifiedReplyTo(
     userId: string,
     requested: string[] | undefined,
+    capNames: boolean,
   ): Promise<string[]> {
     const normalized: string[] = [];
 
@@ -920,6 +951,15 @@ export class EmailsService {
           SEND_REFUSAL.INVALID_REPLY_TO,
           HttpStatus.BAD_REQUEST,
           INVALID_REPLY_TO_MESSAGE,
+          (body) => new BadRequestException(body),
+        );
+      }
+
+      if (capNames && hasOversizedDisplayName(parsed)) {
+        throw refuse(
+          SEND_REFUSAL.INVALID_REPLY_TO,
+          HttpStatus.BAD_REQUEST,
+          REPLY_TO_NAME_TOO_LONG_MESSAGE,
           (body) => new BadRequestException(body),
         );
       }

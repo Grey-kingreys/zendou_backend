@@ -106,6 +106,18 @@ export const INVALID_TO_MESSAGE =
 export const INVALID_REPLY_TO_MESSAGE =
   "L'adresse de réponse (reply-to) est invalide : utilisez « adresse@domaine » ou « Nom <adresse@domaine> ».";
 
+/** Plafond du nom d'affichage d'une adresse de l'API, en caractères. */
+const DISPLAY_NAME_LIMIT_TEXT = 'ne doit pas dépasser 128 caractères';
+
+/** Message renvoyé pour un nom d'affichage d'expéditeur trop long. */
+export const FROM_NAME_TOO_LONG_MESSAGE = `Le nom d'affichage de l'adresse d'expédition est trop long : il ${DISPLAY_NAME_LIMIT_TEXT}.`;
+
+/** Message renvoyé pour un nom d'affichage de destinataire trop long. */
+export const TO_NAME_TOO_LONG_MESSAGE = `Le nom d'affichage du destinataire est trop long : il ${DISPLAY_NAME_LIMIT_TEXT}.`;
+
+/** Message renvoyé pour un nom d'affichage d'adresse de réponse trop long. */
+export const REPLY_TO_NAME_TOO_LONG_MESSAGE = `Le nom d'affichage de l'adresse de réponse (reply-to) est trop long : il ${DISPLAY_NAME_LIMIT_TEXT}.`;
+
 /**
  * Message renvoyé quand l'adresse de réponse (reply-to) porte un domaine qui
  * n'est pas un domaine vérifié du compte.
