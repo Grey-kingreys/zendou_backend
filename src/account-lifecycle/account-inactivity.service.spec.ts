@@ -9,6 +9,7 @@ import { AccountAnonymizationService } from './account-anonymization.service';
 import type { AccountInactivityScheduler } from './account-inactivity.scheduler';
 import { AccountInactivityService } from './account-inactivity.service';
 import {
+  INACTIVITY_SWEEP_BATCH_SIZE,
   ANONYMIZED_FOR_INACTIVITY_REASON,
   INACTIVITY_WARNING_SUBJECT_PREFIX,
 } from './account-lifecycle.constants';
@@ -282,25 +283,83 @@ describe('AccountInactivityService', () => {
       anonymize.mockRestore();
     });
   });
-  describe('comptes avec crédits hors bonus de bienvenue (protégés)', () => {
-    it.each(['TOPUP', 'SEND', 'ADMIN_GRANT'])(
-      'n’avertit pas un compte dont le mouvement de crédit est %s',
-      async (reason) => {
-        seedCustomer('c1', {}, reason);
+  describe('comptes avec crédits achetés encore disponibles (protégés)', () => {
+    /** Remplace le grand livre du compte par les mouvements donnés. */
+    function setLedger(id: string, entries: [string, number][]) {
+      db.tables.creditEntry = db.tables.creditEntry.filter(
+        (row) => row.userId !== id,
+      );
+      for (const [reason, delta] of entries) {
+        db.seed('creditEntry', { userId: id, delta, reason });
+      }
+    }
 
-        await expect(service.runSweep()).resolves.toMatchObject({ warned: 0 });
+    it('n’avertit pas un compte qui a une recharge et un solde positif', async () => {
+      seedCustomer('c1');
+      setLedger('c1', [
+        ['WELCOME_BONUS', 1000],
+        ['TOPUP', 15000],
+        ['SEND', -200],
+      ]);
 
-        expect(user('c1').inactivityWarningSentAt).toBeNull();
-        expect(sendSystem).not.toHaveBeenCalled();
+      await expect(service.runSweep()).resolves.toMatchObject({ warned: 0 });
+
+      expect(user('c1').inactivityWarningSentAt).toBeNull();
+      expect(sendSystem).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      [
+        'une recharge dont le solde est tombé à 0',
+        [
+          ['TOPUP', 100],
+          ['SEND', -100],
+        ],
+      ],
+      [
+        'une recharge dont le solde est négatif',
+        [
+          ['TOPUP', 100],
+          ['SEND', -101],
+        ],
+      ],
+      ['un geste d’admin seul', [['ADMIN_GRANT', 5000]]],
+      ['le bonus de bienvenue seul', [['WELCOME_BONUS', 1000]]],
+      [
+        'un historique d’envois sans recharge',
+        [
+          ['WELCOME_BONUS', 1000],
+          ['SEND', -10],
+        ],
+      ],
+    ] as [string, [string, number][]][])(
+      'avertit un compte qui n’a que %s',
+      async (_label, entries) => {
+        seedCustomer('c1');
+        setLedger('c1', entries);
+
+        await expect(service.runSweep()).resolves.toMatchObject({ warned: 1 });
+
+        expect(sendSystem).toHaveBeenCalledTimes(1);
       },
     );
 
+    it('lève l’avertissement déjà posé d’un compte qui a racheté des crédits', async () => {
+      seedCustomer('c1', { inactivityWarningSentAt: AT_23_MONTHS });
+      setLedger('c1', [['TOPUP', 15000]]);
+
+      await expect(service.runSweep()).resolves.toMatchObject({
+        warningsLifted: 1,
+      });
+
+      expect(user('c1').inactivityWarningSentAt).toBeNull();
+    });
+
     it('n’anonymise jamais un compte protégé, même averti depuis plus de 30 jours', async () => {
-      seedCustomer(
-        'c1',
-        { inactivityWarningSentAt: new Date('2026-01-01T00:00:00.000Z') },
-        'TOPUP',
-      );
+      seedCustomer('c1', {
+        inactivityWarningSentAt: new Date('2026-01-01T00:00:00.000Z'),
+      });
+      setLedger('c1', [['TOPUP', 15000]]);
       now = AT_24_MONTHS;
 
       await expect(service.runSweep()).resolves.toMatchObject({
@@ -310,38 +369,34 @@ describe('AccountInactivityService', () => {
       expect(user('c1').anonymizedAt).toBeNull();
     });
 
-    it('lève l’avertissement déjà posé d’un compte devenu protégé', async () => {
-      seedCustomer('c1', { inactivityWarningSentAt: AT_23_MONTHS }, 'TOPUP');
-
-      await expect(service.runSweep()).resolves.toMatchObject({
-        warningsLifted: 1,
-      });
-
-      expect(user('c1').inactivityWarningSentAt).toBeNull();
-    });
-
-    it('réévalue à chaque passage : sans mouvement protégé, le cycle normal reprend', async () => {
-      seedCustomer('c1', {}, 'TOPUP');
+    it('réévalue à chaque passage : le cycle normal reprend quand le solde tombe à 0', async () => {
+      seedCustomer('c1');
+      setLedger('c1', [['TOPUP', 100]]);
       await service.runSweep();
       expect(sendSystem).not.toHaveBeenCalled();
 
-      db.tables.creditEntry = db.tables.creditEntry.filter(
-        (row) => row.userId !== 'c1',
-      );
-      db.seed('creditEntry', {
-        userId: 'c1',
-        delta: 1000,
-        reason: 'WELCOME_BONUS',
-      });
+      db.seed('creditEntry', { userId: 'c1', delta: -100, reason: 'SEND' });
 
       await expect(service.runSweep()).resolves.toMatchObject({ warned: 1 });
       expect(sendSystem).toHaveBeenCalledTimes(1);
     });
 
-    it('ne protège pas un compte dont le seul crédit est le bonus de bienvenue', async () => {
-      seedCustomer('c1', {}, 'WELCOME_BONUS');
+    it('les comptes protégés n’occupent pas le lot : un compte inactif après eux est averti', async () => {
+      for (let index = 0; index < INACTIVITY_SWEEP_BATCH_SIZE; index += 1) {
+        seedCustomer(`p${index}`, {
+          createdAt: new Date('2025-01-01T00:00:00.000Z'),
+        });
+        db.seed('creditEntry', {
+          userId: `p${index}`,
+          delta: 1,
+          reason: 'TOPUP',
+        });
+      }
+      seedCustomer('libre');
 
       await expect(service.runSweep()).resolves.toMatchObject({ warned: 1 });
+
+      expect(user('libre').inactivityWarningSentAt).not.toBeNull();
     });
   });
 });

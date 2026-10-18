@@ -14,10 +14,7 @@ import {
 import { AccountAnonymizationService } from '../account-lifecycle/account-anonymization.service';
 import { ANONYMIZED_CANNOT_REACTIVATE_MESSAGE } from '../account-lifecycle/account-lifecycle.constants';
 import { SessionService } from '../auth';
-import {
-  ACTIVE_CREDIT_ENTRY_WHERE,
-  CREDIT_REASON_WELCOME_BONUS,
-} from '../billing/billing.constants';
+import { CREDIT_REASON_WELCOME_BONUS } from '../billing/billing.constants';
 import { PrismaService } from '../prisma/prisma.service';
 import {
   REPUTATION_WINDOW_DAYS,
@@ -570,7 +567,7 @@ export class AdminUsersService {
         // ce bonus est offert à la confirmation, jamais acheté ni consommé
         // (vague 6-C) — il ne traduit aucune activité réelle du client.
         tx.creditEntry.count({
-          where: { userId: id, ...ACTIVE_CREDIT_ENTRY_WHERE },
+          where: { userId: id, reason: { not: CREDIT_REASON_WELCOME_BONUS } },
         }),
         tx.topUpRequest.count({ where: { userId: id } }),
         // Restrict lui aussi (`AdminAction.adminId` est obligatoire) : un

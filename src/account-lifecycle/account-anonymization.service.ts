@@ -1,3 +1,4 @@
+import { hasPurchasedCredits } from './purchased-credits';
 import {
   BadRequestException,
   ConflictException,
@@ -7,7 +8,6 @@ import {
 } from '@nestjs/common';
 import { AdminActionType, Prisma, UserRole, UserStatus } from '@prisma/client';
 import { SessionService } from '../auth';
-import { ACTIVE_CREDIT_ENTRY_WHERE } from '../billing/billing.constants';
 import { DomainsService } from '../domains/domains.service';
 import { PrismaService } from '../prisma/prisma.service';
 import {
@@ -114,6 +114,16 @@ export class AccountAnonymizationService {
       if (
         origin.kind === 'inactivity' &&
         (user.role === UserRole.ADMIN || user.anonymizedAt !== null)
+      ) {
+        return null;
+      }
+
+      // Crédits achetés encore disponibles : jamais d'anonymisation
+      // automatique, même si le compte a été averti puis a racheté entre-temps.
+      // Ne concerne pas l'anonymisation sur demande d'un admin.
+      if (
+        origin.kind === 'inactivity' &&
+        (await hasPurchasedCredits(tx, userId))
       ) {
         return null;
       }
@@ -280,8 +290,6 @@ function eligibilityWhere(origin: {
 }): Prisma.UserWhereInput {
   return {
     inactivityWarningSentAt: { not: null, lte: origin.warnedBefore },
-    // Compte devenu protégé depuis la recherche : jamais réécrit.
-    creditEntries: { none: ACTIVE_CREDIT_ENTRY_WHERE },
     OR: [
       { lastActivityAt: { lte: origin.inactiveSince } },
       { lastActivityAt: null, createdAt: { lte: origin.inactiveSince } },

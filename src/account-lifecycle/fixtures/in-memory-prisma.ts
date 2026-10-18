@@ -81,31 +81,15 @@ function matchField(value: unknown, condition: unknown): boolean {
   return sameValue(value, condition);
 }
 
-export function matches(
-  row: Row,
-  where: Row = {},
-  tables?: Record<ModelName, Row[]>,
-): boolean {
+export function matches(row: Row, where: Row = {}): boolean {
   for (const [key, condition] of Object.entries(where)) {
     if (condition === undefined) continue;
     if (key === 'OR') {
-      if (!(condition as Row[]).some((sub) => matches(row, sub, tables)))
-        return false;
+      if (!(condition as Row[]).some((sub) => matches(row, sub))) return false;
     } else if (key === 'AND') {
-      if (!(condition as Row[]).every((sub) => matches(row, sub, tables)))
-        return false;
+      if (!(condition as Row[]).every((sub) => matches(row, sub))) return false;
     } else if (key === 'NOT') {
-      if (matches(row, condition as Row, tables)) return false;
-    } else if (key === 'creditEntries') {
-      // Relation 1-n `User.creditEntries` : filtres `some` et `none`.
-      const { some, none } = condition as { some?: Row; none?: Row };
-      const related = (tables?.creditEntry ?? []).filter(
-        (entry) => entry.userId === row.id,
-      );
-      if (some && !related.some((entry) => matches(entry, some, tables)))
-        return false;
-      if (none && related.some((entry) => matches(entry, none, tables)))
-        return false;
+      if (matches(row, condition as Row)) return false;
     } else if (!matchField(row[key], condition)) {
       return false;
     }
@@ -164,38 +148,43 @@ export class InMemoryPrisma {
 
     return {
       findUnique: (args: { where: Row; select?: Row }) => {
-        const found = rows().find((row) =>
-          matches(row, args.where, this.tables),
-        );
+        const found = rows().find((row) => matches(row, args.where));
         return Promise.resolve(
           found ? this.withRelations(name, found, args.select) : null,
         );
       },
       findUniqueOrThrow: (args: { where: Row }) => {
-        const found = rows().find((row) =>
-          matches(row, args.where, this.tables),
-        );
+        const found = rows().find((row) => matches(row, args.where));
         if (!found) return Promise.reject(new Error(`${name} introuvable`));
         return Promise.resolve({ ...found });
       },
       findFirst: (args: { where?: Row; select?: Row } = {}) => {
-        const found = rows().find((row) =>
-          matches(row, args.where, this.tables),
-        );
+        const found = rows().find((row) => matches(row, args.where));
         return Promise.resolve(
           found ? this.withRelations(name, found, args.select) : null,
         );
       },
-      findMany: (args: { where?: Row; take?: number } = {}) => {
+      findMany: (args: { where?: Row; take?: number; skip?: number } = {}) => {
         const found = rows()
-          .filter((row) => matches(row, args.where, this.tables))
+          .filter((row) => matches(row, args.where))
+          .slice(args.skip ?? 0)
           .slice(0, args.take ?? Infinity)
           .map((row) => ({ ...row }));
         return Promise.resolve(found);
       },
+      aggregate: (args: { where?: Row; _sum: Record<string, true> }) => {
+        const found = rows().filter((row) => matches(row, args.where));
+        const sums: Row = {};
+        for (const field of Object.keys(args._sum)) {
+          sums[field] = found.length
+            ? found.reduce((total, row) => total + (row[field] as number), 0)
+            : null;
+        }
+        return Promise.resolve({ _sum: sums });
+      },
       count: (args: { where?: Row } = {}) =>
         Promise.resolve(
-          rows().filter((row) => matches(row, args.where, this.tables)).length,
+          rows().filter((row) => matches(row, args.where)).length,
         ),
       create: (args: { data: Row }) => {
         const now = new Date();
@@ -220,25 +209,19 @@ export class InMemoryPrisma {
         });
       },
       update: (args: { where: Row; data: Row }) => {
-        const found = rows().find((row) =>
-          matches(row, args.where, this.tables),
-        );
+        const found = rows().find((row) => matches(row, args.where));
         if (!found) return Promise.reject(new Error(`${name} introuvable`));
         Object.assign(found, args.data);
         return Promise.resolve({ ...found });
       },
       updateMany: (args: { where: Row; data: Row }) => {
-        const found = rows().filter((row) =>
-          matches(row, args.where, this.tables),
-        );
+        const found = rows().filter((row) => matches(row, args.where));
         for (const row of found) Object.assign(row, args.data);
         return Promise.resolve({ count: found.length });
       },
       deleteMany: (args: { where?: Row } = {}) => {
         const before = rows().length;
-        this.tables[name] = rows().filter(
-          (row) => !matches(row, args.where, this.tables),
-        );
+        this.tables[name] = rows().filter((row) => !matches(row, args.where));
         return Promise.resolve({ count: before - this.tables[name].length });
       },
     };

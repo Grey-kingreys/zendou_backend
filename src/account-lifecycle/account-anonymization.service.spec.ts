@@ -468,10 +468,9 @@ describe('AccountAnonymizationService', () => {
     it('anonymise un compte éligible, sans ligne d’audit, avec le motif d’inactivité', async () => {
       const user = db.tables.user.find((row) => row.id === 'u1')!;
       user.inactivityWarningSentAt = new Date('2026-01-15T00:00:00.000Z');
-      // Seul le bonus de bienvenue reste : le compte n'est pas protégé.
-      db.tables.creditEntry = db.tables.creditEntry.filter(
-        (row) => row.reason === 'WELCOME_BONUS',
-      );
+      // Le solde est tombé à 0 (recharge 15000 + bonus 1000 - consommation) :
+      // le compte n'est plus protégé.
+      db.seed('creditEntry', { userId: 'u1', delta: -15999, reason: 'SEND' });
 
       const result = await service.anonymize('u1', cutoffs);
 
@@ -485,7 +484,7 @@ describe('AccountAnonymizationService', () => {
       ).toEqual([]);
     });
 
-    it('épargne un compte protégé (crédits hors bonus) même s’il est éligible par ailleurs, sans rien écrire', async () => {
+    it('épargne un compte qui a une recharge et un solde positif, sans rien écrire', async () => {
       const user = db.tables.user.find((row) => row.id === 'u1')!;
       user.inactivityWarningSentAt = new Date('2026-01-15T00:00:00.000Z');
       const before = db.snapshot();

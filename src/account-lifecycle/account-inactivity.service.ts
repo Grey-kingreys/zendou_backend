@@ -7,7 +7,6 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Prisma, UserRole } from '@prisma/client';
-import { ACTIVE_CREDIT_ENTRY_WHERE } from '../billing/billing.constants';
 import { EmailsService } from '../emails/emails.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { AccountAnonymizationService } from './account-anonymization.service';
@@ -23,6 +22,7 @@ import {
   INACTIVITY_WARNING_NOTICE_DAYS,
   addMonthsUtc,
 } from './account-lifecycle.constants';
+import { hasPurchasedCredits } from './purchased-credits';
 import {
   buildInactivityWarningEmail,
   buildLoginUrl,
@@ -64,21 +64,6 @@ function activeAfter(cutoff: Date): Prisma.UserWhereInput {
 }
 
 /**
- * Compte protégé : il a un mouvement de crédit autre que le bonus de
- * bienvenue (même critère que le blocage de la suppression). Il n'est ni
- * averti ni anonymisé automatiquement pour inactivité. Évalué à chaque
- * passage : sans mouvement protégé, le cycle normal reprend.
- */
-const WITH_ACTIVE_CREDITS: Prisma.UserWhereInput = {
-  creditEntries: { some: ACTIVE_CREDIT_ENTRY_WHERE },
-};
-
-/** Négation exacte de {@link WITH_ACTIVE_CREDITS}. */
-const WITHOUT_ACTIVE_CREDITS: Prisma.UserWhereInput = {
-  creditEntries: { none: ACTIVE_CREDIT_ENTRY_WHERE },
-};
-
-/**
  * Traitement quotidien des comptes inactifs (ANON-1), tel que promis par la
  * politique de confidentialité : un compte sans connexion ni envoi depuis
  * 24 mois est prévenu par email, puis anonymisé au moins 30 jours plus tard.
@@ -92,8 +77,10 @@ const WITHOUT_ACTIVE_CREDITS: Prisma.UserWhereInput = {
  * 3. **anonymiser** les comptes à 24 mois d'inactivité ET prévenus depuis
  *    30 jours au moins, par la même fonction que l'anonymisation admin.
  *
- * Les ADMIN et les comptes protégés (crédits hors bonus de bienvenue) sont
- * exclus des phases 2 et 3, et leur avertissement éventuel est levé (phase 1).
+ * Les ADMIN sont exclus des phases 2 et 3. Les comptes qui ont encore des
+ * crédits achetés (`hasPurchasedCredits`) ne sont ni avertis ni anonymisés, et
+ * leur avertissement éventuel est levé : la protection est réévaluée à chaque
+ * passage, le cycle normal reprend dès que le solde tombe à 0.
  */
 @Injectable()
 export class AccountInactivityService
@@ -180,16 +167,34 @@ export class AccountInactivityService
       where: {
         inactivityWarningSentAt: { not: null },
         anonymizedAt: null,
-        OR: [
-          { role: UserRole.ADMIN },
-          WITH_ACTIVE_CREDITS,
-          activeAfter(warningCutoff),
-        ],
+        OR: [{ role: UserRole.ADMIN }, activeAfter(warningCutoff)],
       },
       data: { inactivityWarningSentAt: null },
     });
 
-    return lifted.count;
+    // Un compte averti qui a depuis racheté des crédits : protégé, donc plus
+    // averti. Le solde se calcule par compte, sur les seuls comptes avertis.
+    const warnedAccounts = await this.prisma.user.findMany({
+      where: {
+        role: UserRole.CUSTOMER,
+        anonymizedAt: null,
+        inactivityWarningSentAt: { not: null },
+      },
+      select: { id: true },
+    });
+    let protectedLifted = 0;
+
+    for (const { id } of warnedAccounts) {
+      if (await hasPurchasedCredits(this.prisma, id)) {
+        const result = await this.prisma.user.updateMany({
+          where: { id, inactivityWarningSentAt: { not: null } },
+          data: { inactivityWarningSentAt: null },
+        });
+        protectedLifted += result.count;
+      }
+    }
+
+    return lifted.count + protectedLifted;
   }
 
   /** Phase 2 : un avertissement par compte et par période d'inactivité. */
@@ -198,22 +203,52 @@ export class AccountInactivityService
       role: UserRole.CUSTOMER,
       anonymizedAt: null,
       inactivityWarningSentAt: null,
-      ...WITHOUT_ACTIVE_CREDITS,
       ...inactiveSince(warningCutoff),
     };
 
-    const candidates = await this.prisma.user.findMany({
-      where: eligible,
-      select: {
-        id: true,
-        email: true,
-        name: true,
-        lastActivityAt: true,
-        createdAt: true,
-      },
-      orderBy: { createdAt: 'asc' },
-      take: INACTIVITY_SWEEP_BATCH_SIZE,
-    });
+    // Les comptes protégés restent éligibles (inactifs) pour toujours : ils
+    // sont écartés ici, page après page, pour ne pas occuper tout le lot et
+    // affamer les autres.
+    const candidates: {
+      id: string;
+      email: string;
+      name: string;
+      lastActivityAt: Date | null;
+      createdAt: Date;
+    }[] = [];
+
+    for (
+      let skip = 0;
+      candidates.length < INACTIVITY_SWEEP_BATCH_SIZE;
+      skip += INACTIVITY_SWEEP_BATCH_SIZE
+    ) {
+      const page = await this.prisma.user.findMany({
+        where: eligible,
+        select: {
+          id: true,
+          email: true,
+          name: true,
+          lastActivityAt: true,
+          createdAt: true,
+        },
+        orderBy: { createdAt: 'asc' },
+        take: INACTIVITY_SWEEP_BATCH_SIZE,
+        skip,
+      });
+
+      if (page.length === 0) {
+        break;
+      }
+
+      for (const candidate of page) {
+        if (
+          candidates.length < INACTIVITY_SWEEP_BATCH_SIZE &&
+          !(await hasPurchasedCredits(this.prisma, candidate.id))
+        ) {
+          candidates.push(candidate);
+        }
+      }
+    }
 
     let warned = 0;
 
@@ -285,7 +320,6 @@ export class AccountInactivityService
         role: UserRole.CUSTOMER,
         anonymizedAt: null,
         inactivityWarningSentAt: { not: null, lte: warnedBefore },
-        ...WITHOUT_ACTIVE_CREDITS,
         ...inactiveSince(anonymizeCutoff),
       },
       select: { id: true },
