@@ -125,3 +125,62 @@ function unquoteDisplayName(name: string): string {
 
   return name;
 }
+
+/** Taille maximale d'un mot encodé RFC 2047 (§2), délimiteurs compris. */
+const ENCODED_WORD_MAX_LENGTH = 75;
+
+/** `=?UTF-8?B?` + `?=` : 12 caractères de délimiteurs. */
+const ENCODED_WORD_OVERHEAD = 12;
+
+/** Octets UTF-8 maximaux par mot : base64 par groupes de 4 (3 octets). */
+const ENCODED_WORD_MAX_BYTES =
+  Math.floor((ENCODED_WORD_MAX_LENGTH - ENCODED_WORD_OVERHEAD) / 4) * 3;
+
+/**
+ * Encode un nom d'affichage en mots encodés `=?UTF-8?B?...?=` (RFC 2047),
+ * découpés à 75 caractères au plus, sans jamais couper un caractère UTF-8.
+ */
+function encodeDisplayName(name: string): string {
+  const words: string[] = [];
+  let chunk = '';
+  let chunkBytes = 0;
+
+  for (const char of name) {
+    const bytes = Buffer.byteLength(char, 'utf8');
+
+    if (chunkBytes + bytes > ENCODED_WORD_MAX_BYTES) {
+      words.push(chunk);
+      chunk = '';
+      chunkBytes = 0;
+    }
+
+    chunk += char;
+    chunkBytes += bytes;
+  }
+
+  if (chunk) {
+    words.push(chunk);
+  }
+
+  return words
+    .map(
+      (word) => `=?UTF-8?B?${Buffer.from(word, 'utf8').toString('base64')}?=`,
+    )
+    .join(' ');
+}
+
+/**
+ * Adresse prête pour SES en contenu Simple. SES exige qu'un nom d'affichage
+ * non ASCII soit un mot encodé RFC 2047 ; un nom ASCII, nu ou entre guillemets,
+ * et une adresse nue sont rendus tels quels. Ne sert pas au contenu Raw, où le
+ * client fournit son propre MIME.
+ */
+export function toSesAddress(formatted: string): string {
+  const parsed = parseEmailAddress(formatted);
+
+  if (!parsed?.name || /^[\x20-\x7E]*$/.test(parsed.name)) {
+    return formatted;
+  }
+
+  return `${encodeDisplayName(parsed.name)} <${parsed.address}>`;
+}

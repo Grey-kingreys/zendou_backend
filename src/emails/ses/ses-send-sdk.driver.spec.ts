@@ -173,6 +173,38 @@ describe('SesSendSdkDriver', () => {
       expect(lastInput().Destination?.ToAddresses).toEqual([TO]);
     });
 
+    it('encode en RFC 2047 les noms non ASCII de From, To et Reply-To', async () => {
+      await driverWith().send(
+        simplePayload({
+          from: 'Boutique Aïcha <no-reply@boutique-awa.gn>',
+          toDisplay: 'Aïssatou <a@b.gn>',
+          replyTo: 'Service Après-vente <sav@boutique-awa.gn>',
+        }),
+      );
+
+      const enc = (value: string) =>
+        `=?UTF-8?B?${Buffer.from(value).toString('base64')}?=`;
+      expect(lastInput().FromEmailAddress).toBe(
+        `${enc('Boutique Aïcha')} <no-reply@boutique-awa.gn>`,
+      );
+      expect(lastInput().Destination?.ToAddresses).toEqual([
+        `${enc('Aïssatou')} <a@b.gn>`,
+      ]);
+      expect(lastInput().ReplyToAddresses).toEqual([
+        `${enc('Service Après-vente')} <sav@boutique-awa.gn>`,
+      ]);
+    });
+
+    it('ne touche pas au From du contenu Raw', async () => {
+      await driverWith().send(
+        rawPayload({ from: 'Boutique Aïcha <no-reply@boutique-awa.gn>' }),
+      );
+
+      expect(lastInput().FromEmailAddress).toBe(
+        'Boutique Aïcha <no-reply@boutique-awa.gn>',
+      );
+    });
+
     // ─── (e) adresse de réponse (E1) ──────────────────────────────────────
     it('pose ReplyToAddresses quand une adresse de réponse accompagne l’envoi', async () => {
       await driverWith().send(

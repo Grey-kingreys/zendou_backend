@@ -4,6 +4,7 @@ import {
   type Body as SesBody,
   type EmailContent as SesEmailContent,
 } from '@aws-sdk/client-sesv2';
+import { toSesAddress } from '../email-address';
 import {
   SesSendError,
   type SesSendDriver,
@@ -88,18 +89,23 @@ export class SesSendSdkDriver implements SesSendDriver {
 
   async send(payload: SesSendPayload): Promise<SesSendResult> {
     const configurationSet = payload.configurationSet ?? this.configurationSet;
+    const simple = payload.kind === 'simple';
 
     try {
       const response = await this.client.send(
         new SendEmailCommand({
-          FromEmailAddress: payload.from,
+          // Contenu Simple : SES compose le MIME, un nom d'affichage non ASCII
+          // doit donc arriver encodé (RFC 2047). En Raw, rien n'est recomposé.
+          FromEmailAddress: simple ? toSesAddress(payload.from) : payload.from,
           // `Destination` est fourni sur les DEUX chemins, avec la seule
           // adresse de la ligne `Email` traitée. C'est ce qui rend l'éventail
           // multi-destinataires exact et la fuite d'un `Bcc:` resté dans les
           // octets bruts structurellement impossible : SES ne livre qu'ici.
           Destination: {
             ToAddresses: [
-              (payload.kind === 'simple' && payload.toDisplay) || payload.to,
+              simple
+                ? toSesAddress(payload.toDisplay || payload.to)
+                : payload.to,
             ],
           },
           Content: buildContent(payload),
@@ -108,7 +114,7 @@ export class SesSendSdkDriver implements SesSendDriver {
           // déjà dans les octets du client - le lui ajouter ici en créerait un
           // second.
           ...(payload.kind === 'simple' && payload.replyTo
-            ? { ReplyToAddresses: [payload.replyTo] }
+            ? { ReplyToAddresses: [toSesAddress(payload.replyTo)] }
             : {}),
           ...(configurationSet
             ? { ConfigurationSetName: configurationSet }

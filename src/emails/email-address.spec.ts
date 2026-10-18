@@ -2,6 +2,7 @@ import {
   formatEmailAddress,
   normalizeEmailAddress,
   parseEmailAddress,
+  toSesAddress,
 } from './email-address';
 
 describe('parseEmailAddress', () => {
@@ -118,5 +119,57 @@ describe('formatEmailAddress', () => {
     expect(formatEmailAddress(parsed!)).toBe(
       '"Diallo, Awa" <contact@boutique-awa.gn>',
     );
+  });
+});
+
+describe('toSesAddress', () => {
+  /** Décode un mot encodé `=?UTF-8?B?...?=` (le contrôle inverse de l'encodage). */
+  function decodeWords(encoded: string): string {
+    return encoded
+      .split(' ')
+      .map((word) => {
+        const match = /^=\?UTF-8\?B\?([A-Za-z0-9+/=]+)\?=$/.exec(word);
+        expect(match).not.toBeNull();
+        return Buffer.from(match![1], 'base64').toString('utf8');
+      })
+      .join('');
+  }
+
+  it('laisse inchangés une adresse nue et un nom ASCII, avec ou sans guillemets', () => {
+    expect(toSesAddress('contact@boutique-awa.gn')).toBe(
+      'contact@boutique-awa.gn',
+    );
+    expect(toSesAddress('Awa Diallo <contact@boutique-awa.gn>')).toBe(
+      'Awa Diallo <contact@boutique-awa.gn>',
+    );
+    expect(toSesAddress('"Diallo, Awa" <contact@boutique-awa.gn>')).toBe(
+      '"Diallo, Awa" <contact@boutique-awa.gn>',
+    );
+  });
+
+  it('encode un nom accentué en mot encodé RFC 2047', () => {
+    expect(toSesAddress('Aïssatou <a@b.gn>')).toBe(
+      `=?UTF-8?B?${Buffer.from('Aïssatou').toString('base64')}?= <a@b.gn>`,
+    );
+  });
+
+  it('encode aussi un nom accentué qui contient une virgule ou des guillemets', () => {
+    const result = toSesAddress('"Diallo, Aïcha" <a@b.gn>');
+
+    expect(result).toMatch(/^=\?UTF-8\?B\?[A-Za-z0-9+/=]+\?= <a@b\.gn>$/);
+    expect(result).not.toContain('"');
+    expect(decodeWords(result.replace(' <a@b.gn>', ''))).toBe('Diallo, Aïcha');
+  });
+
+  it('découpe un nom très long en mots de 75 caractères au plus, sans couper un caractère', () => {
+    const name = `${'é'.repeat(80)} Diallo`;
+    const result = toSesAddress(`${name} <a@b.gn>`);
+    const words = result.replace(' <a@b.gn>', '').split(' ');
+
+    expect(words.length).toBeGreaterThan(1);
+    for (const word of words) {
+      expect(word.length).toBeLessThanOrEqual(75);
+    }
+    expect(decodeWords(words.join(' '))).toBe(name);
   });
 });
