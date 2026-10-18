@@ -33,7 +33,15 @@ describe('AccountInactivityService', () => {
 
   const user = (id: string) => db.tables.user.find((row) => row.id === id)!;
 
-  function seedCustomer(id: string, overrides: Record<string, unknown> = {}) {
+  /**
+   * Par défaut le seul mouvement de crédit est le bonus de bienvenue : le compte
+   * n'est pas protégé. Passer `TOPUP` (ou `SEND`) pour un compte protégé.
+   */
+  function seedCustomer(
+    id: string,
+    overrides: Record<string, unknown> = {},
+    creditReason = 'WELCOME_BONUS',
+  ) {
     db.seed('user', {
       id,
       email: `${id}@exemple.gn`,
@@ -46,7 +54,7 @@ describe('AccountInactivityService', () => {
       anonymizedAt: null,
       ...overrides,
     });
-    db.seed('creditEntry', { userId: id, delta: 15000, reason: 'TOPUP' });
+    db.seed('creditEntry', { userId: id, delta: 15000, reason: creditReason });
   }
 
   beforeEach(() => {
@@ -272,6 +280,68 @@ describe('AccountInactivityService', () => {
         anonymized: 1,
       });
       anonymize.mockRestore();
+    });
+  });
+  describe('comptes avec crédits hors bonus de bienvenue (protégés)', () => {
+    it.each(['TOPUP', 'SEND', 'ADMIN_GRANT'])(
+      'n’avertit pas un compte dont le mouvement de crédit est %s',
+      async (reason) => {
+        seedCustomer('c1', {}, reason);
+
+        await expect(service.runSweep()).resolves.toMatchObject({ warned: 0 });
+
+        expect(user('c1').inactivityWarningSentAt).toBeNull();
+        expect(sendSystem).not.toHaveBeenCalled();
+      },
+    );
+
+    it('n’anonymise jamais un compte protégé, même averti depuis plus de 30 jours', async () => {
+      seedCustomer(
+        'c1',
+        { inactivityWarningSentAt: new Date('2026-01-01T00:00:00.000Z') },
+        'TOPUP',
+      );
+      now = AT_24_MONTHS;
+
+      await expect(service.runSweep()).resolves.toMatchObject({
+        anonymized: 0,
+      });
+
+      expect(user('c1').anonymizedAt).toBeNull();
+    });
+
+    it('lève l’avertissement déjà posé d’un compte devenu protégé', async () => {
+      seedCustomer('c1', { inactivityWarningSentAt: AT_23_MONTHS }, 'TOPUP');
+
+      await expect(service.runSweep()).resolves.toMatchObject({
+        warningsLifted: 1,
+      });
+
+      expect(user('c1').inactivityWarningSentAt).toBeNull();
+    });
+
+    it('réévalue à chaque passage : sans mouvement protégé, le cycle normal reprend', async () => {
+      seedCustomer('c1', {}, 'TOPUP');
+      await service.runSweep();
+      expect(sendSystem).not.toHaveBeenCalled();
+
+      db.tables.creditEntry = db.tables.creditEntry.filter(
+        (row) => row.userId !== 'c1',
+      );
+      db.seed('creditEntry', {
+        userId: 'c1',
+        delta: 1000,
+        reason: 'WELCOME_BONUS',
+      });
+
+      await expect(service.runSweep()).resolves.toMatchObject({ warned: 1 });
+      expect(sendSystem).toHaveBeenCalledTimes(1);
+    });
+
+    it('ne protège pas un compte dont le seul crédit est le bonus de bienvenue', async () => {
+      seedCustomer('c1', {}, 'WELCOME_BONUS');
+
+      await expect(service.runSweep()).resolves.toMatchObject({ warned: 1 });
     });
   });
 });

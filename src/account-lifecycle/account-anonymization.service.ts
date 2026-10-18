@@ -7,6 +7,7 @@ import {
 } from '@nestjs/common';
 import { AdminActionType, Prisma, UserRole, UserStatus } from '@prisma/client';
 import { SessionService } from '../auth';
+import { ACTIVE_CREDIT_ENTRY_WHERE } from '../billing/billing.constants';
 import { DomainsService } from '../domains/domains.service';
 import { PrismaService } from '../prisma/prisma.service';
 import {
@@ -279,6 +280,8 @@ function eligibilityWhere(origin: {
 }): Prisma.UserWhereInput {
   return {
     inactivityWarningSentAt: { not: null, lte: origin.warnedBefore },
+    // Compte devenu protégé depuis la recherche : jamais réécrit.
+    creditEntries: { none: ACTIVE_CREDIT_ENTRY_WHERE },
     OR: [
       { lastActivityAt: { lte: origin.inactiveSince } },
       { lastActivityAt: null, createdAt: { lte: origin.inactiveSince } },

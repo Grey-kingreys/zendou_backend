@@ -1,4 +1,4 @@
-import { TopUpMethod } from '@prisma/client';
+import { Prisma, TopUpMethod } from '@prisma/client';
 
 /** Valeur inscrite dans `CreditEntry.reason` lors d'une recharge approuvée. */
 export const CREDIT_REASON_TOPUP = 'TOPUP';
@@ -22,6 +22,17 @@ export const CREDIT_REASON_WELCOME_BONUS = 'WELCOME_BONUS';
  * pas finale).
  */
 export const DEFAULT_WELCOME_CREDITS = 1_000;
+
+/**
+ * Mouvement de crédit qui rattache un compte à une activité réelle : tout
+ * `CreditEntry` autre que le bonus de bienvenue (recharge, geste d'admin,
+ * consommation...). Critère unique de ce qui bloque la suppression d'un compte
+ * (`AdminUsersService.deleteUser`) et de ce qui l'exclut de l'anonymisation
+ * automatique pour inactivité (`AccountInactivityService`).
+ */
+export const ACTIVE_CREDIT_ENTRY_WHERE: Prisma.CreditEntryWhereInput = {
+  reason: { not: CREDIT_REASON_WELCOME_BONUS },
+};
 
 export const DEFAULT_PAGE = 1;
 export const DEFAULT_LIMIT = 25;

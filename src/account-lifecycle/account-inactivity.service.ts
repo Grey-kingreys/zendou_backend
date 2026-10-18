@@ -7,6 +7,7 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Prisma, UserRole } from '@prisma/client';
+import { ACTIVE_CREDIT_ENTRY_WHERE } from '../billing/billing.constants';
 import { EmailsService } from '../emails/emails.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { AccountAnonymizationService } from './account-anonymization.service';
@@ -63,6 +64,21 @@ function activeAfter(cutoff: Date): Prisma.UserWhereInput {
 }
 
 /**
+ * Compte protégé : il a un mouvement de crédit autre que le bonus de
+ * bienvenue (même critère que le blocage de la suppression). Il n'est ni
+ * averti ni anonymisé automatiquement pour inactivité. Évalué à chaque
+ * passage : sans mouvement protégé, le cycle normal reprend.
+ */
+const WITH_ACTIVE_CREDITS: Prisma.UserWhereInput = {
+  creditEntries: { some: ACTIVE_CREDIT_ENTRY_WHERE },
+};
+
+/** Négation exacte de {@link WITH_ACTIVE_CREDITS}. */
+const WITHOUT_ACTIVE_CREDITS: Prisma.UserWhereInput = {
+  creditEntries: { none: ACTIVE_CREDIT_ENTRY_WHERE },
+};
+
+/**
  * Traitement quotidien des comptes inactifs (ANON-1), tel que promis par la
  * politique de confidentialité : un compte sans connexion ni envoi depuis
  * 24 mois est prévenu par email, puis anonymisé au moins 30 jours plus tard.
@@ -76,7 +92,8 @@ function activeAfter(cutoff: Date): Prisma.UserWhereInput {
  * 3. **anonymiser** les comptes à 24 mois d'inactivité ET prévenus depuis
  *    30 jours au moins, par la même fonction que l'anonymisation admin.
  *
- * Les ADMIN sont exclus des phases 2 et 3.
+ * Les ADMIN et les comptes protégés (crédits hors bonus de bienvenue) sont
+ * exclus des phases 2 et 3, et leur avertissement éventuel est levé (phase 1).
  */
 @Injectable()
 export class AccountInactivityService
@@ -163,7 +180,11 @@ export class AccountInactivityService
       where: {
         inactivityWarningSentAt: { not: null },
         anonymizedAt: null,
-        OR: [{ role: UserRole.ADMIN }, activeAfter(warningCutoff)],
+        OR: [
+          { role: UserRole.ADMIN },
+          WITH_ACTIVE_CREDITS,
+          activeAfter(warningCutoff),
+        ],
       },
       data: { inactivityWarningSentAt: null },
     });
@@ -177,6 +198,7 @@ export class AccountInactivityService
       role: UserRole.CUSTOMER,
       anonymizedAt: null,
       inactivityWarningSentAt: null,
+      ...WITHOUT_ACTIVE_CREDITS,
       ...inactiveSince(warningCutoff),
     };
 
@@ -263,6 +285,7 @@ export class AccountInactivityService
         role: UserRole.CUSTOMER,
         anonymizedAt: null,
         inactivityWarningSentAt: { not: null, lte: warnedBefore },
+        ...WITHOUT_ACTIVE_CREDITS,
         ...inactiveSince(anonymizeCutoff),
       },
       select: { id: true },

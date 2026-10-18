@@ -468,6 +468,10 @@ describe('AccountAnonymizationService', () => {
     it('anonymise un compte éligible, sans ligne d’audit, avec le motif d’inactivité', async () => {
       const user = db.tables.user.find((row) => row.id === 'u1')!;
       user.inactivityWarningSentAt = new Date('2026-01-15T00:00:00.000Z');
+      // Seul le bonus de bienvenue reste : le compte n'est pas protégé.
+      db.tables.creditEntry = db.tables.creditEntry.filter(
+        (row) => row.reason === 'WELCOME_BONUS',
+      );
 
       const result = await service.anonymize('u1', cutoffs);
 
@@ -479,6 +483,16 @@ describe('AccountAnonymizationService', () => {
           (row) => row.type === AdminActionType.ANONYMIZE_USER,
         ),
       ).toEqual([]);
+    });
+
+    it('épargne un compte protégé (crédits hors bonus) même s’il est éligible par ailleurs, sans rien écrire', async () => {
+      const user = db.tables.user.find((row) => row.id === 'u1')!;
+      user.inactivityWarningSentAt = new Date('2026-01-15T00:00:00.000Z');
+      const before = db.snapshot();
+
+      await expect(service.anonymize('u1', cutoffs)).resolves.toBeNull();
+      expect(db.tables).toEqual(before);
+      expect(destroyAllForUser).not.toHaveBeenCalled();
     });
 
     it('épargne un compte sans avertissement, sans rien écrire', async () => {
