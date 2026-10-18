@@ -1,9 +1,9 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { TopUpMethod, TopUpStatus, UserRole, UserStatus } from '@prisma/client';
-import { SessionAuthGuard } from '../auth';
 import type { AuthUser } from '../auth';
 import { BillingController } from './billing.controller';
 import { BillingService } from './billing.service';
+import { SessionOrApiKeyGuard } from './session-or-api-key.guard';
 import type { CreateTopUpRequestDto } from './dto/create-topup-request.dto';
 
 const authUser: AuthUser = {
@@ -36,8 +36,8 @@ describe('BillingController', () => {
       controllers: [BillingController],
       providers: [{ provide: BillingService, useValue: billingService }],
     })
-      // Le guard est couvert par session-auth.guard.spec.ts.
-      .overrideGuard(SessionAuthGuard)
+      // Le guard est couvert par billing.balance-api-key.wiring.spec.ts.
+      .overrideGuard(SessionOrApiKeyGuard)
       .useValue({ canActivate: () => true })
       .compile();
 
