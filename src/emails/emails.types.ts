@@ -29,6 +29,12 @@ export interface SimpleEmailSendJobData {
    * octets MIME du client, et ces octets partent tels quels.
    */
   replyTo?: string;
+  /**
+   * En-têtes personnalisés déjà validés (liste blanche) à poser sur le message
+   * composé par SES. Absent du contenu `raw`, où les en-têtes sont dans les
+   * octets du client. Ajouté au job seulement s'il y en a.
+   */
+  headers?: Record<string, string>;
 }
 
 /**
@@ -73,7 +79,13 @@ export type SendChannel = 'API' | 'SMTP';
  *   (`RawEmailSendJobData`) puis au driver (`Content.Raw`, B6/S3).
  */
 export type SendContent =
-  | { kind: 'simple'; html?: string; text?: string }
+  | {
+      kind: 'simple';
+      html?: string;
+      text?: string;
+      /** En-têtes personnalisés déjà validés (canal API seulement). */
+      headers?: Record<string, string>;
+    }
   | { kind: 'raw'; raw: Buffer | string };
 
 /**

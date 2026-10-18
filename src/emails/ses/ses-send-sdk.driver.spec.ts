@@ -125,6 +125,29 @@ describe('SesSendSdkDriver', () => {
       expect(lastInput().ConfigurationSetName).toBe('zendou-test');
     });
 
+    it('transmet les en-têtes personnalisés par Content.Simple.Headers, sans passer en Raw', async () => {
+      await driverWith().send(
+        simplePayload({
+          headers: {
+            'List-Unsubscribe': '<https://exemple.gn/stop>',
+            'X-Campagne': 'rentree',
+          },
+        }),
+      );
+
+      expect(lastInput().Content?.Simple?.Headers).toEqual([
+        { Name: 'List-Unsubscribe', Value: '<https://exemple.gn/stop>' },
+        { Name: 'X-Campagne', Value: 'rentree' },
+      ]);
+      expect(lastInput().Content?.Raw).toBeUndefined();
+    });
+
+    it('n’ajoute pas de Headers sans en-tête personnalisé', async () => {
+      await driverWith().send(simplePayload({ headers: {} }));
+
+      expect(lastInput().Content?.Simple).not.toHaveProperty('Headers');
+    });
+
     // ─── (e) adresse de réponse (E1) ──────────────────────────────────────
     it('pose ReplyToAddresses quand une adresse de réponse accompagne l’envoi', async () => {
       await driverWith().send(

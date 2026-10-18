@@ -126,6 +126,17 @@ describe('EmailSendProcessor', () => {
     );
   });
 
+  it('transmet au driver les en-têtes personnalisés portés par le job', async () => {
+    await processor.process(jobFor({ headers: { 'X-Campagne': 'rentree' } }));
+
+    expect(driver.send).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'simple',
+        headers: { 'X-Campagne': 'rentree' },
+      }),
+    );
+  });
+
   it('n’invente aucune adresse de réponse quand le job n’en porte pas', async () => {
     await processor.process(jobFor());
 

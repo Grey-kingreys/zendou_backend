@@ -101,6 +101,7 @@ export class EmailSendProcessor extends WorkerHost {
               // Déjà validée à l'acceptation (domaine vérifié et possédé) :
               // le worker ne fait que la transmettre, comme les corps.
               replyTo: job.data.replyTo,
+              headers: job.data.headers,
             },
       );
 

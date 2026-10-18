@@ -143,6 +143,14 @@ export function buildContent(payload: SesSendPayload): SesEmailContent {
     Simple: {
       Subject: { Data: payload.subject, Charset: CHARSET },
       Body: buildBody(payload),
+      ...(payload.headers && Object.keys(payload.headers).length > 0
+        ? {
+            Headers: Object.entries(payload.headers).map(([Name, Value]) => ({
+              Name,
+              Value,
+            })),
+          }
+        : {}),
     },
   };
 }

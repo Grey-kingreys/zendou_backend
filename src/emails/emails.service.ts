@@ -59,6 +59,7 @@ import type {
 } from './emails.types';
 import type { SendEmailDto } from './dto/send-email.dto';
 import { recordAccountActivity } from '../account-lifecycle/account-activity';
+import { validateCustomHeaders } from './email-headers';
 import { isAddressSuppressed } from './suppressions';
 
 /**
@@ -95,6 +96,16 @@ export class EmailsService {
    * subit exactement les mêmes contrôles, sans les dupliquer.
    */
   async send(userId: string, dto: SendEmailDto): Promise<SendEmailResponse> {
+    // Propre au canal API : le relais SMTP porte ses en-têtes dans le MIME.
+    // Refusé avant tout contrôle de compte, sans effet de bord.
+    if (dto.headers !== undefined) {
+      const headersError = validateCustomHeaders(dto.headers);
+
+      if (headersError) {
+        throw new BadRequestException(headersError);
+      }
+    }
+
     return this.accept(userId, {
       from: dto.from,
       to: dto.to,
@@ -102,7 +113,12 @@ export class EmailsService {
       // L'API n'accepte qu'une adresse de réponse ; `accept()` en prend une
       // liste parce que le relais SMTP peut en présenter plusieurs.
       replyTo: dto.replyTo === undefined ? undefined : [dto.replyTo],
-      content: { kind: 'simple', html: dto.html, text: dto.text },
+      content: {
+        kind: 'simple',
+        html: dto.html,
+        text: dto.text,
+        headers: dto.headers,
+      },
       channel: 'API',
     });
   }
@@ -430,6 +446,11 @@ export class EmailsService {
             // sans reply-to reste **exactement** celle d'avant, comme pour
             // `kind` (rien à migrer au redéploiement).
             ...(replyTo.length > 0 ? { replyTo: replyTo[0] } : {}),
+            // Même principe : le job d'un envoi sans en-têtes reste identique.
+            ...(input.content.headers &&
+            Object.keys(input.content.headers).length > 0
+              ? { headers: input.content.headers }
+              : {}),
           },
       {
         // L'identifiant public sert de clé d'idempotence côté file.

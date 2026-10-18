@@ -1,4 +1,11 @@
-import { IsNotEmpty, IsOptional, IsString, Length } from 'class-validator';
+import {
+  IsNotEmpty,
+  IsObject,
+  IsOptional,
+  IsString,
+  Length,
+} from 'class-validator';
+import { INVALID_HEADERS_MESSAGE } from '../email-headers';
 import {
   INVALID_FROM_MESSAGE,
   INVALID_REPLY_TO_MESSAGE,
@@ -45,4 +52,14 @@ export class SendEmailDto {
   @IsOptional()
   @IsString()
   text?: string;
+
+  /**
+   * En-têtes personnalisés (liste blanche : `List-Unsubscribe`,
+   * `List-Unsubscribe-Post`, `X-*` hors `X-SES-*`). La forme seule est
+   * vérifiée ici ; noms, valeurs et plafond le sont par `EmailsService.send()`
+   * (`validateCustomHeaders`), avec des messages précis.
+   */
+  @IsOptional()
+  @IsObject({ message: INVALID_HEADERS_MESSAGE })
+  headers?: Record<string, string>;
 }

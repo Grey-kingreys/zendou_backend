@@ -55,6 +55,10 @@ function describeBody(payload: SesSendPayload): string {
     parts.push(`text ${payload.text.length} car.`);
   }
 
+  if (payload.headers && Object.keys(payload.headers).length > 0) {
+    parts.push(`en-têtes ${Object.keys(payload.headers).join(', ')}`);
+  }
+
   return parts.length > 0 ? parts.join(' + ') : 'sans contenu';
 }
 

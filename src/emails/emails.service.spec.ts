@@ -947,6 +947,56 @@ describe('EmailsService - expéditeur, adresse de réponse et codes de refus (E1
     });
   });
 
+  // ─── en-têtes personnalisés (liste blanche) ──────────────────────────────
+  describe('en-têtes personnalisés', () => {
+    it('met les en-têtes acceptés dans le job', async () => {
+      const headers = {
+        'List-Unsubscribe': '<https://exemple.gn/stop>',
+        'X-Campagne': 'rentree',
+      };
+
+      const result = await service.send(USER_ID, dtoWith({ headers }));
+
+      expect(queue.add).toHaveBeenCalledWith(
+        EMAIL_SEND_JOB,
+        expect.objectContaining({ headers }),
+        expect.objectContaining({ jobId: result.id }),
+      );
+    });
+
+    it('n’ajoute aucun champ headers au job quand il n’y en a pas', async () => {
+      await service.send(USER_ID, dtoWith());
+      await service.send(USER_ID, dtoWith({ headers: {} }));
+
+      for (const [, jobData] of queue.add.mock.calls as [
+        string,
+        Record<string, unknown>,
+      ][]) {
+        expect(jobData).not.toHaveProperty('headers');
+      }
+    });
+
+    it.each([
+      ['un en-tête réservé', { From: 'pirate@exemple.gn' }],
+      ['un préfixe X-SES-', { 'X-SES-CONFIGURATION-SET': 'autre' }],
+      ['un CR/LF dans la valeur', { 'X-Test': 'a\r\nBcc: x@exemple.gn' }],
+      [
+        'plus de 20 en-têtes',
+        Object.fromEntries(
+          Array.from({ length: 21 }, (_, i) => [`X-N${i}`, 'v']),
+        ),
+      ],
+    ])('refuse en 400 %s, sans débit ni job', async (_label, headers) => {
+      await expect(service.send(USER_ID, dtoWith({ headers }))).rejects.toThrow(
+        BadRequestException,
+      );
+
+      expect(email.create).not.toHaveBeenCalled();
+      expect(creditEntry.create).not.toHaveBeenCalled();
+      expect(queue.add).not.toHaveBeenCalled();
+    });
+  });
+
   // ─── (g) quota journalier : code et Retry-After ──────────────────────────
   describe('(g) le 429 du quota journalier dit quand réessayer', () => {
     it('porte code DAILY_LIMIT_REACHED et un retryAfter strictement positif', async () => {

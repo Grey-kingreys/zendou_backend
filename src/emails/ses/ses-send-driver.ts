@@ -34,6 +34,11 @@ export interface SesSendSimplePayload extends SesSendEnvelope {
    * les octets du client, et ces octets partent tels quels.
    */
   replyTo?: string;
+  /**
+   * En-têtes personnalisés déjà validés (liste blanche). Transmis à SES par
+   * `Content.Simple.Headers` : l'API reste en contenu Simple, jamais en Raw.
+   */
+  headers?: Record<string, string>;
 }
 
 /**
