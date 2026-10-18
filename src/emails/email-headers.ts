@@ -1,8 +1,20 @@
 /** Nombre maximal d'en-têtes personnalisés par envoi. */
 export const MAX_CUSTOM_HEADERS = 20;
 
-/** Longueur maximale d'une valeur d'en-tête (limite de ligne de la RFC 5322). */
-export const MAX_HEADER_VALUE_LENGTH = 998;
+/** Longueur maximale d'une valeur d'en-tête (limite de SES, `MessageHeader`). */
+export const MAX_HEADER_VALUE_LENGTH = 995;
+
+/** Longueur maximale d'un nom d'en-tête (limite de SES). */
+export const MAX_HEADER_NAME_LENGTH = 126;
+
+/** Longueur maximale du nom et de la valeur réunis (limite de SES). */
+export const MAX_HEADER_TOTAL_LENGTH = 996;
+
+/**
+ * Valeur d'en-tête : ASCII imprimable seulement, comme l'exige SES. Exclut
+ * aussi CR, LF et NUL (injection d'en-tête).
+ */
+const HEADER_VALUE_PATTERN = /^[\x20-\x7E]+$/;
 
 /** En-têtes nommés autorisés, en minuscules. Le reste passe par `X-*`. */
 const ALLOWED_HEADER_NAMES = new Set([
@@ -30,8 +42,14 @@ export const headerNameForbiddenMessage = (name: string): string =>
 export const headerDuplicateMessage = (name: string): string =>
   `L'en-tête « ${name} » est fourni plusieurs fois (les noms d'en-tête ne tiennent pas compte de la casse).`;
 
+export const headerNameTooLongMessage = (name: string): string =>
+  `Le nom d'en-tête « ${name.slice(0, 40)}... » dépasse ${MAX_HEADER_NAME_LENGTH} caractères.`;
+
 export const headerValueInvalidMessage = (name: string): string =>
-  `La valeur de l'en-tête « ${name} » doit être une chaîne non vide, sans saut de ligne, de ${MAX_HEADER_VALUE_LENGTH} caractères au maximum.`;
+  `La valeur de l'en-tête « ${name} » doit être une chaîne non vide, en ASCII imprimable (ni accent, ni saut de ligne, ni caractère de contrôle), de ${MAX_HEADER_VALUE_LENGTH} caractères au maximum.`;
+
+export const headerTooLongMessage = (name: string): string =>
+  `L'en-tête « ${name} » est trop long : le nom et la valeur réunis ne doivent pas dépasser ${MAX_HEADER_TOTAL_LENGTH} caractères.`;
 
 /**
  * Valide les en-têtes personnalisés d'un envoi API. Rend le premier message
@@ -63,10 +81,17 @@ export function validateCustomHeaders(headers: unknown): string | null {
       return headerNameInvalidMessage(name);
     }
 
+    if (name.length > MAX_HEADER_NAME_LENGTH) {
+      return headerNameTooLongMessage(name);
+    }
+
     const lower = name.toLowerCase();
     const allowed =
       ALLOWED_HEADER_NAMES.has(lower) ||
-      (lower.startsWith('x-') && !lower.startsWith(RESERVED_HEADER_PREFIX));
+      // Au moins un caractère après « x- » : « X- » seul n'est pas un nom.
+      (lower.startsWith('x-') &&
+        lower.length > 2 &&
+        !lower.startsWith(RESERVED_HEADER_PREFIX));
 
     if (!allowed) {
       return headerNameForbiddenMessage(name);
@@ -81,9 +106,13 @@ export function validateCustomHeaders(headers: unknown): string | null {
       typeof value !== 'string' ||
       value.trim() === '' ||
       value.length > MAX_HEADER_VALUE_LENGTH ||
-      /[\r\n]/.test(value)
+      !HEADER_VALUE_PATTERN.test(value)
     ) {
       return headerValueInvalidMessage(name);
+    }
+
+    if (name.length + value.length > MAX_HEADER_TOTAL_LENGTH) {
+      return headerTooLongMessage(name);
     }
   }
 

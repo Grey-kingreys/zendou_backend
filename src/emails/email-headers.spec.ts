@@ -1,5 +1,7 @@
 import {
   MAX_CUSTOM_HEADERS,
+  MAX_HEADER_NAME_LENGTH,
+  MAX_HEADER_TOTAL_LENGTH,
   MAX_HEADER_VALUE_LENGTH,
   validateCustomHeaders,
 } from './email-headers';
@@ -58,7 +60,7 @@ describe('validateCustomHeaders', () => {
     'refuse une valeur avec saut de ligne (%j)',
     (value) => {
       expect(validateCustomHeaders({ 'X-Test': value })).toContain(
-        'sans saut de ligne',
+        'ASCII imprimable',
       );
     },
   );
@@ -70,11 +72,46 @@ describe('validateCustomHeaders', () => {
       validateCustomHeaders({
         'X-Test': 'a'.repeat(MAX_HEADER_VALUE_LENGTH + 1),
       }),
-    ).not.toBeNull();
+    ).toContain('de 995 caractères');
+    // Nom de 3 caractères : 996 - 3 = 993 caractères de valeur au plus.
     expect(
-      validateCustomHeaders({ 'X-Test': 'a'.repeat(MAX_HEADER_VALUE_LENGTH) }),
+      validateCustomHeaders({ 'X-A': 'a'.repeat(MAX_HEADER_TOTAL_LENGTH - 3) }),
     ).toBeNull();
   });
+
+  it.each(['é', 'a\u0000b', 'a\tb', 'a\u007Fb', 'a\u2028b', 'caf\u00E9'])(
+    'refuse une valeur non ASCII imprimable (%j)',
+    (value) => {
+      expect(validateCustomHeaders({ 'X-Test': value })).toContain(
+        'ASCII imprimable',
+      );
+    },
+  );
+
+  it('plafonne le nom à 126 caractères', () => {
+    const ok = `X-${'a'.repeat(MAX_HEADER_NAME_LENGTH - 2)}`;
+
+    expect(validateCustomHeaders({ [ok]: 'v' })).toBeNull();
+    expect(validateCustomHeaders({ [`${ok}a`]: 'v' })).toContain('dépasse 126');
+  });
+
+  it('plafonne le nom et la valeur réunis à 996 caractères', () => {
+    // Nom de 10 caractères : la valeur peut aller jusqu'à 986.
+    const name = 'X-Campagne';
+    const room = MAX_HEADER_TOTAL_LENGTH - name.length;
+
+    expect(validateCustomHeaders({ [name]: 'a'.repeat(room) })).toBeNull();
+    expect(validateCustomHeaders({ [name]: 'a'.repeat(room + 1) })).toContain(
+      'réunis',
+    );
+  });
+
+  it.each(['X-', 'x-'])(
+    'refuse le nom %s sans rien après le préfixe',
+    (name) => {
+      expect(validateCustomHeaders({ [name]: 'v' })).toContain('pas autorisé');
+    },
+  );
 
   it('accepte 20 en-têtes et refuse le 21e', () => {
     const make = (count: number) =>
