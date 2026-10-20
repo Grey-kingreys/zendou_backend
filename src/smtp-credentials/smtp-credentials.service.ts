@@ -8,6 +8,7 @@ import {
   resolveCredentialScope,
   SCOPE_SELECT,
   toScopeDomains,
+  translateScopeWriteError,
 } from '../domains/credential-scope';
 import { PrismaService } from '../prisma/prisma.service';
 import {
@@ -63,27 +64,31 @@ export class SmtpCredentialsService {
     const generated = generateSmtpCredentialSecret();
     const username = generateSmtpCredentialUsername();
 
-    const credential = await this.prisma.smtpCredential.create({
-      data: {
-        userId,
-        name: dto.name.trim(),
-        username,
-        prefix: generated.prefix,
-        secretHash: this.secretHashing.hashForStorage(generated.password),
-        domainScope: scope.domainScope,
-        domains: {
-          create: scope.domainIds.map((domainId) => ({ domainId })),
+    const credential = await this.prisma.smtpCredential
+      .create({
+        data: {
+          userId,
+          name: dto.name.trim(),
+          username,
+          prefix: generated.prefix,
+          secretHash: this.secretHashing.hashForStorage(generated.password),
+          domainScope: scope.domainScope,
+          domains: {
+            create: scope.domainIds.map((domainId) => ({ domainId })),
+          },
         },
-      },
-      select: {
-        id: true,
-        name: true,
-        username: true,
-        prefix: true,
-        createdAt: true,
-        ...SCOPE_SELECT,
-      },
-    });
+        select: {
+          id: true,
+          name: true,
+          username: true,
+          prefix: true,
+          createdAt: true,
+          ...SCOPE_SELECT,
+        },
+      })
+      .catch((error: unknown) => {
+        throw translateScopeWriteError(error);
+      });
 
     const { domains, ...rest } = credential;
 

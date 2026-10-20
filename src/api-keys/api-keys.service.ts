@@ -21,6 +21,7 @@ import {
   resolveCredentialScope,
   SCOPE_SELECT,
   toScopeDomains,
+  translateScopeWriteError,
 } from '../domains/credential-scope';
 
 /**
@@ -58,25 +59,29 @@ export class ApiKeysService {
     );
     const generated = generateApiKey();
 
-    const apiKey = await this.prisma.apiKey.create({
-      data: {
-        userId,
-        name: dto.name.trim(),
-        prefix: generated.prefix,
-        keyHash: this.secretHashing.hashForStorage(generated.key),
-        domainScope: scope.domainScope,
-        domains: {
-          create: scope.domainIds.map((domainId) => ({ domainId })),
+    const apiKey = await this.prisma.apiKey
+      .create({
+        data: {
+          userId,
+          name: dto.name.trim(),
+          prefix: generated.prefix,
+          keyHash: this.secretHashing.hashForStorage(generated.key),
+          domainScope: scope.domainScope,
+          domains: {
+            create: scope.domainIds.map((domainId) => ({ domainId })),
+          },
         },
-      },
-      select: {
-        id: true,
-        name: true,
-        prefix: true,
-        createdAt: true,
-        ...SCOPE_SELECT,
-      },
-    });
+        select: {
+          id: true,
+          name: true,
+          prefix: true,
+          createdAt: true,
+          ...SCOPE_SELECT,
+        },
+      })
+      .catch((error: unknown) => {
+        throw translateScopeWriteError(error);
+      });
 
     const { domains, ...rest } = apiKey;
 

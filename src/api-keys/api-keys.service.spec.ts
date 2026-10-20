@@ -6,6 +6,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { Prisma } from '@prisma/client';
 import {
   CREDENTIAL_DOMAINS_DUPLICATE_MESSAGE,
   CREDENTIAL_DOMAINS_INVALID_MESSAGE,
@@ -215,6 +216,30 @@ describe('ApiKeysService', () => {
         );
 
         expect(create).not.toHaveBeenCalled();
+      });
+
+      it("traduit en 400 un domaine supprimé entre le contrôle et l'écriture (P2003)", async () => {
+        domainCount.mockResolvedValue(1);
+        create.mockRejectedValueOnce(
+          new Prisma.PrismaClientKnownRequestError('fk', {
+            code: 'P2003',
+            clientVersion: 'test',
+          }),
+        );
+
+        await expect(
+          service.create('user_1', { name: 'Prod', domainIds: ['dom_a'] }),
+        ).rejects.toMatchObject(
+          new BadRequestException(CREDENTIAL_DOMAINS_INVALID_MESSAGE),
+        );
+      });
+
+      it('laisse passer toute autre erreur de base telle quelle', async () => {
+        create.mockRejectedValueOnce(new Error('base indisponible'));
+
+        await expect(
+          service.create('user_1', { name: 'Prod' }),
+        ).rejects.toThrow('base indisponible');
       });
 
       it('refuse en 400 un domaine sélectionné deux fois', async () => {

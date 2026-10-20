@@ -25,6 +25,19 @@ describe.each([
     expect(await check({ name: 'Prod', domainIds: 'a' })).not.toHaveLength(0);
   });
 
+  it('accepte 50 domaines et refuse 51, en français', async () => {
+    const ids = (n: number) => Array.from({ length: n }, (_, i) => `d${i}`);
+
+    expect(await check({ name: 'Prod', domainIds: ids(50) })).toHaveLength(0);
+
+    const errors = await check({ name: 'Prod', domainIds: ids(51) });
+
+    expect(errors).toHaveLength(1);
+    expect(Object.values(errors[0].constraints ?? {})).toEqual([
+      'Une portée ne peut pas contenir plus de 50 domaines',
+    ]);
+  });
+
   it('refuse une liste qui contient autre chose que des chaînes', async () => {
     expect(await check({ name: 'Prod', domainIds: ['a', 3] })).not.toHaveLength(
       0,

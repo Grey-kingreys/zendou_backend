@@ -1,5 +1,5 @@
 import { BadRequestException } from '@nestjs/common';
-import { CredentialDomainScope, DomainStatus } from '@prisma/client';
+import { CredentialDomainScope, DomainStatus, Prisma } from '@prisma/client';
 import type { PrismaService } from '../prisma/prisma.service';
 
 /** Refus 400 d'une sélection de domaines inutilisable (B27). */
@@ -9,6 +9,21 @@ export const CREDENTIAL_DOMAINS_INVALID_MESSAGE =
 /** Refus 400 d'une sélection qui nomme deux fois le même domaine (B27). */
 export const CREDENTIAL_DOMAINS_DUPLICATE_MESSAGE =
   "Un domaine ne peut être sélectionné qu'une seule fois.";
+
+/**
+ * Un domaine sélectionné a disparu entre le contrôle et l'écriture (supprimé en
+ * même temps) : violation de clé étrangère (P2003), traduite en 400.
+ */
+export function translateScopeWriteError(error: unknown): unknown {
+  if (
+    error instanceof Prisma.PrismaClientKnownRequestError &&
+    error.code === 'P2003'
+  ) {
+    return new BadRequestException(CREDENTIAL_DOMAINS_INVALID_MESSAGE);
+  }
+
+  return error;
+}
 
 /** Domaine lié à une clé ou à un identifiant, tel qu'exposé en lecture. */
 export interface ScopeDomain {

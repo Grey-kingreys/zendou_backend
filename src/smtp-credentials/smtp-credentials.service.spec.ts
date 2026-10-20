@@ -6,6 +6,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { Prisma } from '@prisma/client';
 import { SecretHashingService } from '../api-keys';
 import {
   CREDENTIAL_DOMAINS_DUPLICATE_MESSAGE,
@@ -228,6 +229,25 @@ describe('SmtpCredentialsService', () => {
         );
 
         expect(create).not.toHaveBeenCalled();
+      });
+
+      it("traduit en 400 un domaine supprimé entre le contrôle et l'écriture (P2003)", async () => {
+        domainCount.mockResolvedValue(1);
+        create.mockRejectedValueOnce(
+          new Prisma.PrismaClientKnownRequestError('fk', {
+            code: 'P2003',
+            clientVersion: 'test',
+          }),
+        );
+
+        await expect(
+          service.create('user_1', {
+            name: 'WordPress',
+            domainIds: ['dom_a'],
+          }),
+        ).rejects.toMatchObject(
+          new BadRequestException(CREDENTIAL_DOMAINS_INVALID_MESSAGE),
+        );
       });
 
       it('refuse en 400 un domaine sélectionné deux fois', async () => {

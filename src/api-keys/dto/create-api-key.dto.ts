@@ -1,4 +1,5 @@
 import {
+  ArrayMaxSize,
   IsArray,
   IsOptional,
   IsString,
@@ -21,6 +22,9 @@ export class CreateApiKeyDto {
    */
   @IsOptional()
   @IsArray({ message: 'Les domaines doivent être une liste' })
+  @ArrayMaxSize(50, {
+    message: 'Une portée ne peut pas contenir plus de 50 domaines',
+  })
   @IsString({ each: true, message: 'Chaque domaine doit être un identifiant' })
   domainIds?: string[];
 }
