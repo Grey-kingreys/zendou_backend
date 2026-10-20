@@ -4,6 +4,7 @@ import {
   ForbiddenException,
   HttpException,
   HttpStatus,
+  InternalServerErrorException,
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { getQueueToken } from '@nestjs/bullmq';
@@ -45,6 +46,19 @@ import {
   sendRefusalReason,
   startOfUtcDay,
 } from './emails.service';
+
+/**
+ * Envoi par l'API tel que le fait le contrôleur : la clé API qui porte l'envoi
+ * est toujours transmise (B27, le point d'acceptation refuse un envoi sans elle).
+ */
+function sendAsKey(
+  svc: EmailsService,
+  userId: string,
+  dto: SendEmailDto,
+  apiKeyId = 'key_1',
+): ReturnType<EmailsService['send']> {
+  return svc.send(userId, dto, apiKeyId);
+}
 
 const USER_ID = 'user_1';
 const DOMAIN_ID = 'dom_1';
@@ -170,7 +184,7 @@ describe('EmailsService', () => {
         lastActivityAt: new Date(Date.now() - 2 * HOUR_MS),
       });
 
-      await service.send(USER_ID, dtoWith());
+      await sendAsKey(service, USER_ID, dtoWith());
       await flush();
 
       expect(user.updateMany).toHaveBeenCalledTimes(1);
@@ -189,7 +203,7 @@ describe('EmailsService', () => {
         lastActivityAt: new Date(Date.now() - 30 * 60 * 1000),
       });
 
-      await service.send(USER_ID, dtoWith());
+      await sendAsKey(service, USER_ID, dtoWith());
       await flush();
 
       expect(user.updateMany).not.toHaveBeenCalled();
@@ -198,7 +212,7 @@ describe('EmailsService', () => {
     it('enregistre aussi un envoi accepté vers une adresse supprimée', async () => {
       suppression.findFirst.mockResolvedValue({ id: 'sup_1' });
 
-      await service.send(USER_ID, dtoWith());
+      await sendAsKey(service, USER_ID, dtoWith());
       await flush();
 
       expect(user.updateMany).toHaveBeenCalledTimes(1);
@@ -206,7 +220,7 @@ describe('EmailsService', () => {
 
     it('n’enregistre rien pour un envoi refusé', async () => {
       await expect(
-        service.send(USER_ID, dtoWith({ from: 'pas-un-email' })),
+        sendAsKey(service, USER_ID, dtoWith({ from: 'pas-un-email' })),
       ).rejects.toThrow(BadRequestException);
       await flush();
 
@@ -216,7 +230,9 @@ describe('EmailsService', () => {
     it('un échec d’écriture ne remet pas l’envoi en cause', async () => {
       user.updateMany.mockRejectedValue(new Error('base indisponible'));
 
-      await expect(service.send(USER_ID, dtoWith())).resolves.toMatchObject({
+      await expect(
+        sendAsKey(service, USER_ID, dtoWith()),
+      ).resolves.toMatchObject({
         status: 'queued',
       });
       await flush();
@@ -272,7 +288,9 @@ describe('EmailsService', () => {
     it('envoie un email système au titulaire quand le solde passe sous 10 %', async () => {
       givenLedger({ afterCredit: 1000, current: 99 });
 
-      await expect(service.send(USER_ID, dtoWith())).resolves.toMatchObject({
+      await expect(
+        sendAsKey(service, USER_ID, dtoWith()),
+      ).resolves.toMatchObject({
         status: 'queued',
       });
       await flush();
@@ -298,7 +316,7 @@ describe('EmailsService', () => {
     it('ne fait rien tant que le solde reste au seuil ou au-dessus', async () => {
       givenLedger({ afterCredit: 1000, current: 100 });
 
-      await service.send(USER_ID, dtoWith());
+      await sendAsKey(service, USER_ID, dtoWith());
       await flush();
 
       expect(sendSystem).not.toHaveBeenCalled();
@@ -308,7 +326,7 @@ describe('EmailsService', () => {
       givenLedger({ afterCredit: 1000, current: 500 });
       user.findUnique.mockClear();
 
-      await service.send(USER_ID, dtoWith());
+      await sendAsKey(service, USER_ID, dtoWith());
       await flush();
 
       // assertSufficientCredits + la somme jusqu'au dernier crédit, rien de plus.
@@ -326,7 +344,7 @@ describe('EmailsService', () => {
         alertSentAt: new Date('2026-10-05T10:00:00.000Z'),
       });
 
-      await service.send(USER_ID, dtoWith());
+      await sendAsKey(service, USER_ID, dtoWith());
       await flush();
 
       // Seule la somme d'assertSufficientCredits.
@@ -349,7 +367,7 @@ describe('EmailsService', () => {
         },
       );
 
-      await service.send(USER_ID, dtoWith());
+      await sendAsKey(service, USER_ID, dtoWith());
       await flush();
 
       expect(sendSystem).not.toHaveBeenCalled();
@@ -358,7 +376,7 @@ describe('EmailsService', () => {
     it('ne fait rien sans aucun crédit positif', async () => {
       creditEntry.findFirst.mockResolvedValue(null);
 
-      await service.send(USER_ID, dtoWith());
+      await sendAsKey(service, USER_ID, dtoWith());
       await flush();
 
       expect(sendSystem).not.toHaveBeenCalled();
@@ -371,7 +389,7 @@ describe('EmailsService', () => {
         alertSentAt: new Date('2026-10-05T10:00:00.000Z'),
       });
 
-      await service.send(USER_ID, dtoWith());
+      await sendAsKey(service, USER_ID, dtoWith());
       await flush();
 
       expect(sendSystem).not.toHaveBeenCalled();
@@ -385,7 +403,7 @@ describe('EmailsService', () => {
         alertSentAt: new Date('2026-09-20T10:00:00.000Z'),
       });
 
-      await service.send(USER_ID, dtoWith());
+      await sendAsKey(service, USER_ID, dtoWith());
       await flush();
 
       expect(sendSystem).toHaveBeenCalledTimes(1);
@@ -407,7 +425,7 @@ describe('EmailsService', () => {
       givenLedger({ afterCredit: 1000, current: 80 });
       user.updateMany.mockResolvedValue({ count: 0 });
 
-      await service.send(USER_ID, dtoWith());
+      await sendAsKey(service, USER_ID, dtoWith());
       await flush();
 
       expect(sendSystem).not.toHaveBeenCalled();
@@ -416,13 +434,13 @@ describe('EmailsService', () => {
     it('applique le plancher de 50 crédits quand 10 % en font moins', async () => {
       // 10 % de 200 = 20, mais le seuil est 50.
       givenLedger({ afterCredit: 200, current: 30 });
-      await service.send(USER_ID, dtoWith());
+      await sendAsKey(service, USER_ID, dtoWith());
       await flush();
       expect(sendSystem).toHaveBeenCalledTimes(1);
 
       sendSystem.mockClear();
       givenLedger({ afterCredit: 200, current: 50 });
-      await service.send(USER_ID, dtoWith());
+      await sendAsKey(service, USER_ID, dtoWith());
       await flush();
       expect(sendSystem).not.toHaveBeenCalled();
     });
@@ -463,7 +481,9 @@ describe('EmailsService', () => {
       givenLedger({ afterCredit: 1000, current: 80 });
       sendSystem.mockRejectedValue(new Error('SYSTEM_EMAIL_FROM absente'));
 
-      await expect(service.send(USER_ID, dtoWith())).resolves.toMatchObject({
+      await expect(
+        sendAsKey(service, USER_ID, dtoWith()),
+      ).resolves.toMatchObject({
         status: 'queued',
       });
       await flush();
@@ -480,7 +500,9 @@ describe('EmailsService', () => {
     it('une panne de lecture du grand livre ne fait pas échouer l’envoi', async () => {
       creditEntry.findFirst.mockRejectedValue(new Error('base indisponible'));
 
-      await expect(service.send(USER_ID, dtoWith())).resolves.toMatchObject({
+      await expect(
+        sendAsKey(service, USER_ID, dtoWith()),
+      ).resolves.toMatchObject({
         status: 'queued',
       });
       await flush();
@@ -490,7 +512,7 @@ describe('EmailsService', () => {
   describe('validation', () => {
     it('rejects an unparseable sender', async () => {
       await expect(
-        service.send(USER_ID, dtoWith({ from: 'pas-un-email' })),
+        sendAsKey(service, USER_ID, dtoWith({ from: 'pas-un-email' })),
       ).rejects.toThrow(new BadRequestException(INVALID_FROM_MESSAGE));
 
       expect(email.create).not.toHaveBeenCalled();
@@ -498,24 +520,29 @@ describe('EmailsService', () => {
 
     it('rejects an unparseable recipient', async () => {
       await expect(
-        service.send(USER_ID, dtoWith({ to: 'client@localhost' })),
+        sendAsKey(service, USER_ID, dtoWith({ to: 'client@localhost' })),
       ).rejects.toThrow(new BadRequestException(INVALID_TO_MESSAGE));
     });
 
     it('rejects a message with neither html nor text', async () => {
       await expect(
-        service.send(USER_ID, dtoWith({ html: undefined, text: '   ' })),
+        sendAsKey(service, USER_ID, dtoWith({ html: undefined, text: '   ' })),
       ).rejects.toThrow(new BadRequestException(MISSING_BODY_MESSAGE));
     });
 
     it('rejects a body over 500 Ko', async () => {
       await expect(
-        service.send(USER_ID, dtoWith({ html: 'a'.repeat(500 * 1024 + 1) })),
+        sendAsKey(
+          service,
+          USER_ID,
+          dtoWith({ html: 'a'.repeat(500 * 1024 + 1) }),
+        ),
       ).rejects.toThrow(new BadRequestException(BODY_TOO_LARGE_MESSAGE));
     });
 
     it('accepts a bare sender address', async () => {
-      await service.send(
+      await sendAsKey(
+        service,
         USER_ID,
         dtoWith({
           from: 'contact@boutique-awa.gn',
@@ -531,7 +558,7 @@ describe('EmailsService', () => {
 
   describe('sending domain', () => {
     it('only looks for a VERIFIED domain owned by the caller', async () => {
-      await service.send(USER_ID, dtoWith());
+      await sendAsKey(service, USER_ID, dtoWith());
 
       expect(domain.findFirst).toHaveBeenCalledWith({
         where: {
@@ -546,7 +573,7 @@ describe('EmailsService', () => {
     it('refuses an unverified or foreign domain with a 403', async () => {
       domain.findFirst.mockResolvedValue(null);
 
-      await expect(service.send(USER_ID, dtoWith())).rejects.toThrow(
+      await expect(sendAsKey(service, USER_ID, dtoWith())).rejects.toThrow(
         new ForbiddenException(DOMAIN_NOT_VERIFIED_MESSAGE),
       );
 
@@ -574,7 +601,8 @@ describe('EmailsService', () => {
     });
 
     it('accepts a send to the caller’s own confirmed address, checking only that the test domain is verified — never ownership', async () => {
-      const result = await service.send(
+      const result = await sendAsKey(
+        service,
         USER_ID,
         dtoWith({ from: TEST_FROM, to: OWN_EMAIL }),
       );
@@ -598,14 +626,22 @@ describe('EmailsService', () => {
     });
 
     it('does not record it as a system send — it is an ordinary client send', async () => {
-      await service.send(USER_ID, dtoWith({ from: TEST_FROM, to: OWN_EMAIL }));
+      await sendAsKey(
+        service,
+        USER_ID,
+        dtoWith({ from: TEST_FROM, to: OWN_EMAIL }),
+      );
 
       const args = capturedEmailCreate!;
       expect(args.data).toMatchObject({ system: false });
     });
 
     it('still debits one credit, like any other send', async () => {
-      await service.send(USER_ID, dtoWith({ from: TEST_FROM, to: OWN_EMAIL }));
+      await sendAsKey(
+        service,
+        USER_ID,
+        dtoWith({ from: TEST_FROM, to: OWN_EMAIL }),
+      );
 
       const emailArgs = capturedEmailCreate!;
       expect(creditEntry.create).toHaveBeenCalledWith({
@@ -619,7 +655,8 @@ describe('EmailsService', () => {
     });
 
     it('recognises the address regardless of the display name used', async () => {
-      const result = await service.send(
+      const result = await sendAsKey(
+        service,
         USER_ID,
         dtoWith({
           from: `Ma Boutique <${'essai@mail.kingreys.fr'}>`,
@@ -636,7 +673,8 @@ describe('EmailsService', () => {
 
     it('refuses any recipient other than the caller’s own address, with a 403 that explains the mode', async () => {
       await expect(
-        service.send(
+        sendAsKey(
+          service,
           USER_ID,
           dtoWith({ from: TEST_FROM, to: 'quelquun-dautre@exemple.gn' }),
         ),
@@ -647,7 +685,8 @@ describe('EmailsService', () => {
 
     it('debits no credit and creates no email row when the recipient is refused', async () => {
       await expect(
-        service.send(
+        sendAsKey(
+          service,
           USER_ID,
           dtoWith({ from: TEST_FROM, to: 'quelquun-dautre@exemple.gn' }),
         ),
@@ -664,7 +703,8 @@ describe('EmailsService', () => {
     });
 
     it('compares addresses case-insensitively', async () => {
-      const result = await service.send(
+      const result = await sendAsKey(
+        service,
         USER_ID,
         dtoWith({ from: TEST_FROM, to: OWN_EMAIL.toUpperCase() }),
       );
@@ -673,7 +713,7 @@ describe('EmailsService', () => {
     });
 
     it('leaves an ordinary send from a verified domain unaffected (non-regression)', async () => {
-      const result = await service.send(USER_ID, dtoWith());
+      const result = await sendAsKey(service, USER_ID, dtoWith());
 
       expect(result.status).toBe('queued');
       expect(domain.findFirst).toHaveBeenCalledWith({
@@ -694,7 +734,8 @@ describe('EmailsService', () => {
       domain.findFirst.mockResolvedValue(null);
 
       await expect(
-        service.send(
+        sendAsKey(
+          service,
           USER_ID,
           dtoWith({ from: 'essai@mail.kingreys.fr', to: 'anyone@exemple.gn' }),
         ),
@@ -728,7 +769,11 @@ describe('EmailsService', () => {
       domain.findFirst.mockResolvedValue(null);
 
       await expect(
-        service.send(USER_ID, dtoWith({ from: TEST_FROM, to: OWN_EMAIL })),
+        sendAsKey(
+          service,
+          USER_ID,
+          dtoWith({ from: TEST_FROM, to: OWN_EMAIL }),
+        ),
       ).rejects.toThrow(
         new ServiceUnavailableException(TEST_SENDER_UNAVAILABLE_MESSAGE),
       );
@@ -755,7 +800,11 @@ describe('EmailsService', () => {
       domain.findFirst.mockResolvedValue(null);
 
       await expect(
-        service.send(USER_ID, dtoWith({ from: TEST_FROM, to: OWN_EMAIL })),
+        sendAsKey(
+          service,
+          USER_ID,
+          dtoWith({ from: TEST_FROM, to: OWN_EMAIL }),
+        ),
       ).rejects.toThrow(
         new ServiceUnavailableException(TEST_SENDER_UNAVAILABLE_MESSAGE),
       );
@@ -766,7 +815,8 @@ describe('EmailsService', () => {
     it('accepts the send once the test domain is VERIFIED (non-regression)', async () => {
       domain.findFirst.mockResolvedValue({ id: 'dom_test' });
 
-      const result = await service.send(
+      const result = await sendAsKey(
+        service,
         USER_ID,
         dtoWith({ from: TEST_FROM, to: OWN_EMAIL }),
       );
@@ -821,7 +871,7 @@ describe('EmailsService', () => {
 
     describe('canal API (apiKeyId)', () => {
       it('accepte une clé ALL pour n’importe quel domaine vérifié du compte', async () => {
-        const result = await service.send(USER_ID, dtoWith(), 'key_1');
+        const result = await sendAsKey(service, USER_ID, dtoWith(), 'key_1');
 
         expect(result.status).toBe('queued');
         expect(apiKey.findUnique).toHaveBeenCalledWith(
@@ -834,7 +884,7 @@ describe('EmailsService', () => {
           selected(THIS_DOMAIN, OTHER_DOMAIN),
         );
 
-        const result = await service.send(USER_ID, dtoWith(), 'key_1');
+        const result = await sendAsKey(service, USER_ID, dtoWith(), 'key_1');
 
         expect(result.status).toBe('queued');
       });
@@ -842,7 +892,9 @@ describe('EmailsService', () => {
       it('refuse en 403 un From hors portée, en nommant le domaine autorisé', async () => {
         apiKey.findUnique.mockResolvedValue(selected(OTHER_DOMAIN));
 
-        const error = await refusal(service.send(USER_ID, dtoWith(), 'key_1'));
+        const error = await refusal(
+          sendAsKey(service, USER_ID, dtoWith(), 'key_1'),
+        );
 
         expect(error.message).toBe(
           "Cette clé API n'est autorisée que pour le domaine autre-marque.gn.",
@@ -859,7 +911,9 @@ describe('EmailsService', () => {
           ),
         );
 
-        const error = await refusal(service.send(USER_ID, dtoWith(), 'key_1'));
+        const error = await refusal(
+          sendAsKey(service, USER_ID, dtoWith(), 'key_1'),
+        );
 
         expect(error.message).toBe(
           "Cette clé API n'est autorisée que pour les domaines alpha.gn, zeta.gn.",
@@ -869,7 +923,9 @@ describe('EmailsService', () => {
       it('refuse tout quand la portée est SELECTED sans aucune ligne de jointure', async () => {
         apiKey.findUnique.mockResolvedValue(selected());
 
-        const error = await refusal(service.send(USER_ID, dtoWith(), 'key_1'));
+        const error = await refusal(
+          sendAsKey(service, USER_ID, dtoWith(), 'key_1'),
+        );
 
         expect(error.message).toBe(credentialOutOfScopeMessage('apiKey', []));
         expectNothingWritten();
@@ -878,16 +934,19 @@ describe('EmailsService', () => {
       it('refuse (fail-closed) une clé introuvable', async () => {
         apiKey.findUnique.mockResolvedValue(null);
 
-        await refusal(service.send(USER_ID, dtoWith(), 'key_inconnue'));
+        await refusal(sendAsKey(service, USER_ID, dtoWith(), 'key_inconnue'));
         expectNothingWritten();
       });
 
-      it('ne consulte aucune portée sans clé (appelant interne)', async () => {
-        const result = await service.send(USER_ID, dtoWith());
+      it('refuse (fail-closed, 500 journalisé) un envoi API sans clé transmise', async () => {
+        const error: unknown = await service.send(USER_ID, dtoWith()).then(
+          () => null,
+          (e: unknown) => e,
+        );
 
-        expect(result.status).toBe('queued');
+        expect(error).toBeInstanceOf(InternalServerErrorException);
         expect(apiKey.findUnique).not.toHaveBeenCalled();
-        expect(smtpCredential.findUnique).not.toHaveBeenCalled();
+        expectNothingWritten();
       });
 
       it('laisse une clé restreinte, même sans domaine, utiliser l’adresse de test du bac à sable', async () => {
@@ -901,7 +960,8 @@ describe('EmailsService', () => {
         });
         apiKey.findUnique.mockResolvedValue(selected());
 
-        const result = await service.send(
+        const result = await sendAsKey(
+          service,
           USER_ID,
           dtoWith({
             from: 'Zendou <essai@mail.kingreys.fr>',
@@ -917,7 +977,7 @@ describe('EmailsService', () => {
         apiKey.findUnique.mockResolvedValue(selected(OTHER_DOMAIN));
         suppression.findFirst.mockResolvedValue({ id: 'sup_1' });
 
-        await refusal(service.send(USER_ID, dtoWith(), 'key_1'));
+        await refusal(sendAsKey(service, USER_ID, dtoWith(), 'key_1'));
         expect(suppression.findFirst).not.toHaveBeenCalled();
       });
     });
@@ -959,6 +1019,19 @@ describe('EmailsService', () => {
         expectNothingWritten();
       });
 
+      it('refuse (fail-closed, 500 journalisé) un envoi SMTP sans identifiant transmis', async () => {
+        const input = { ...smtpInput(), smtpCredentialId: undefined };
+
+        await expect(
+          service.acceptSmtp(
+            USER_ID,
+            input as unknown as Parameters<EmailsService['acceptSmtp']>[1],
+          ),
+        ).rejects.toBeInstanceOf(InternalServerErrorException);
+        expect(smtpCredential.findUnique).not.toHaveBeenCalled();
+        expectNothingWritten();
+      });
+
       it('refuse (fail-closed) un identifiant introuvable', async () => {
         smtpCredential.findUnique.mockResolvedValue(null);
 
@@ -967,6 +1040,17 @@ describe('EmailsService', () => {
     });
 
     describe('contrôle anticipé du MAIL FROM (precheckSmtpEnvelope)', () => {
+      it('refuse (fail-closed, 500 journalisé) un MAIL FROM sans identifiant transmis', async () => {
+        await expect(
+          service.precheckSmtpEnvelope(
+            USER_ID,
+            'contact@boutique-awa.gn',
+            undefined as unknown as string,
+          ),
+        ).rejects.toBeInstanceOf(InternalServerErrorException);
+        expect(smtpCredential.findUnique).not.toHaveBeenCalled();
+      });
+
       it('laisse passer une enveloppe dans la portée', async () => {
         smtpCredential.findUnique.mockResolvedValue(selected(THIS_DOMAIN));
 
@@ -1013,7 +1097,7 @@ describe('EmailsService', () => {
     it('records a SUPPRESSED email without charging or queueing it', async () => {
       suppression.findFirst.mockResolvedValue({ id: 'sup_1' });
 
-      const result = await service.send(USER_ID, dtoWith());
+      const result = await sendAsKey(service, USER_ID, dtoWith());
 
       expect(result.status).toBe('suppressed');
       expect(result.id).toMatch(/^e_[0-9a-f]{12}$/);
@@ -1025,7 +1109,7 @@ describe('EmailsService', () => {
     });
 
     it('matches both the caller entries and the global ones', async () => {
-      await service.send(USER_ID, dtoWith());
+      await sendAsKey(service, USER_ID, dtoWith());
 
       expect(suppression.findFirst).toHaveBeenCalledWith({
         where: {
@@ -1041,7 +1125,7 @@ describe('EmailsService', () => {
     it('refuses with a 402 when the balance is empty', async () => {
       creditEntry.aggregate.mockResolvedValue({ _sum: { delta: 0 } });
 
-      await expect(service.send(USER_ID, dtoWith())).rejects.toThrow(
+      await expect(sendAsKey(service, USER_ID, dtoWith())).rejects.toThrow(
         new HttpException(
           INSUFFICIENT_CREDITS_MESSAGE,
           HttpStatus.PAYMENT_REQUIRED,
@@ -1056,7 +1140,9 @@ describe('EmailsService', () => {
     it('treats a client with no credit entry at all as empty', async () => {
       creditEntry.aggregate.mockResolvedValue({ _sum: { delta: null } });
 
-      await expect(service.send(USER_ID, dtoWith())).rejects.toMatchObject({
+      await expect(
+        sendAsKey(service, USER_ID, dtoWith()),
+      ).rejects.toMatchObject({
         status: HttpStatus.PAYMENT_REQUIRED,
       });
     });
@@ -1066,7 +1152,7 @@ describe('EmailsService', () => {
     it('refuses with a 429 once the quota is reached, before any debit', async () => {
       email.count.mockResolvedValue(200);
 
-      await expect(service.send(USER_ID, dtoWith())).rejects.toThrow(
+      await expect(sendAsKey(service, USER_ID, dtoWith())).rejects.toThrow(
         new HttpException(
           DAILY_LIMIT_REACHED_MESSAGE,
           HttpStatus.TOO_MANY_REQUESTS,
@@ -1079,7 +1165,7 @@ describe('EmailsService', () => {
     });
 
     it('counts the emails created since UTC midnight, system sends excluded', async () => {
-      await service.send(USER_ID, dtoWith());
+      await sendAsKey(service, USER_ID, dtoWith());
 
       expect(email.count).toHaveBeenCalledWith({
         where: {
@@ -1093,7 +1179,9 @@ describe('EmailsService', () => {
     it('still accepts the send one below the quota', async () => {
       email.count.mockResolvedValue(199);
 
-      await expect(service.send(USER_ID, dtoWith())).resolves.toMatchObject({
+      await expect(
+        sendAsKey(service, USER_ID, dtoWith()),
+      ).resolves.toMatchObject({
         status: 'queued',
       });
     });
@@ -1101,7 +1189,7 @@ describe('EmailsService', () => {
 
   describe('accepted send', () => {
     it('creates the email and debits one credit in the same transaction', async () => {
-      const result = await service.send(USER_ID, dtoWith());
+      const result = await sendAsKey(service, USER_ID, dtoWith());
 
       expect(prisma.$transaction).toHaveBeenCalledTimes(1);
 
@@ -1129,7 +1217,11 @@ describe('EmailsService', () => {
     });
 
     it('enqueues the job with the public id and the retry policy', async () => {
-      const result = await service.send(USER_ID, dtoWith({ text: 'Bonjour' }));
+      const result = await sendAsKey(
+        service,
+        USER_ID,
+        dtoWith({ text: 'Bonjour' }),
+      );
 
       expect(queue.add).toHaveBeenCalledWith(
         EMAIL_SEND_JOB,
@@ -1159,14 +1251,14 @@ describe('EmailsService', () => {
         return Promise.resolve({ id: 'job_1' });
       });
 
-      await service.send(USER_ID, dtoWith());
+      await sendAsKey(service, USER_ID, dtoWith());
 
       expect(order).toEqual(['commit', 'enqueue']);
     });
 
     it('draws a distinct public id for each send', async () => {
-      const first = await service.send(USER_ID, dtoWith());
-      const second = await service.send(USER_ID, dtoWith());
+      const first = await sendAsKey(service, USER_ID, dtoWith());
+      const second = await sendAsKey(service, USER_ID, dtoWith());
 
       expect(first.id).not.toBe(second.id);
     });
@@ -1303,7 +1395,11 @@ describe('EmailsService - expéditeur, adresse de réponse et codes de refus (E1
       givenVerifiedDomains('exemple.gn');
 
       const body = await refusalBodyOf(
-        service.send(USER_ID, dtoWith({ from: 'noreply@mail.exemple.gn' })),
+        sendAsKey(
+          service,
+          USER_ID,
+          dtoWith({ from: 'noreply@mail.exemple.gn' }),
+        ),
       );
 
       expect(body).toMatchObject({
@@ -1328,7 +1424,7 @@ describe('EmailsService - expéditeur, adresse de réponse et codes de refus (E1
       givenVerifiedDomains('mail.exemple.gn');
 
       const body = await refusalBodyOf(
-        service.send(USER_ID, dtoWith({ from: 'contact@exemple.gn' })),
+        sendAsKey(service, USER_ID, dtoWith({ from: 'contact@exemple.gn' })),
       );
 
       expect(body).toMatchObject({
@@ -1342,7 +1438,11 @@ describe('EmailsService - expéditeur, adresse de réponse et codes de refus (E1
       givenVerifiedDomains('exemple.gn', 'mail.exemple.gn');
 
       await expect(
-        service.send(USER_ID, dtoWith({ from: 'noreply@mail.exemple.gn' })),
+        sendAsKey(
+          service,
+          USER_ID,
+          dtoWith({ from: 'noreply@mail.exemple.gn' }),
+        ),
       ).resolves.toMatchObject({ status: 'queued' });
     });
   });
@@ -1351,7 +1451,8 @@ describe('EmailsService - expéditeur, adresse de réponse et codes de refus (E1
   it('(b) accepte « Service Client <NoReply@EXEMPLE.GN> » et cherche le domaine en minuscules', async () => {
     givenVerifiedDomains('exemple.gn');
 
-    const result = await service.send(
+    const result = await sendAsKey(
+      service,
       USER_ID,
       dtoWith({ from: '"Service Client" <NoReply@EXEMPLE.GN>' }),
     );
@@ -1373,7 +1474,7 @@ describe('EmailsService - expéditeur, adresse de réponse et codes de refus (E1
   // ─── (c) reply-to illisible ──────────────────────────────────────────────
   it('(c) refuse en 400 INVALID_REPLY_TO une adresse de réponse illisible', async () => {
     const body = await refusalBodyOf(
-      service.send(USER_ID, dtoWith({ replyTo: 'pas-une-adresse' })),
+      sendAsKey(service, USER_ID, dtoWith({ replyTo: 'pas-une-adresse' })),
     );
 
     expect(body).toMatchObject({
@@ -1389,7 +1490,8 @@ describe('EmailsService - expéditeur, adresse de réponse et codes de refus (E1
   describe('(d) l’adresse de réponse subit la règle du From', () => {
     it('refuse en 403 REPLY_TO_NOT_VERIFIED un reply-to sur le domaine d’un tiers, sans ligne ni débit', async () => {
       const body = await refusalBodyOf(
-        service.send(
+        sendAsKey(
+          service,
           USER_ID,
           dtoWith({ replyTo: 'pirate@domaine-d-un-tiers.gn' }),
         ),
@@ -1412,7 +1514,8 @@ describe('EmailsService - expéditeur, adresse de réponse et codes de refus (E1
       givenVerifiedDomains('exemple.gn');
 
       const body = await refusalBodyOf(
-        service.send(
+        sendAsKey(
+          service,
           USER_ID,
           dtoWith({
             from: 'contact@exemple.gn',
@@ -1436,7 +1539,8 @@ describe('EmailsService - expéditeur, adresse de réponse et codes de refus (E1
       givenVerifiedDomains('mail.kingreys.fr');
 
       const body = await refusalBodyOf(
-        service.send(
+        sendAsKey(
+          service,
           USER_ID,
           dtoWith({
             from: TEST_FROM,
@@ -1454,7 +1558,8 @@ describe('EmailsService - expéditeur, adresse de réponse et codes de refus (E1
   // ─── (e) reply-to accepté ────────────────────────────────────────────────
   describe('(e) une adresse de réponse sur un domaine vérifié du compte', () => {
     it('est acceptée et voyage, normalisée, dans le job', async () => {
-      const result = await service.send(
+      const result = await sendAsKey(
+        service,
         USER_ID,
         dtoWith({ replyTo: '"SAV Awa" <SAV@Boutique-Awa.GN>' }),
       );
@@ -1470,7 +1575,11 @@ describe('EmailsService - expéditeur, adresse de réponse et codes de refus (E1
     });
 
     it('n’ajoute aucun champ au job quand aucune adresse de réponse n’est demandée', async () => {
-      const result = await service.send(USER_ID, dtoWith({ text: 'Bonjour' }));
+      const result = await sendAsKey(
+        service,
+        USER_ID,
+        dtoWith({ text: 'Bonjour' }),
+      );
 
       expect(queue.add).toHaveBeenCalledWith(
         EMAIL_SEND_JOB,
@@ -1524,7 +1633,8 @@ describe('EmailsService - expéditeur, adresse de réponse et codes de refus (E1
 
     describe.each(fields)('%s', (_field, build, reason, message) => {
       it.each(names)('accepte 128 caractères (%s)', async (_label, char) => {
-        const result = await service.send(
+        const result = await sendAsKey(
+          service,
           USER_ID,
           dtoWith(build(char.repeat(128))),
         );
@@ -1536,7 +1646,7 @@ describe('EmailsService - expéditeur, adresse de réponse et codes de refus (E1
         'refuse 129 caractères (%s) en 400',
         async (_label, char) => {
           const body = await refusalBodyOf(
-            service.send(USER_ID, dtoWith(build(char.repeat(129)))),
+            sendAsKey(service, USER_ID, dtoWith(build(char.repeat(129)))),
           );
 
           expect(body).toMatchObject({
@@ -1593,7 +1703,7 @@ describe('EmailsService - expéditeur, adresse de réponse et codes de refus (E1
     ])(
       'accepte %s : adresse nue en base, nom transmis seulement à SES',
       async (_label, to, expectedDisplay) => {
-        const result = await service.send(USER_ID, dtoWith({ to }));
+        const result = await sendAsKey(service, USER_ID, dtoWith({ to }));
         await flush();
 
         expect(result.status).toBe('queued');
@@ -1603,14 +1713,15 @@ describe('EmailsService - expéditeur, adresse de réponse et codes de refus (E1
     );
 
     it('accepte toujours l’adresse nue, sans champ toDisplay', async () => {
-      await service.send(USER_ID, dtoWith({ to: 'Client@Exemple.GN' }));
+      await sendAsKey(service, USER_ID, dtoWith({ to: 'Client@Exemple.GN' }));
 
       expect(capturedEmailCreate!.data.toAddress).toBe('client@exemple.gn');
       expect(lastJob()).not.toHaveProperty('toDisplay');
     });
 
     it('vérifie la liste de suppression sur l’adresse nue', async () => {
-      await service.send(
+      await sendAsKey(
+        service,
         USER_ID,
         dtoWith({ to: 'Client Test <Client@Exemple.GN>' }),
       );
@@ -1628,7 +1739,7 @@ describe('EmailsService - expéditeur, adresse de réponse et codes de refus (E1
       'refuse %j en 400 INVALID_TO',
       async (to) => {
         const body = await refusalBodyOf(
-          service.send(USER_ID, dtoWith({ to })),
+          sendAsKey(service, USER_ID, dtoWith({ to })),
         );
 
         expect(body).toMatchObject({
@@ -1649,7 +1760,7 @@ describe('EmailsService - expéditeur, adresse de réponse et codes de refus (E1
         'X-Campagne': 'rentree',
       };
 
-      const result = await service.send(USER_ID, dtoWith({ headers }));
+      const result = await sendAsKey(service, USER_ID, dtoWith({ headers }));
 
       expect(queue.add).toHaveBeenCalledWith(
         EMAIL_SEND_JOB,
@@ -1659,8 +1770,8 @@ describe('EmailsService - expéditeur, adresse de réponse et codes de refus (E1
     });
 
     it('n’ajoute aucun champ headers au job quand il n’y en a pas', async () => {
-      await service.send(USER_ID, dtoWith());
-      await service.send(USER_ID, dtoWith({ headers: {} }));
+      await sendAsKey(service, USER_ID, dtoWith());
+      await sendAsKey(service, USER_ID, dtoWith({ headers: {} }));
 
       for (const [, jobData] of queue.add.mock.calls as [
         string,
@@ -1681,9 +1792,9 @@ describe('EmailsService - expéditeur, adresse de réponse et codes de refus (E1
         ),
       ],
     ])('refuse en 400 %s, sans débit ni job', async (_label, headers) => {
-      await expect(service.send(USER_ID, dtoWith({ headers }))).rejects.toThrow(
-        BadRequestException,
-      );
+      await expect(
+        sendAsKey(service, USER_ID, dtoWith({ headers })),
+      ).rejects.toThrow(BadRequestException);
 
       expect(email.create).not.toHaveBeenCalled();
       expect(creditEntry.create).not.toHaveBeenCalled();
@@ -1696,7 +1807,7 @@ describe('EmailsService - expéditeur, adresse de réponse et codes de refus (E1
     it('porte code DAILY_LIMIT_REACHED et un retryAfter strictement positif', async () => {
       email.count.mockResolvedValue(200);
 
-      const body = await refusalBodyOf(service.send(USER_ID, dtoWith()));
+      const body = await refusalBodyOf(sendAsKey(service, USER_ID, dtoWith()));
 
       expect(body).toMatchObject({
         statusCode: HttpStatus.TOO_MANY_REQUESTS,
@@ -1732,7 +1843,7 @@ describe('EmailsService - expéditeur, adresse de réponse et codes de refus (E1
       [
         'INVALID_FROM',
         (): Promise<unknown> =>
-          service.send(USER_ID, dtoWith({ from: 'pas-un-email' })),
+          sendAsKey(service, USER_ID, dtoWith({ from: 'pas-un-email' })),
         HttpStatus.BAD_REQUEST,
         SEND_REFUSAL.INVALID_FROM,
         INVALID_FROM_MESSAGE,
@@ -1740,7 +1851,7 @@ describe('EmailsService - expéditeur, adresse de réponse et codes de refus (E1
       [
         'INVALID_TO',
         (): Promise<unknown> =>
-          service.send(USER_ID, dtoWith({ to: 'client@localhost' })),
+          sendAsKey(service, USER_ID, dtoWith({ to: 'client@localhost' })),
         HttpStatus.BAD_REQUEST,
         SEND_REFUSAL.INVALID_TO,
         INVALID_TO_MESSAGE,
@@ -1748,7 +1859,7 @@ describe('EmailsService - expéditeur, adresse de réponse et codes de refus (E1
       [
         'MISSING_BODY',
         (): Promise<unknown> =>
-          service.send(USER_ID, dtoWith({ html: undefined, text: '  ' })),
+          sendAsKey(service, USER_ID, dtoWith({ html: undefined, text: '  ' })),
         HttpStatus.BAD_REQUEST,
         SEND_REFUSAL.MISSING_BODY,
         MISSING_BODY_MESSAGE,
@@ -1756,7 +1867,11 @@ describe('EmailsService - expéditeur, adresse de réponse et codes de refus (E1
       [
         'BODY_TOO_LARGE',
         (): Promise<unknown> =>
-          service.send(USER_ID, dtoWith({ html: 'a'.repeat(500 * 1024 + 1) })),
+          sendAsKey(
+            service,
+            USER_ID,
+            dtoWith({ html: 'a'.repeat(500 * 1024 + 1) }),
+          ),
         HttpStatus.BAD_REQUEST,
         SEND_REFUSAL.BODY_TOO_LARGE,
         BODY_TOO_LARGE_MESSAGE,
@@ -1774,7 +1889,7 @@ describe('EmailsService - expéditeur, adresse de réponse et codes de refus (E1
     it('DOMAIN_NOT_VERIFIED - le « 403 dédié » réclamé par l’audit', async () => {
       givenVerifiedDomains();
 
-      const body = await refusalBodyOf(service.send(USER_ID, dtoWith()));
+      const body = await refusalBodyOf(sendAsKey(service, USER_ID, dtoWith()));
 
       expect(body).toMatchObject({
         statusCode: HttpStatus.FORBIDDEN,
@@ -1787,7 +1902,7 @@ describe('EmailsService - expéditeur, adresse de réponse et codes de refus (E1
     it('INSUFFICIENT_CREDITS - 402 avec son code', async () => {
       creditEntry.aggregate.mockResolvedValue({ _sum: { delta: 0 } });
 
-      const body = await refusalBodyOf(service.send(USER_ID, dtoWith()));
+      const body = await refusalBodyOf(sendAsKey(service, USER_ID, dtoWith()));
 
       expect(body).toMatchObject({
         statusCode: HttpStatus.PAYMENT_REQUIRED,
@@ -1805,7 +1920,8 @@ describe('EmailsService - expéditeur, adresse de réponse et codes de refus (E1
       givenVerifiedDomains('mail.kingreys.fr');
 
       const body = await refusalBodyOf(
-        service.send(
+        sendAsKey(
+          service,
           USER_ID,
           dtoWith({
             from: 'Zendou <essai@mail.kingreys.fr>',
@@ -1829,7 +1945,8 @@ describe('EmailsService - expéditeur, adresse de réponse et codes de refus (E1
       givenVerifiedDomains();
 
       const body = await refusalBodyOf(
-        service.send(
+        sendAsKey(
+          service,
           USER_ID,
           dtoWith({
             from: 'Zendou <essai@mail.kingreys.fr>',
@@ -1854,7 +1971,7 @@ describe('EmailsService - expéditeur, adresse de réponse et codes de refus (E1
       givenVerifiedDomains();
 
       const error = await service
-        .send(USER_ID, dtoWith())
+        .send(USER_ID, dtoWith(), 'key_1')
         .then(() => null)
         .catch((caught: unknown) => caught);
 

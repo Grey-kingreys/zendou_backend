@@ -14,6 +14,18 @@ import {
 } from './emails.constants';
 import { EmailsService, sendRefusalReason } from './emails.service';
 
+/**
+ * Envoi par l'API tel que le fait le contrôleur : la clé API qui porte l'envoi
+ * est toujours transmise (B27, le point d'acceptation refuse un envoi sans elle).
+ */
+function sendAsKey(
+  svc: EmailsService,
+  userId: string,
+  dto: SendEmailDto,
+): ReturnType<EmailsService['send']> {
+  return svc.send(userId, dto, 'key_1');
+}
+
 const USER_ID = 'user_1';
 
 /**
@@ -73,8 +85,16 @@ describe('Point d’acceptation — état du compte (appel direct au service)', 
   const user = { findUnique: jest.fn() };
   const queue = { add: jest.fn() };
 
+  // Portée par domaine (B27) : ALL, ces scénarios n'éprouvent que l'état du compte.
+  const apiKey = {
+    findUnique: jest.fn(() =>
+      Promise.resolve({ domainScope: 'ALL', domains: [] }),
+    ),
+  };
+
   const prisma = {
     domain,
+    apiKey,
     suppression,
     creditEntry,
     email,
@@ -121,9 +141,11 @@ describe('Point d’acceptation — état du compte (appel direct au service)', 
    * rien — ils pourraient venir de n'importe quelle autre règle du pipeline.
    */
   it('accepte l’envoi quand le compte est actif et son adresse confirmée', async () => {
-    await expect(service.send(USER_ID, dtoWith())).resolves.toMatchObject({
-      status: 'queued',
-    });
+    await expect(sendAsKey(service, USER_ID, dtoWith())).resolves.toMatchObject(
+      {
+        status: 'queued',
+      },
+    );
   });
 
   it('refuse un compte SUSPENDED, alors qu’aucun garde HTTP n’est traversé', async () => {
@@ -131,7 +153,7 @@ describe('Point d’acceptation — état du compte (appel direct au service)', 
       userRow({ status: UserStatus.SUSPENDED }),
     );
 
-    const error = await refusalOf(service.send(USER_ID, dtoWith()));
+    const error = await refusalOf(sendAsKey(service, USER_ID, dtoWith()));
 
     // Contrat HTTP intact : c'est le 403 de `ApiKeyAuthGuard`, au mot près.
     expect(error).toBeInstanceOf(ForbiddenException);
@@ -153,7 +175,7 @@ describe('Point d’acceptation — état du compte (appel direct au service)', 
   it('refuse un compte dont emailVerifiedAt est null, alors qu’aucun garde HTTP n’est traversé', async () => {
     user.findUnique.mockResolvedValue(userRow({ emailVerifiedAt: null }));
 
-    const error = await refusalOf(service.send(USER_ID, dtoWith()));
+    const error = await refusalOf(sendAsKey(service, USER_ID, dtoWith()));
 
     // Contrat HTTP intact : c'est le 403 de `EmailVerifiedGuard`, au mot près.
     expect(error).toBeInstanceOf(ForbiddenException);
@@ -181,7 +203,7 @@ describe('Point d’acceptation — état du compte (appel direct au service)', 
   ])('refuse un compte %s avant toute autre règle', async (_label, row) => {
     user.findUnique.mockResolvedValue(row);
 
-    await refusalOf(service.send(USER_ID, dtoWith()));
+    await refusalOf(sendAsKey(service, USER_ID, dtoWith()));
 
     expect(domain.findFirst).not.toHaveBeenCalled();
     expect(suppression.findFirst).not.toHaveBeenCalled();
@@ -198,7 +220,7 @@ describe('Point d’acceptation — état du compte (appel direct au service)', 
   it('porte aussi le motif sur un refus préexistant, sans en changer le 403', async () => {
     domain.findFirst.mockResolvedValue(null);
 
-    const error = await refusalOf(service.send(USER_ID, dtoWith()));
+    const error = await refusalOf(sendAsKey(service, USER_ID, dtoWith()));
 
     expect(error).toBeInstanceOf(ForbiddenException);
     expect((error as ForbiddenException).message).toBe(

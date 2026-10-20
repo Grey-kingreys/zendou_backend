@@ -532,7 +532,7 @@ describe("Filtre d'erreur global — forme du corps, bout en bout", () => {
     let captured: unknown;
 
     try {
-      await emailsService.send(USER_ID, PORTEUR_CHAINE);
+      await emailsService.send(USER_ID, PORTEUR_CHAINE, 'key_1');
     } catch (error) {
       captured = error;
     }

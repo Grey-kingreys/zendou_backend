@@ -12,6 +12,18 @@ import type { SendEmailDto } from './dto/send-email.dto';
 import { FAILED_EMAIL_JOB_RETENTION_SECONDS } from './emails.constants';
 import { EmailsService, SystemSenderUnavailableError } from './emails.service';
 
+/**
+ * Envoi par l'API tel que le fait le contrôleur : la clé API qui porte l'envoi
+ * est toujours transmise (B27, le point d'acceptation refuse un envoi sans elle).
+ */
+function sendAsKey(
+  svc: EmailsService,
+  userId: string,
+  dto: SendEmailDto,
+): ReturnType<EmailsService['send']> {
+  return svc.send(userId, dto, 'key_1');
+}
+
 const USER_ID = 'user_1';
 const CLIENT_DOMAIN = 'boutique-awa.gn';
 const SYSTEM_DOMAIN = 'mail.kingreys.fr';
@@ -101,6 +113,13 @@ class FakeStore {
   };
 
   private nextId = 1;
+
+  // Portée par domaine (B27) : la clé de ces scénarios est `ALL`.
+  readonly apiKey = {
+    findUnique: jest.fn(() =>
+      Promise.resolve({ domainScope: 'ALL', domains: [] }),
+    ),
+  };
 
   readonly domain = {
     findFirst: jest.fn(
@@ -323,7 +342,7 @@ describe('Envoi système (intégration EmailsService ↔ ReputationService)', ()
         reason: 'TOPUP',
         reference: null,
       });
-      await emails.send(USER_ID, clientDto());
+      await sendAsKey(emails, USER_ID, clientDto());
 
       expect(store.credits).toHaveLength(2);
       expect(store.credits[1]).toMatchObject({ delta: -1, reason: 'SEND' });
@@ -342,7 +361,7 @@ describe('Envoi système (intégration EmailsService ↔ ReputationService)', ()
         reason: 'TOPUP',
         reference: null,
       });
-      await expect(emails.send(USER_ID, clientDto())).rejects.toThrow(
+      await expect(sendAsKey(emails, USER_ID, clientDto())).rejects.toThrow(
         /Limite journalière atteinte/,
       );
     });
@@ -359,7 +378,9 @@ describe('Envoi système (intégration EmailsService ↔ ReputationService)', ()
       await sendSystem();
 
       // L'unique envoi de la journée reste disponible pour le client.
-      await expect(emails.send(USER_ID, clientDto())).resolves.toMatchObject({
+      await expect(
+        sendAsKey(emails, USER_ID, clientDto()),
+      ).resolves.toMatchObject({
         status: 'queued',
       });
     });

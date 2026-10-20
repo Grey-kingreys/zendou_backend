@@ -6,6 +6,7 @@ import {
   HttpException,
   HttpStatus,
   Injectable,
+  InternalServerErrorException,
   Logger,
   ServiceUnavailableException,
 } from '@nestjs/common';
@@ -65,6 +66,7 @@ import type {
   AcceptEmailInput,
   AcceptSmtpInput,
   EmailSendJobData,
+  SendChannel,
   SendEmailResponse,
   SystemEmailPayload,
   SystemSendResult,
@@ -208,6 +210,12 @@ export class EmailsService {
     from: string,
     smtpCredentialId: string,
   ): Promise<void> {
+    const credential = this.requireCredential(
+      'SMTP',
+      undefined,
+      smtpCredentialId,
+    );
+
     await this.assertAccountMaySend(userId);
 
     const parsed = parseEmailAddress(from);
@@ -230,7 +238,7 @@ export class EmailsService {
       await this.requireVerifiedTestSenderDomain(parsed.domain);
     } else {
       const domainId = await this.requireVerifiedDomain(userId, parsed.domain);
-      await this.assertDomainInCredentialScope({ smtpCredentialId }, domainId);
+      await this.assertDomainInCredentialScope(credential, domainId);
     }
 
     await this.assertSufficientCredits(userId);
@@ -291,6 +299,14 @@ export class EmailsService {
     userId: string,
     input: AcceptEmailInput,
   ): Promise<SendEmailResponse> {
+    // Fail-closed (B27) : sans clé ni identifiant, la portée ne pourrait pas
+    // être contrôlée. Vérifié avant tout le reste.
+    const credential = this.requireCredential(
+      input.channel,
+      input.apiKeyId,
+      input.smtpCredentialId,
+    );
+
     const { lastActivityAt, lowBalanceAlertSentAt } =
       await this.assertAccountMaySend(userId);
 
@@ -396,7 +412,7 @@ export class EmailsService {
       domainId = await this.requireVerifiedDomain(userId, from.domain);
       // Portée de la clé API ou de l'identifiant SMTP (B27). L'adresse de test
       // du bac à sable n'y passe pas : elle n'ouvre aucun domaine du compte.
-      await this.assertDomainInCredentialScope(input, domainId);
+      await this.assertDomainInCredentialScope(credential, domainId);
     }
 
     // Adresse(s) de réponse : **exactement la règle du `From:`**, y compris en
@@ -935,6 +951,33 @@ export class EmailsService {
   }
 
   /**
+   * Clé API (canal API) ou identifiant SMTP (canal SMTP) qui porte l'envoi
+   * (B27). Les envois système passent par {@link sendSystem}, jamais ici : tout
+   * envoi qui arrive à `accept()` ou au `MAIL FROM` DOIT en avoir un. S'il
+   * manque, c'est un défaut de câblage : on journalise et on refuse, on
+   * n'envoie pas sans contrôle de portée.
+   */
+  private requireCredential(
+    channel: SendChannel,
+    apiKeyId: string | undefined,
+    smtpCredentialId: string | undefined,
+  ): { kind: 'apiKey' | 'smtp'; id: string } {
+    const kind = channel === 'SMTP' ? 'smtp' : 'apiKey';
+    const id = channel === 'SMTP' ? smtpCredentialId : apiKeyId;
+
+    if (!id) {
+      this.logger.error(
+        `Envoi ${channel} refusé : aucune ${kind === 'smtp' ? 'identité SMTP' : 'clé API'} transmise au point d'acceptation (portée par domaine impossible à contrôler)`,
+      );
+      throw new InternalServerErrorException(
+        "Erreur interne : l'envoi n'a pas pu être contrôlé et a été refusé.",
+      );
+    }
+
+    return { kind, id };
+  }
+
+  /**
    * Portée par domaine de la clé API ou de l'identifiant SMTP (B27) : le
    * domaine d'expédition (déjà vérifié et possédé) doit en faire partie.
    *
@@ -942,37 +985,26 @@ export class EmailsService {
    * lignes de jointure : `ALL` autorise tout domaine du compte, `SELECTED`
    * n'autorise que les domaines liés - et aucun s'il n'en reste plus. Un
    * identifiant introuvable est refusé comme une portée vide (fail-closed).
-   * Sans clé ni identifiant (appelant interne), il n'y a pas de portée.
    */
   private async assertDomainInCredentialScope(
-    credential: { apiKeyId?: string; smtpCredentialId?: string },
+    credential: { kind: 'apiKey' | 'smtp'; id: string },
     domainId: string,
   ): Promise<void> {
     const select = {
       domainScope: true,
       domains: { select: { domain: { select: { id: true, name: true } } } },
     } as const;
-    let kind: 'apiKey' | 'smtp';
-    let found: {
-      domainScope: CredentialDomainScope;
-      domains: { domain: { id: string; name: string } }[];
-    } | null;
-
-    if (credential.smtpCredentialId !== undefined) {
-      kind = 'smtp';
-      found = await this.prisma.smtpCredential.findUnique({
-        where: { id: credential.smtpCredentialId },
-        select,
-      });
-    } else if (credential.apiKeyId !== undefined) {
-      kind = 'apiKey';
-      found = await this.prisma.apiKey.findUnique({
-        where: { id: credential.apiKeyId },
-        select,
-      });
-    } else {
-      return;
-    }
+    const { kind } = credential;
+    const found =
+      kind === 'smtp'
+        ? await this.prisma.smtpCredential.findUnique({
+            where: { id: credential.id },
+            select,
+          })
+        : await this.prisma.apiKey.findUnique({
+            where: { id: credential.id },
+            select,
+          });
 
     if (found?.domainScope === CredentialDomainScope.ALL) {
       return;
