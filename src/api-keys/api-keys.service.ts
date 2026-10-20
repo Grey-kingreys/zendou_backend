@@ -17,6 +17,11 @@ import {
 } from './api-keys.types';
 import { CreateApiKeyDto } from './dto/create-api-key.dto';
 import { SecretHashingService } from './secret-hashing.service';
+import {
+  resolveCredentialScope,
+  SCOPE_SELECT,
+  toScopeDomains,
+} from '../domains/credential-scope';
 
 /**
  * E7 - la propriété est établie **dans la requête** (`findFirst` filtre sur
@@ -46,6 +51,11 @@ export class ApiKeysService {
     userId: string,
     dto: CreateApiKeyDto,
   ): Promise<CreateApiKeyResponse> {
+    const scope = await resolveCredentialScope(
+      this.prisma,
+      userId,
+      dto.domainIds,
+    );
     const generated = generateApiKey();
 
     const apiKey = await this.prisma.apiKey.create({
@@ -54,16 +64,28 @@ export class ApiKeysService {
         name: dto.name.trim(),
         prefix: generated.prefix,
         keyHash: this.secretHashing.hashForStorage(generated.key),
+        domainScope: scope.domainScope,
+        domains: {
+          create: scope.domainIds.map((domainId) => ({ domainId })),
+        },
       },
-      select: { id: true, name: true, prefix: true, createdAt: true },
+      select: {
+        id: true,
+        name: true,
+        prefix: true,
+        createdAt: true,
+        ...SCOPE_SELECT,
+      },
     });
 
-    return { ...apiKey, key: generated.key };
+    const { domains, ...rest } = apiKey;
+
+    return { ...rest, domains: toScopeDomains(domains), key: generated.key };
   }
 
   /** Liste les clés API de l'utilisateur courant, sans jamais exposer `keyHash`. */
   async findAllForUser(userId: string): Promise<ApiKeySummary[]> {
-    return this.prisma.apiKey.findMany({
+    const apiKeys = await this.prisma.apiKey.findMany({
       where: { userId },
       select: {
         id: true,
@@ -72,9 +94,15 @@ export class ApiKeysService {
         createdAt: true,
         lastUsedAt: true,
         revokedAt: true,
+        ...SCOPE_SELECT,
       },
       orderBy: { createdAt: 'desc' },
     });
+
+    return apiKeys.map(({ domains, ...rest }) => ({
+      ...rest,
+      domains: toScopeDomains(domains),
+    }));
   }
 
   /**

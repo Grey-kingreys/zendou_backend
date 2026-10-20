@@ -1,0 +1,33 @@
+import { plainToInstance } from 'class-transformer';
+import { validate } from 'class-validator';
+import { CreateApiKeyDto } from '../api-keys/dto/create-api-key.dto';
+import { CreateSmtpCredentialDto } from '../smtp-credentials/dto/create-smtp-credential.dto';
+
+describe.each([
+  ['CreateApiKeyDto', CreateApiKeyDto],
+  ['CreateSmtpCredentialDto', CreateSmtpCredentialDto],
+])('%s - domainIds (B27)', (_label, Dto) => {
+  const check = (body: unknown) =>
+    validate(plainToInstance(Dto, body as object));
+
+  it('est facultatif', async () => {
+    expect(await check({ name: 'Prod' })).toHaveLength(0);
+  });
+
+  it('accepte une liste (même vide) de chaînes', async () => {
+    expect(await check({ name: 'Prod', domainIds: [] })).toHaveLength(0);
+    expect(await check({ name: 'Prod', domainIds: ['a', 'b'] })).toHaveLength(
+      0,
+    );
+  });
+
+  it('refuse autre chose qu’une liste', async () => {
+    expect(await check({ name: 'Prod', domainIds: 'a' })).not.toHaveLength(0);
+  });
+
+  it('refuse une liste qui contient autre chose que des chaînes', async () => {
+    expect(await check({ name: 'Prod', domainIds: ['a', 3] })).not.toHaveLength(
+      0,
+    );
+  });
+});

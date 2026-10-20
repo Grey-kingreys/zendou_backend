@@ -147,6 +147,18 @@ export const SMTP_REPLY_DOMAIN_NOT_VERIFIED: SmtpReply = {
 };
 
 /**
+ * « Identifiant SMTP non autorisé pour le domaine du `From:` » (B27) - MAIL
+ * FROM et fin DATA - 550 5.7.1, définitif. La table est figée : le message ne
+ * peut pas nommer les domaines autorisés comme le fait le 403 de l'API.
+ */
+export const SMTP_REPLY_CREDENTIAL_DOMAIN_OUT_OF_SCOPE: SmtpReply = {
+  code: 550,
+  enhancedStatus: '5.7.1',
+  message:
+    "Cet identifiant SMTP n'est pas autorisé à expédier depuis ce domaine.",
+};
+
+/**
  * §4.4 « Domaine de `TEST_EMAIL_FROM` non VERIFIED (mauvaise config Zendou) »
  * — fin DATA — 451 4.3.0. Notre faute, pas celle du client : temporaire.
  */
@@ -206,6 +218,8 @@ export const SEND_REFUSAL_SMTP_REPLY: Record<SendRefusalReason, SmtpReply> = {
   [SEND_REFUSAL.MISSING_BODY]: SMTP_REPLY_MISSING_BODY,
   [SEND_REFUSAL.BODY_TOO_LARGE]: SMTP_REPLY_BODY_TOO_LARGE,
   [SEND_REFUSAL.DOMAIN_NOT_VERIFIED]: SMTP_REPLY_DOMAIN_NOT_VERIFIED,
+  [SEND_REFUSAL.CREDENTIAL_DOMAIN_OUT_OF_SCOPE]:
+    SMTP_REPLY_CREDENTIAL_DOMAIN_OUT_OF_SCOPE,
   [SEND_REFUSAL.TEST_SENDER_UNAVAILABLE]: SMTP_REPLY_TEST_SENDER_UNAVAILABLE,
   [SEND_REFUSAL.TEST_SENDER_RECIPIENT_RESTRICTED]:
     SMTP_REPLY_TEST_SENDER_RECIPIENT_RESTRICTED,

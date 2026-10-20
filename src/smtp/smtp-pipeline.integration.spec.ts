@@ -4,6 +4,7 @@ import { getQueueToken } from '@nestjs/bullmq';
 import { ConfigService } from '@nestjs/config';
 import { Test, TestingModule } from '@nestjs/testing';
 import {
+  CredentialDomainScope,
   DomainStatus,
   EmailChannel,
   EmailStatus,
@@ -28,6 +29,7 @@ import {
 } from './smtp-pipeline.constants';
 import { SmtpPipelineService } from './smtp-pipeline.service';
 import {
+  SMTP_REPLY_CREDENTIAL_DOMAIN_OUT_OF_SCOPE,
   SMTP_REPLY_DOMAIN_NOT_VERIFIED,
   SMTP_REPLY_INSUFFICIENT_CREDITS,
   SMTP_REPLY_MIME_INVALID,
@@ -69,6 +71,8 @@ const CREDENTIAL_ID = 'smtpcred_valide';
 const USERNAME = 'zdu_valide';
 const CLIENT_DOMAIN = 'boutique-awa.gn';
 const CLIENT_FROM = `contact@${CLIENT_DOMAIN}`;
+const OTHER_DOMAIN = 'autre-marque.gn';
+const OTHER_FROM = `contact@${OTHER_DOMAIN}`;
 const ZENDOU_DOMAIN = 'mail.kingreys.fr';
 const TEST_FROM = `onboarding@${ZENDOU_DOMAIN}`;
 
@@ -115,6 +119,8 @@ class FakeStore {
 
   readonly domains = [
     { id: 'dom_client', name: CLIENT_DOMAIN, userId: USER_ID, verified: true },
+    // Second domaine vérifié du même compte : sert aux portées par domaine (B27).
+    { id: 'dom_autre', name: OTHER_DOMAIN, userId: USER_ID, verified: true },
     // Domaine de Zendou : celui de `TEST_EMAIL_FROM`, vérifié mais possédé par
     // personne d'autre que nous.
     {
@@ -140,19 +146,40 @@ class FakeStore {
 
   private nextId = 1;
 
+  /** Portée de l'identifiant SMTP (B27) : `ALL` par défaut, comme en base. */
+  credentialScope: CredentialDomainScope = CredentialDomainScope.ALL;
+  /** Domaines liés quand la portée est `SELECTED`. */
+  credentialDomainIds: string[] = [];
+
   readonly smtpCredential = {
-    findUnique: jest.fn(({ where }: { where: { username: string } }) =>
-      Promise.resolve(
-        where.username === USERNAME
-          ? {
-              id: CREDENTIAL_ID,
-              username: USERNAME,
-              secretHash: secret.passwordHash,
-              revokedAt: null,
-              user: this.userRow,
-            }
-          : null,
-      ),
+    findUnique: jest.fn(
+      ({ where }: { where: { username?: string; id?: string } }) => {
+        // Lecture de la portée par `EmailsService` (B27) : par identifiant.
+        if (where.id !== undefined) {
+          return Promise.resolve(
+            where.id === CREDENTIAL_ID
+              ? {
+                  domainScope: this.credentialScope,
+                  domains: this.domains
+                    .filter((row) => this.credentialDomainIds.includes(row.id))
+                    .map((row) => ({ domain: { id: row.id, name: row.name } })),
+                }
+              : null,
+          );
+        }
+
+        return Promise.resolve(
+          where.username === USERNAME
+            ? {
+                id: CREDENTIAL_ID,
+                username: USERNAME,
+                secretHash: secret.passwordHash,
+                revokedAt: null,
+                user: this.userRow,
+              }
+            : null,
+        );
+      },
     ),
     update: jest.fn(() => Promise.resolve({ id: CREDENTIAL_ID })),
   };
@@ -732,6 +759,86 @@ describe('Relais SMTP — pipeline de bout en bout (B6/S7)', () => {
     // Un envoi de test n'est rattaché à aucun `Domain` du client.
     expect(relay.store.emails[0].domainId).toBeNull();
     expect(relay.store.emails[0].channel).toBe(EmailChannel.SMTP);
+  });
+
+  // ─── portée par domaine de l'identifiant (B27) ──────────────────────────
+  describe('portée par domaine de l’identifiant SMTP (B27)', () => {
+    beforeEach(() => {
+      relay.store.credentialScope = CredentialDomainScope.SELECTED;
+      relay.store.credentialDomainIds = ['dom_client'];
+    });
+
+    it('accepte un From dans la portée', async () => {
+      const result = await send(relay.port, {
+        to: 'client@exemple.gn',
+        raw: mime([`From: ${CLIENT_FROM}`, 'Subject: Dans la portée'], 'Ok.'),
+      });
+
+      expect(result.error).toBeUndefined();
+      expect(relay.store.emails).toHaveLength(1);
+    });
+
+    it('refuse dès le MAIL FROM (550 5.7.1) une enveloppe hors portée, sans ligne ni débit', async () => {
+      const result = await send(relay.port, {
+        envelopeFrom: OTHER_FROM,
+        to: 'client@exemple.gn',
+        raw: mime([`From: ${OTHER_FROM}`, 'Subject: Hors portée'], 'Non.'),
+      });
+
+      expect(result.error?.responseCode).toBe(
+        SMTP_REPLY_CREDENTIAL_DOMAIN_OUT_OF_SCOPE.code,
+      );
+      expect(result.error?.responseCode).toBe(550);
+      expect(result.error?.response).toContain('5.7.1');
+      // Refusé tôt : avant le téléversement du message.
+      expect((result.error as { command?: string }).command).toBe('MAIL FROM');
+      expect(relay.store.emails).toHaveLength(0);
+      expect(relay.store.sendDebits).toHaveLength(0);
+      expect(relay.queue.add).not.toHaveBeenCalled();
+    });
+
+    it('refuse en fin de DATA (550 5.7.1) un From d’en-tête hors portée sous une enveloppe dans la portée', async () => {
+      // L'en-tête `From:` fait foi (§4.3) : une enveloppe irréprochable ne
+      // blanchit pas un domaine hors portée.
+      const result = await send(relay.port, {
+        envelopeFrom: CLIENT_FROM,
+        to: 'client@exemple.gn',
+        raw: mime([`From: ${OTHER_FROM}`, 'Subject: Hors portée'], 'Non.'),
+      });
+
+      expect(result.error?.responseCode).toBe(550);
+      expect(result.error?.response).toContain('5.7.1');
+      expect((result.error as { command?: string }).command).toBe('DATA');
+      expect(relay.store.emails).toHaveLength(0);
+      expect(relay.store.sendDebits).toHaveLength(0);
+      expect(relay.queue.add).not.toHaveBeenCalled();
+    });
+
+    it('permet toujours l’adresse de test du bac à sable vers l’adresse du compte', async () => {
+      const result = await send(relay.port, {
+        envelopeFrom: TEST_FROM,
+        to: USER_EMAIL,
+        raw: mime(
+          [`From: Zendou <${TEST_FROM}>`, 'Subject: Essai'],
+          'Message de test.',
+        ),
+      });
+
+      expect(result.error).toBeUndefined();
+      expect(relay.store.emails).toHaveLength(1);
+    });
+
+    it('refuse tout quand la portée est SELECTED sans aucun domaine lié', async () => {
+      relay.store.credentialDomainIds = [];
+
+      const result = await send(relay.port, {
+        to: 'client@exemple.gn',
+        raw: mime([`From: ${CLIENT_FROM}`, 'Subject: Aucun lien'], 'Non.'),
+      });
+
+      expect(result.error?.responseCode).toBe(550);
+      expect(relay.store.emails).toHaveLength(0);
+    });
   });
 
   // ─── (f) retrait du Bcc ─────────────────────────────────────────────────

@@ -1,5 +1,7 @@
+import type { CredentialScopeView } from '../domains/credential-scope';
+
 /** Réponse à la création d'un identifiant SMTP : le mot de passe complet n'apparaît qu'ici. */
-export interface CreateSmtpCredentialResponse {
+export interface CreateSmtpCredentialResponse extends CredentialScopeView {
   id: string;
   name: string;
   username: string;
@@ -9,7 +11,7 @@ export interface CreateSmtpCredentialResponse {
 }
 
 /** Élément de la liste des identifiants SMTP d'un utilisateur (jamais `secretHash`). */
-export interface SmtpCredentialSummary {
+export interface SmtpCredentialSummary extends CredentialScopeView {
   id: string;
   name: string;
   username: string;

@@ -23,6 +23,7 @@ interface Row {
   revokedAt: Date | null;
   rotatedAt: Date | null;
   createdAt: Date;
+  domainScope: 'ALL' | 'SELECTED';
 }
 
 const owner: AuthUser = {
@@ -74,6 +75,7 @@ class FakeApiKeyStore {
         revokedAt: null,
         rotatedAt: null,
         createdAt: new Date('2026-01-01T00:00:00.000Z'),
+        domainScope: 'ALL',
       };
       this.rows.set(row.id, row);
       return Promise.resolve(this.project(row, select));
@@ -151,6 +153,11 @@ class FakeApiKeyStore {
   ): Record<string, unknown> {
     const result: Record<string, unknown> = {};
     for (const key of Object.keys(select)) {
+      // Aucune ligne de jointure ici : la portée par domaine (B27) est ALL.
+      if (key === 'domains') {
+        result[key] = [];
+        continue;
+      }
       result[key] =
         key === 'user'
           ? owner

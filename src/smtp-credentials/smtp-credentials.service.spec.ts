@@ -1,8 +1,16 @@
 import { createHash, createHmac } from 'crypto';
 import { Test, TestingModule } from '@nestjs/testing';
-import { ConflictException, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  NotFoundException,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { SecretHashingService } from '../api-keys';
+import {
+  CREDENTIAL_DOMAINS_DUPLICATE_MESSAGE,
+  CREDENTIAL_DOMAINS_INVALID_MESSAGE,
+} from '../domains/credential-scope';
 import { PrismaService } from '../prisma/prisma.service';
 import {
   SMTP_CREDENTIAL_NOT_FOUND_MESSAGE,
@@ -18,6 +26,8 @@ interface CreateArgs {
     username: string;
     prefix: string;
     secretHash: string;
+    domainScope: 'ALL' | 'SELECTED';
+    domains: { create: { domainId: string }[] };
   };
 }
 
@@ -49,6 +59,8 @@ const listedCredential = {
   createdAt: new Date('2026-01-01T00:00:00.000Z'),
   lastUsedAt: null,
   revokedAt: null,
+  domainScope: 'ALL' as 'ALL' | 'SELECTED',
+  domains: [] as { domain: { id: string; name: string } }[],
 };
 
 describe('SmtpCredentialsService', () => {
@@ -61,6 +73,7 @@ describe('SmtpCredentialsService', () => {
   // E7 : le service demande à la base la ligne { id, userId }, il ne charge
   // plus par identifiant seul pour comparer ensuite en JavaScript.
   const findFirst = jest.fn();
+  const domainCount = jest.fn();
   const findMany = jest.fn((args: FindManyArgs) => {
     capturedFindManyArgs = args;
     return Promise.resolve([listedCredential]);
@@ -77,6 +90,10 @@ describe('SmtpCredentialsService', () => {
       username: args.data.username,
       prefix: args.data.prefix,
       createdAt: new Date('2026-01-01T00:00:00.000Z'),
+      domainScope: args.data.domainScope,
+      domains: args.data.domains.create.map((link) => ({
+        domain: { id: link.domainId, name: `${link.domainId}.gn` },
+      })),
     });
   });
   const deleteFn = jest.fn((args: DeleteArgs) => {
@@ -90,6 +107,7 @@ describe('SmtpCredentialsService', () => {
     capturedFindManyArgs = undefined;
     capturedUpdateArgs = undefined;
     capturedDeleteArgs = undefined;
+    domainCount.mockResolvedValue(0);
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -108,6 +126,7 @@ describe('SmtpCredentialsService', () => {
               create,
               delete: deleteFn,
             },
+            domain: { count: domainCount },
           },
         },
       ],
@@ -147,6 +166,83 @@ describe('SmtpCredentialsService', () => {
         prefix: stored.prefix,
         password: result.password,
         createdAt: new Date('2026-01-01T00:00:00.000Z'),
+        domainScope: 'ALL',
+        domains: [],
+      });
+    });
+
+    describe('portée par domaine (B27)', () => {
+      it('crée un identifiant ALL, sans lien ni lecture de domaine, quand domainIds est absent', async () => {
+        const result = await service.create('user_1', { name: 'WordPress' });
+
+        expect(capturedCreateArgs!.data.domainScope).toBe('ALL');
+        expect(capturedCreateArgs!.data.domains).toEqual({ create: [] });
+        expect(domainCount).not.toHaveBeenCalled();
+        expect(result.domainScope).toBe('ALL');
+        expect(result.domains).toEqual([]);
+      });
+
+      it('traite une liste vide comme ALL', async () => {
+        await service.create('user_1', { name: 'WordPress', domainIds: [] });
+
+        expect(capturedCreateArgs!.data.domainScope).toBe('ALL');
+        expect(capturedCreateArgs!.data.domains).toEqual({ create: [] });
+      });
+
+      it('crée un identifiant SELECTED lié aux domaines vérifiés du compte', async () => {
+        domainCount.mockResolvedValue(2);
+
+        const result = await service.create('user_1', {
+          name: 'WordPress',
+          domainIds: ['dom_a', 'dom_b'],
+        });
+
+        expect(domainCount).toHaveBeenCalledWith({
+          where: {
+            id: { in: ['dom_a', 'dom_b'] },
+            userId: 'user_1',
+            status: 'VERIFIED',
+          },
+        });
+        expect(capturedCreateArgs!.data.domainScope).toBe('SELECTED');
+        expect(capturedCreateArgs!.data.domains).toEqual({
+          create: [{ domainId: 'dom_a' }, { domainId: 'dom_b' }],
+        });
+        expect(result.domainScope).toBe('SELECTED');
+        expect(result.domains).toEqual([
+          { id: 'dom_a', name: 'dom_a.gn' },
+          { id: 'dom_b', name: 'dom_b.gn' },
+        ]);
+      });
+
+      it("refuse en 400 un domaine d'un autre compte, inexistant ou non vérifié", async () => {
+        domainCount.mockResolvedValue(1);
+
+        await expect(
+          service.create('user_1', {
+            name: 'WordPress',
+            domainIds: ['dom_a', 'dom_autre'],
+          }),
+        ).rejects.toMatchObject(
+          new BadRequestException(CREDENTIAL_DOMAINS_INVALID_MESSAGE),
+        );
+
+        expect(create).not.toHaveBeenCalled();
+      });
+
+      it('refuse en 400 un domaine sélectionné deux fois', async () => {
+        domainCount.mockResolvedValue(1);
+
+        await expect(
+          service.create('user_1', {
+            name: 'WordPress',
+            domainIds: ['dom_a', 'dom_a'],
+          }),
+        ).rejects.toMatchObject(
+          new BadRequestException(CREDENTIAL_DOMAINS_DUPLICATE_MESSAGE),
+        );
+
+        expect(create).not.toHaveBeenCalled();
       });
     });
   });
@@ -159,6 +255,21 @@ describe('SmtpCredentialsService', () => {
       expect(capturedFindManyArgs!.where).toEqual({ userId: 'user_1' });
       expect(capturedFindManyArgs!.select).not.toHaveProperty('secretHash');
       expect(result).toEqual([listedCredential]);
+    });
+
+    it('expose la portée et les domaines liés (id + nom)', async () => {
+      findMany.mockResolvedValueOnce([
+        {
+          ...listedCredential,
+          domainScope: 'SELECTED',
+          domains: [{ domain: { id: 'dom_a', name: 'a.gn' } }],
+        },
+      ]);
+
+      const result = await service.findAllForUser('user_1');
+
+      expect(result[0].domainScope).toBe('SELECTED');
+      expect(result[0].domains).toEqual([{ id: 'dom_a', name: 'a.gn' }]);
     });
   });
 
@@ -341,6 +452,13 @@ describe('SmtpCredentialsService', () => {
       expect(capturedUpdateArgs!.data.secretHash).toBeDefined();
       expect(capturedUpdateArgs!.data.rotatedAt).toBeInstanceOf(Date);
 
+      // La portée par domaine est immuable (B27) : la rotation n'y touche pas.
+      expect(Object.keys(capturedUpdateArgs!.data).sort()).toEqual([
+        'prefix',
+        'rotatedAt',
+        'secretHash',
+      ]);
+
       // Identité, nom, nom d'utilisateur et date de création inchangés.
       expect(result.id).toBe('smtp_1');
       expect(result.name).toBe('WordPress boutique');
@@ -373,6 +491,8 @@ describe('SmtpCredentialsService - empreinte poivrée persistée (E3)', () => {
         username: args.data.username,
         prefix: args.data.prefix,
         createdAt: new Date('2026-01-01T00:00:00.000Z'),
+        domainScope: 'ALL',
+        domains: [],
       });
     },
   );

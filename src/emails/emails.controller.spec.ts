@@ -5,6 +5,7 @@ import { HttpStatus } from '@nestjs/common';
 import request from 'supertest';
 import type { App } from 'supertest/types';
 import { ApiKeyAuthGuard } from '../api-keys';
+import type { ApiKeyAuthenticatedRequest } from '../api-keys';
 import { EMAIL_NOT_VERIFIED_MESSAGE, EmailVerifiedGuard } from '../auth';
 import type { AuthenticatedRequest, AuthUser } from '../auth';
 import type { SendEmailDto } from './dto/send-email.dto';
@@ -70,13 +71,15 @@ describe('EmailsController', () => {
     expect(httpCode).toBe(HttpStatus.ACCEPTED);
   });
 
-  it('delegates to the service with the authenticated user id', async () => {
-    await expect(controller.send(user, dto)).resolves.toEqual({
+  it('delegates to the service with the authenticated user id and the API key id', async () => {
+    const request = { apiKeyId: 'key_1' } as ApiKeyAuthenticatedRequest;
+
+    await expect(controller.send(user, dto, request)).resolves.toEqual({
       id: 'e_0123456789ab',
       status: 'queued',
     });
 
-    expect(emailsService.send).toHaveBeenCalledWith('user_1', dto);
+    expect(emailsService.send).toHaveBeenCalledWith('user_1', dto, 'key_1');
   });
 });
 
@@ -157,8 +160,13 @@ describe('EmailsController — sécurité (garde réel, bout en bout)', () => {
   it('laisse passer un compte confirmé jusqu’au service, adresse de test comprise', async () => {
     apiKeyAuthGuard.canActivate.mockImplementation(
       (context: ExecutionContext) => {
-        const req = context.switchToHttp().getRequest<AuthenticatedRequest>();
+        const req = context
+          .switchToHttp()
+          .getRequest<AuthenticatedRequest & { apiKeyId?: string }>();
         req.user = { ...user, emailVerifiedAt: new Date('2026-08-01') };
+        // Posé par le vrai `ApiKeyAuthGuard` : la portée par domaine (B27) en
+        // dépend, il doit atteindre `EmailsService.send`.
+        req.apiKeyId = 'key_1';
         return true;
       },
     );
@@ -168,6 +176,10 @@ describe('EmailsController — sécurité (garde réel, bout en bout)', () => {
       .send(sandboxDto);
 
     expect(response.status).toBe(HttpStatus.ACCEPTED);
-    expect(emailsService.send).toHaveBeenCalledWith('user_1', sandboxDto);
+    expect(emailsService.send).toHaveBeenCalledWith(
+      'user_1',
+      sandboxDto,
+      'key_1',
+    );
   });
 });

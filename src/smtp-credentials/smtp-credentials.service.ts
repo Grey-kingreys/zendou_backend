@@ -4,6 +4,11 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { SecretHashingService } from '../api-keys';
+import {
+  resolveCredentialScope,
+  SCOPE_SELECT,
+  toScopeDomains,
+} from '../domains/credential-scope';
 import { PrismaService } from '../prisma/prisma.service';
 import {
   SMTP_CREDENTIAL_NOT_FOUND_MESSAGE,
@@ -50,6 +55,11 @@ export class SmtpCredentialsService {
     userId: string,
     dto: CreateSmtpCredentialDto,
   ): Promise<CreateSmtpCredentialResponse> {
+    const scope = await resolveCredentialScope(
+      this.prisma,
+      userId,
+      dto.domainIds,
+    );
     const generated = generateSmtpCredentialSecret();
     const username = generateSmtpCredentialUsername();
 
@@ -60,6 +70,10 @@ export class SmtpCredentialsService {
         username,
         prefix: generated.prefix,
         secretHash: this.secretHashing.hashForStorage(generated.password),
+        domainScope: scope.domainScope,
+        domains: {
+          create: scope.domainIds.map((domainId) => ({ domainId })),
+        },
       },
       select: {
         id: true,
@@ -67,15 +81,22 @@ export class SmtpCredentialsService {
         username: true,
         prefix: true,
         createdAt: true,
+        ...SCOPE_SELECT,
       },
     });
 
-    return { ...credential, password: generated.password };
+    const { domains, ...rest } = credential;
+
+    return {
+      ...rest,
+      domains: toScopeDomains(domains),
+      password: generated.password,
+    };
   }
 
   /** Liste les identifiants SMTP de l'utilisateur courant, sans jamais exposer `secretHash`. */
   async findAllForUser(userId: string): Promise<SmtpCredentialSummary[]> {
-    return this.prisma.smtpCredential.findMany({
+    const credentials = await this.prisma.smtpCredential.findMany({
       where: { userId },
       select: {
         id: true,
@@ -85,9 +106,15 @@ export class SmtpCredentialsService {
         createdAt: true,
         lastUsedAt: true,
         revokedAt: true,
+        ...SCOPE_SELECT,
       },
       orderBy: { createdAt: 'desc' },
     });
+
+    return credentials.map(({ domains, ...rest }) => ({
+      ...rest,
+      domains: toScopeDomains(domains),
+    }));
   }
 
   /**

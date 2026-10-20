@@ -10,6 +10,7 @@ import {
   SMTP_REPLY_AUTH_INVALID_CREDENTIALS,
   SMTP_REPLY_AUTH_REQUIRES_TLS,
   SMTP_REPLY_BODY_TOO_LARGE,
+  SMTP_REPLY_CREDENTIAL_DOMAIN_OUT_OF_SCOPE,
   SMTP_REPLY_DAILY_LIMIT_REACHED,
   SMTP_REPLY_DOMAIN_NOT_VERIFIED,
   SMTP_REPLY_EMAIL_NOT_VERIFIED,
@@ -67,11 +68,12 @@ describe('SEND_REFUSAL_SMTP_REPLY — exhaustivité', () => {
     const reasons = Object.values(SEND_REFUSAL) as SendRefusalReason[];
 
     // Preuve que le test porte bien sur quelque chose : `SEND_REFUSAL`
-    // compte aujourd'hui 13 motifs (11 de S1, plus les deux du reply-to
-    // ajoutés en E1). S'il en gagne un nouveau sans entrée dans la table,
+    // compte aujourd'hui 14 motifs (11 de S1, les deux du reply-to ajoutés en
+    // E1, plus la portée par domaine de B27). S'il en gagne un nouveau sans
+    // entrée dans la table,
     // l'assertion ci-dessous échoue à l'exécution - la preuve « cassant »
     // exigée par la done-condition.
-    expect(reasons.length).toBe(13);
+    expect(reasons.length).toBe(14);
 
     for (const reason of reasons) {
       expect(SEND_REFUSAL_SMTP_REPLY[reason]).toBeDefined();
@@ -134,6 +136,11 @@ describe('smtpReplyForError — motifs SEND_REFUSAL (accept())', () => {
       SEND_REFUSAL.DAILY_LIMIT_REACHED,
       SMTP_REPLY_DAILY_LIMIT_REACHED,
     ],
+    [
+      'CREDENTIAL_DOMAIN_OUT_OF_SCOPE',
+      SEND_REFUSAL.CREDENTIAL_DOMAIN_OUT_OF_SCOPE,
+      SMTP_REPLY_CREDENTIAL_DOMAIN_OUT_OF_SCOPE,
+    ],
   ] as Array<[string, SendRefusalReason, SmtpReply]>)(
     'traduit %s vers sa réponse SMTP dédiée',
     (_label, reason, expected) => {
@@ -179,6 +186,16 @@ describe('§4.4 — une ligne du tableau par test', () => {
     expectWellFormedReply(SMTP_REPLY_MAIL_FROM_UNREADABLE, 501, '5.1.7');
     expect(smtpReplyForError(refusalError(SEND_REFUSAL.INVALID_FROM))).toBe(
       SMTP_REPLY_MAIL_FROM_UNREADABLE,
+    );
+  });
+
+  it('Identifiant SMTP hors de sa portée par domaine (B27) → 550 5.7.1, définitif', () => {
+    expectWellFormedReply(
+      smtpReplyForError(
+        refusalError(SEND_REFUSAL.CREDENTIAL_DOMAIN_OUT_OF_SCOPE),
+      ),
+      550,
+      '5.7.1',
     );
   });
 

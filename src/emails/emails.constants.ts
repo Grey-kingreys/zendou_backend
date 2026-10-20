@@ -146,6 +146,30 @@ export const DOMAIN_NOT_VERIFIED_MESSAGE =
   "Le domaine d'envoi n'est pas vérifié : ajoutez-le à votre compte et validez ses enregistrements DNS avant d'envoyer.";
 
 /**
+ * Message renvoyé quand la clé API ou l'identifiant SMTP n'est pas autorisé
+ * pour le domaine d'expédition (B27). Il nomme les domaines autorisés ; une
+ * portée sélectionnée sans aucun domaine (liens perdus) ne nomme rien et
+ * refuse tout.
+ */
+export function credentialOutOfScopeMessage(
+  kind: 'apiKey' | 'smtp',
+  allowedNames: string[],
+): string {
+  const subject = kind === 'apiKey' ? 'Cette clé API' : 'Cet identifiant SMTP';
+  const adjective = kind === 'apiKey' ? 'autorisée' : 'autorisé';
+
+  if (allowedNames.length === 0) {
+    return `${subject} n'est ${adjective} pour aucun domaine : créez-en une nouvelle avec la portée voulue.`;
+  }
+
+  if (allowedNames.length === 1) {
+    return `${subject} n'est ${adjective} que pour le domaine ${allowedNames[0]}.`;
+  }
+
+  return `${subject} n'est ${adjective} que pour les domaines ${allowedNames.join(', ')}.`;
+}
+
+/**
  * Message renvoyé quand un envoi depuis l'adresse de test (`TEST_EMAIL_FROM`,
  * mode bac à sable B20) cible un destinataire autre que l'adresse du compte
  * appelant. Explique le mode plutôt que de refuser sèchement : cette
@@ -235,6 +259,11 @@ export const SEND_REFUSAL = {
   BODY_TOO_LARGE: 'BODY_TOO_LARGE',
   /** Domaine d'expédition absent, non vérifié, ou appartenant à un tiers. */
   DOMAIN_NOT_VERIFIED: 'DOMAIN_NOT_VERIFIED',
+  /**
+   * Le domaine d'expédition est vérifié et possédé, mais la clé API ou
+   * l'identifiant SMTP utilisé n'est pas autorisé pour lui (B27).
+   */
+  CREDENTIAL_DOMAIN_OUT_OF_SCOPE: 'CREDENTIAL_DOMAIN_OUT_OF_SCOPE',
   /** Mode bac à sable : le domaine de `TEST_EMAIL_FROM` n'est pas vérifié. */
   TEST_SENDER_UNAVAILABLE: 'TEST_SENDER_UNAVAILABLE',
   /** Mode bac à sable : destinataire autre que l'adresse du compte. */

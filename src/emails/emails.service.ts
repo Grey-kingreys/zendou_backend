@@ -11,7 +11,12 @@ import {
 } from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bullmq';
 import { ConfigService } from '@nestjs/config';
-import { DomainStatus, EmailStatus, UserStatus } from '@prisma/client';
+import {
+  CredentialDomainScope,
+  DomainStatus,
+  EmailStatus,
+  UserStatus,
+} from '@prisma/client';
 import type { Queue } from 'bullmq';
 import { EMAIL_NOT_VERIFIED_MESSAGE } from '../auth/email-confirmation.constants';
 import { isEmailConfirmed } from '../auth/email-verified.guard';
@@ -49,6 +54,7 @@ import {
   SEND_JOB_BACKOFF_DELAY_MS,
   SEND_REFUSAL,
   SEND_REFUSAL_REASON,
+  credentialOutOfScopeMessage,
   SYSTEM_SENDER_UNAVAILABLE_MESSAGE,
   TEST_SENDER_RECIPIENT_RESTRICTED_MESSAGE,
   TO_NAME_TOO_LONG_MESSAGE,
@@ -105,7 +111,11 @@ export class EmailsService {
    * ici**. C'est ce qui garantit qu'un second point d'entrée (relais SMTP, B6)
    * subit exactement les mêmes contrôles, sans les dupliquer.
    */
-  async send(userId: string, dto: SendEmailDto): Promise<SendEmailResponse> {
+  async send(
+    userId: string,
+    dto: SendEmailDto,
+    apiKeyId?: string,
+  ): Promise<SendEmailResponse> {
     // Propre au canal API : le relais SMTP porte ses en-têtes dans le MIME.
     // Refusé avant tout contrôle de compte, sans effet de bord.
     if (dto.headers !== undefined) {
@@ -130,6 +140,7 @@ export class EmailsService {
         headers: dto.headers,
       },
       channel: 'API',
+      apiKeyId,
     });
   }
 
@@ -192,7 +203,11 @@ export class EmailsService {
    * - l'en-tête `From:` du message : inconnu avant `DATA`. C'est lui qui fait
    *   foi (§4.3) — l'enveloppe validée ici ne le remplace pas, elle s'y ajoute.
    */
-  async precheckSmtpEnvelope(userId: string, from: string): Promise<void> {
+  async precheckSmtpEnvelope(
+    userId: string,
+    from: string,
+    smtpCredentialId: string,
+  ): Promise<void> {
     await this.assertAccountMaySend(userId);
 
     const parsed = parseEmailAddress(from);
@@ -214,7 +229,8 @@ export class EmailsService {
       // pas sur l'enveloppe.
       await this.requireVerifiedTestSenderDomain(parsed.domain);
     } else {
-      await this.requireVerifiedDomain(userId, parsed.domain);
+      const domainId = await this.requireVerifiedDomain(userId, parsed.domain);
+      await this.assertDomainInCredentialScope({ smtpCredentialId }, domainId);
     }
 
     await this.assertSufficientCredits(userId);
@@ -378,6 +394,9 @@ export class EmailsService {
       domainId = await this.requireOwnAddressAsRecipient(userId, toAddress);
     } else {
       domainId = await this.requireVerifiedDomain(userId, from.domain);
+      // Portée de la clé API ou de l'identifiant SMTP (B27). L'adresse de test
+      // du bac à sable n'y passe pas : elle n'ouvre aucun domaine du compte.
+      await this.assertDomainInCredentialScope(input, domainId);
     }
 
     // Adresse(s) de réponse : **exactement la règle du `From:`**, y compris en
@@ -913,6 +932,67 @@ export class EmailsService {
     }
 
     return domain.id;
+  }
+
+  /**
+   * Portée par domaine de la clé API ou de l'identifiant SMTP (B27) : le
+   * domaine d'expédition (déjà vérifié et possédé) doit en faire partie.
+   *
+   * La portée se lit sur la colonne `domainScope`, jamais sur la présence de
+   * lignes de jointure : `ALL` autorise tout domaine du compte, `SELECTED`
+   * n'autorise que les domaines liés - et aucun s'il n'en reste plus. Un
+   * identifiant introuvable est refusé comme une portée vide (fail-closed).
+   * Sans clé ni identifiant (appelant interne), il n'y a pas de portée.
+   */
+  private async assertDomainInCredentialScope(
+    credential: { apiKeyId?: string; smtpCredentialId?: string },
+    domainId: string,
+  ): Promise<void> {
+    const select = {
+      domainScope: true,
+      domains: { select: { domain: { select: { id: true, name: true } } } },
+    } as const;
+    let kind: 'apiKey' | 'smtp';
+    let found: {
+      domainScope: CredentialDomainScope;
+      domains: { domain: { id: string; name: string } }[];
+    } | null;
+
+    if (credential.smtpCredentialId !== undefined) {
+      kind = 'smtp';
+      found = await this.prisma.smtpCredential.findUnique({
+        where: { id: credential.smtpCredentialId },
+        select,
+      });
+    } else if (credential.apiKeyId !== undefined) {
+      kind = 'apiKey';
+      found = await this.prisma.apiKey.findUnique({
+        where: { id: credential.apiKeyId },
+        select,
+      });
+    } else {
+      return;
+    }
+
+    if (found?.domainScope === CredentialDomainScope.ALL) {
+      return;
+    }
+
+    const allowed = found?.domains.map((link) => link.domain) ?? [];
+
+    if (allowed.some((domain) => domain.id === domainId)) {
+      return;
+    }
+
+    throw refuse(
+      SEND_REFUSAL.CREDENTIAL_DOMAIN_OUT_OF_SCOPE,
+      HttpStatus.FORBIDDEN,
+      credentialOutOfScopeMessage(
+        kind,
+        allowed.map((domain) => domain.name).sort(),
+      ),
+      (body) => new ForbiddenException(body),
+    );
   }
 
   /**

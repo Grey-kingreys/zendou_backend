@@ -119,7 +119,11 @@ export class SmtpPipelineService {
     user: SmtpSessionUser,
   ): Promise<void> {
     await this.refusing(() =>
-      this.emailsService.precheckSmtpEnvelope(user.user.id, address.address),
+      this.emailsService.precheckSmtpEnvelope(
+        user.user.id,
+        address.address,
+        user.credentialId,
+      ),
     );
 
     // Rafale (§5) : comptée **par utilisateur**, jamais par IP — le NAT

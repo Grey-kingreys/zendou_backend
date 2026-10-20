@@ -1,7 +1,8 @@
 import type { AuthenticatedRequest } from '../auth';
+import type { CredentialScopeView } from '../domains/credential-scope';
 
 /** Réponse à la création d'une clé API : la clé complète n'apparaît qu'ici. */
-export interface CreateApiKeyResponse {
+export interface CreateApiKeyResponse extends CredentialScopeView {
   id: string;
   name: string;
   prefix: string;
@@ -10,7 +11,7 @@ export interface CreateApiKeyResponse {
 }
 
 /** Élément de la liste des clés API d'un utilisateur (jamais `keyHash`). */
-export interface ApiKeySummary {
+export interface ApiKeySummary extends CredentialScopeView {
   id: string;
   name: string;
   prefix: string;

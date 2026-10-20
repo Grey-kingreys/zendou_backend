@@ -8,12 +8,17 @@ import {
 } from '@nestjs/common';
 import { getQueueToken } from '@nestjs/bullmq';
 import { ConfigService } from '@nestjs/config';
-import { DomainStatus, EmailStatus } from '@prisma/client';
+import {
+  CredentialDomainScope,
+  DomainStatus,
+  EmailStatus,
+} from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { EMAIL_SEND_QUEUE } from '../queues/queues';
 import type { SendEmailDto } from './dto/send-email.dto';
 import {
   BODY_TOO_LARGE_MESSAGE,
+  credentialOutOfScopeMessage,
   CREDIT_REASON_SEND,
   DAILY_LIMIT_REACHED_MESSAGE,
   DOMAIN_NOT_VERIFIED_MESSAGE,
@@ -72,6 +77,9 @@ describe('EmailsService', () => {
   let capturedEmailCreate: EmailCreateArgs | undefined;
 
   const domain = { findFirst: jest.fn() };
+  // Portée par domaine (B27) : lue par identifiant de clé ou d'identifiant.
+  const apiKey = { findUnique: jest.fn() };
+  const smtpCredential = { findUnique: jest.fn() };
   const suppression = { findFirst: jest.fn() };
   const creditEntry = {
     aggregate: jest.fn(),
@@ -90,6 +98,8 @@ describe('EmailsService', () => {
 
   const prisma = {
     domain,
+    apiKey,
+    smtpCredential,
     suppression,
     creditEntry,
     email,
@@ -105,6 +115,14 @@ describe('EmailsService', () => {
     // Chemin nominal : domaine vérifié, pas de suppression, crédits et
     // quota disponibles. Chaque test ne dérègle que ce qu'il éprouve.
     domain.findFirst.mockResolvedValue({ id: DOMAIN_ID });
+    apiKey.findUnique.mockResolvedValue({
+      domainScope: CredentialDomainScope.ALL,
+      domains: [],
+    });
+    smtpCredential.findUnique.mockResolvedValue({
+      domainScope: CredentialDomainScope.ALL,
+      domains: [],
+    });
     suppression.findFirst.mockResolvedValue(null);
     creditEntry.aggregate.mockResolvedValue({ _sum: { delta: 10 } });
     creditEntry.create.mockResolvedValue({ id: 'credit_1' });
@@ -758,6 +776,239 @@ describe('EmailsService', () => {
     });
   });
 
+  /**
+   * Portée par domaine des clés API et des identifiants SMTP (B27). Le
+   * contrôle vit dans `accept()` : API (via `apiKeyId`) et relais SMTP (via
+   * `smtpCredentialId`, y compris au `MAIL FROM`) passent par le même code.
+   */
+  describe('portée par domaine de la clé ou de l’identifiant (B27)', () => {
+    const selected = (...links: { id: string; name: string }[]) => ({
+      domainScope: CredentialDomainScope.SELECTED,
+      domains: links.map((domain) => ({ domain })),
+    });
+    const THIS_DOMAIN = { id: DOMAIN_ID, name: 'boutique-awa.gn' };
+    const OTHER_DOMAIN = { id: 'dom_2', name: 'autre-marque.gn' };
+
+    const smtpInput = (from = 'contact@boutique-awa.gn') => ({
+      from,
+      to: 'client@exemple.gn',
+      subject: 'Bonjour',
+      raw: `From: ${from}\r\n\r\nBonjour`,
+      smtpCredentialId: 'smtp_1',
+    });
+
+    async function refusal(
+      promise: Promise<unknown>,
+    ): Promise<ForbiddenException> {
+      const error: unknown = await promise.then(
+        () => null,
+        (e: unknown) => e,
+      );
+
+      expect(error).toBeInstanceOf(ForbiddenException);
+      expect(sendRefusalReason(error)).toBe(
+        SEND_REFUSAL.CREDENTIAL_DOMAIN_OUT_OF_SCOPE,
+      );
+
+      return error as ForbiddenException;
+    }
+
+    function expectNothingWritten(): void {
+      expect(email.create).not.toHaveBeenCalled();
+      expect(creditEntry.create).not.toHaveBeenCalled();
+      expect(queue.add).not.toHaveBeenCalled();
+    }
+
+    describe('canal API (apiKeyId)', () => {
+      it('accepte une clé ALL pour n’importe quel domaine vérifié du compte', async () => {
+        const result = await service.send(USER_ID, dtoWith(), 'key_1');
+
+        expect(result.status).toBe('queued');
+        expect(apiKey.findUnique).toHaveBeenCalledWith(
+          expect.objectContaining({ where: { id: 'key_1' } }),
+        );
+      });
+
+      it('accepte une clé SELECTED dont le domaine de From fait partie de la portée', async () => {
+        apiKey.findUnique.mockResolvedValue(
+          selected(THIS_DOMAIN, OTHER_DOMAIN),
+        );
+
+        const result = await service.send(USER_ID, dtoWith(), 'key_1');
+
+        expect(result.status).toBe('queued');
+      });
+
+      it('refuse en 403 un From hors portée, en nommant le domaine autorisé', async () => {
+        apiKey.findUnique.mockResolvedValue(selected(OTHER_DOMAIN));
+
+        const error = await refusal(service.send(USER_ID, dtoWith(), 'key_1'));
+
+        expect(error.message).toBe(
+          "Cette clé API n'est autorisée que pour le domaine autre-marque.gn.",
+        );
+        expect(error.getStatus()).toBe(HttpStatus.FORBIDDEN);
+        expectNothingWritten();
+      });
+
+      it('nomme tous les domaines autorisés, triés', async () => {
+        apiKey.findUnique.mockResolvedValue(
+          selected(
+            { id: 'dom_9', name: 'zeta.gn' },
+            { id: 'dom_8', name: 'alpha.gn' },
+          ),
+        );
+
+        const error = await refusal(service.send(USER_ID, dtoWith(), 'key_1'));
+
+        expect(error.message).toBe(
+          "Cette clé API n'est autorisée que pour les domaines alpha.gn, zeta.gn.",
+        );
+      });
+
+      it('refuse tout quand la portée est SELECTED sans aucune ligne de jointure', async () => {
+        apiKey.findUnique.mockResolvedValue(selected());
+
+        const error = await refusal(service.send(USER_ID, dtoWith(), 'key_1'));
+
+        expect(error.message).toBe(credentialOutOfScopeMessage('apiKey', []));
+        expectNothingWritten();
+      });
+
+      it('refuse (fail-closed) une clé introuvable', async () => {
+        apiKey.findUnique.mockResolvedValue(null);
+
+        await refusal(service.send(USER_ID, dtoWith(), 'key_inconnue'));
+        expectNothingWritten();
+      });
+
+      it('ne consulte aucune portée sans clé (appelant interne)', async () => {
+        const result = await service.send(USER_ID, dtoWith());
+
+        expect(result.status).toBe('queued');
+        expect(apiKey.findUnique).not.toHaveBeenCalled();
+        expect(smtpCredential.findUnique).not.toHaveBeenCalled();
+      });
+
+      it('laisse une clé restreinte, même sans domaine, utiliser l’adresse de test du bac à sable', async () => {
+        configValues = {
+          ...configValues,
+          TEST_EMAIL_FROM: 'Zendou <essai@mail.kingreys.fr>',
+        };
+        user.findUnique.mockResolvedValue({
+          dailySendLimit: 200,
+          email: 'aissatou@exemple.gn',
+        });
+        apiKey.findUnique.mockResolvedValue(selected());
+
+        const result = await service.send(
+          USER_ID,
+          dtoWith({
+            from: 'Zendou <essai@mail.kingreys.fr>',
+            to: 'aissatou@exemple.gn',
+          }),
+          'key_1',
+        );
+
+        expect(result.status).toBe('queued');
+      });
+
+      it('applique la portée avant la liste de suppression, le solde et le débit', async () => {
+        apiKey.findUnique.mockResolvedValue(selected(OTHER_DOMAIN));
+        suppression.findFirst.mockResolvedValue({ id: 'sup_1' });
+
+        await refusal(service.send(USER_ID, dtoWith(), 'key_1'));
+        expect(suppression.findFirst).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('canal SMTP (smtpCredentialId)', () => {
+      it('accepte un identifiant ALL', async () => {
+        const result = await service.acceptSmtp(USER_ID, smtpInput());
+
+        expect(result.status).toBe('queued');
+        expect(smtpCredential.findUnique).toHaveBeenCalledWith(
+          expect.objectContaining({ where: { id: 'smtp_1' } }),
+        );
+        expect(apiKey.findUnique).not.toHaveBeenCalled();
+      });
+
+      it('accepte un identifiant SELECTED dans la portée', async () => {
+        smtpCredential.findUnique.mockResolvedValue(selected(THIS_DOMAIN));
+
+        const result = await service.acceptSmtp(USER_ID, smtpInput());
+
+        expect(result.status).toBe('queued');
+      });
+
+      it('refuse en 403 un From hors portée, en nommant le domaine autorisé', async () => {
+        smtpCredential.findUnique.mockResolvedValue(selected(OTHER_DOMAIN));
+
+        const error = await refusal(service.acceptSmtp(USER_ID, smtpInput()));
+
+        expect(error.message).toBe(
+          "Cet identifiant SMTP n'est autorisé que pour le domaine autre-marque.gn.",
+        );
+        expectNothingWritten();
+      });
+
+      it('refuse tout quand la portée est SELECTED sans aucune ligne de jointure', async () => {
+        smtpCredential.findUnique.mockResolvedValue(selected());
+
+        await refusal(service.acceptSmtp(USER_ID, smtpInput()));
+        expectNothingWritten();
+      });
+
+      it('refuse (fail-closed) un identifiant introuvable', async () => {
+        smtpCredential.findUnique.mockResolvedValue(null);
+
+        await refusal(service.acceptSmtp(USER_ID, smtpInput()));
+      });
+    });
+
+    describe('contrôle anticipé du MAIL FROM (precheckSmtpEnvelope)', () => {
+      it('laisse passer une enveloppe dans la portée', async () => {
+        smtpCredential.findUnique.mockResolvedValue(selected(THIS_DOMAIN));
+
+        await expect(
+          service.precheckSmtpEnvelope(
+            USER_ID,
+            'contact@boutique-awa.gn',
+            'smtp_1',
+          ),
+        ).resolves.toBeUndefined();
+      });
+
+      it('refuse une enveloppe hors portée avec le même motif que accept()', async () => {
+        smtpCredential.findUnique.mockResolvedValue(selected(OTHER_DOMAIN));
+
+        await refusal(
+          service.precheckSmtpEnvelope(
+            USER_ID,
+            'contact@boutique-awa.gn',
+            'smtp_1',
+          ),
+        );
+      });
+
+      it('ne bloque pas l’adresse de test du bac à sable', async () => {
+        configValues = {
+          ...configValues,
+          TEST_EMAIL_FROM: 'Zendou <essai@mail.kingreys.fr>',
+        };
+        smtpCredential.findUnique.mockResolvedValue(selected());
+
+        await expect(
+          service.precheckSmtpEnvelope(
+            USER_ID,
+            'essai@mail.kingreys.fr',
+            'smtp_1',
+          ),
+        ).resolves.toBeUndefined();
+      });
+    });
+  });
+
   describe('suppression list', () => {
     it('records a SUPPRESSED email without charging or queueing it', async () => {
       suppression.findFirst.mockResolvedValue({ id: 'sup_1' });
@@ -935,6 +1186,8 @@ describe('EmailsService - expéditeur, adresse de réponse et codes de refus (E1
   let capturedEmailCreate: EmailCreateArgs | undefined;
 
   const domain = { findFirst: jest.fn() };
+  const apiKey = { findUnique: jest.fn() };
+  const smtpCredential = { findUnique: jest.fn() };
   const suppression = { findFirst: jest.fn() };
   const creditEntry = {
     aggregate: jest.fn(),
@@ -949,6 +1202,8 @@ describe('EmailsService - expéditeur, adresse de réponse et codes de refus (E1
 
   const prisma = {
     domain,
+    apiKey,
+    smtpCredential,
     suppression,
     creditEntry,
     email,
@@ -1000,6 +1255,15 @@ describe('EmailsService - expéditeur, adresse de réponse et codes de refus (E1
     configValues = { SYSTEM_EMAIL_FROM: 'Zendou <no-reply@mail.kingreys.fr>' };
 
     givenVerifiedDomains('boutique-awa.gn');
+    // Portée par domaine (B27) : ALL par défaut, ces scénarios n'y touchent pas.
+    apiKey.findUnique.mockResolvedValue({
+      domainScope: CredentialDomainScope.ALL,
+      domains: [],
+    });
+    smtpCredential.findUnique.mockResolvedValue({
+      domainScope: CredentialDomainScope.ALL,
+      domains: [],
+    });
     suppression.findFirst.mockResolvedValue(null);
     creditEntry.aggregate.mockResolvedValue({ _sum: { delta: 10 } });
     creditEntry.create.mockResolvedValue({ id: 'credit_1' });

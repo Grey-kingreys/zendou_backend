@@ -4,9 +4,11 @@ import {
   HttpCode,
   HttpStatus,
   Post,
+  Req,
   UseGuards,
 } from '@nestjs/common';
 import { ApiKeyAuthGuard } from '../api-keys';
+import type { ApiKeyAuthenticatedRequest } from '../api-keys';
 import { CurrentUser, EmailVerifiedGuard } from '../auth';
 import type { AuthUser } from '../auth';
 import { RATE_LIMIT_POLICY } from '../rate-limit/rate-limit.constants';
@@ -42,7 +44,10 @@ export class EmailsController {
   send(
     @CurrentUser() user: AuthUser,
     @Body() dto: SendEmailDto,
+    @Req() request: ApiKeyAuthenticatedRequest,
   ): Promise<SendEmailResponse> {
-    return this.emailsService.send(user.id, dto);
+    // La clé API voyage jusqu'au point d'acceptation pour sa portée par
+    // domaine (B27) : sans elle, la portée ne serait jamais contrôlée.
+    return this.emailsService.send(user.id, dto, request.apiKeyId);
   }
 }

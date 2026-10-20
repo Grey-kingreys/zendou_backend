@@ -137,6 +137,16 @@ model User {
   @@index([lastActivityAt])
 }
 
+/// Portée d'une clé API ou d'un identifiant SMTP (B27) : `ALL` = tous les
+/// domaines du compte (comportement historique), `SELECTED` = seulement les
+/// domaines liés par la table de jointure. La portée est portée par cette
+/// colonne et NON déduite de la jointure : une portée `SELECTED` sans aucune
+/// ligne refuse tout, elle ne devient jamais universelle.
+enum CredentialDomainScope {
+  ALL
+  SELECTED
+}
+
 model ApiKey {
   id         String    @id @default(cuid())
   userId     String
@@ -149,7 +159,26 @@ model ApiKey {
   rotatedAt  DateTime?
   createdAt  DateTime  @default(now())
 
+  /// Portée par domaine (B27), immuable après création.
+  domainScope CredentialDomainScope @default(ALL)
+  domains     ApiKeyDomain[]
+
   @@index([userId])
+}
+
+/// Lien clé API <-> domaine pour une portée `SELECTED` (B27). Supprimer la
+/// clé emporte ses liens (Cascade) ; supprimer un domaine encore lié est
+/// REFUSÉ par la base (Restrict) : la suppression applicative retire les
+/// liens et révoque les clés orphelines avant, aucun chemin ne peut donc
+/// retirer silencieusement un domaine d'une portée.
+model ApiKeyDomain {
+  apiKeyId String
+  apiKey   ApiKey @relation(fields: [apiKeyId], references: [id], onDelete: Cascade)
+  domainId String
+  domain   Domain @relation(fields: [domainId], references: [id], onDelete: Restrict)
+
+  @@id([apiKeyId, domainId])
+  @@index([domainId])
 }
 
 /// Identifiants d'authentification du relais SMTP (B6), distincts des
@@ -181,9 +210,25 @@ model SmtpCredential {
   rotatedAt  DateTime?
   createdAt  DateTime  @default(now())
 
+  /// Portée par domaine (B27), immuable après création.
+  domainScope CredentialDomainScope @default(ALL)
+  domains     SmtpCredentialDomain[]
+
   emails Email[]
 
   @@index([userId])
+}
+
+/// Lien identifiant SMTP <-> domaine pour une portée `SELECTED` (B27). Mêmes
+/// `onDelete` que `ApiKeyDomain`, pour les mêmes raisons.
+model SmtpCredentialDomain {
+  smtpCredentialId String
+  smtpCredential   SmtpCredential @relation(fields: [smtpCredentialId], references: [id], onDelete: Cascade)
+  domainId         String
+  domain           Domain         @relation(fields: [domainId], references: [id], onDelete: Restrict)
+
+  @@id([smtpCredentialId, domainId])
+  @@index([domainId])
 }
 
 model Domain {
@@ -198,6 +243,10 @@ model Domain {
   /// TEMPORARY_FAILURE), `null` tant que le MAIL FROM n'a pas été lu.
   mailFromStatus String?
   createdAt  DateTime     @default(now())
+
+  /// Clés API et identifiants SMTP dont la portée inclut ce domaine (B27).
+  apiKeyLinks         ApiKeyDomain[]
+  smtpCredentialLinks SmtpCredentialDomain[]
 
   @@index([userId])
 }

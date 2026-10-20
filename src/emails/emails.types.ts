@@ -122,6 +122,8 @@ export interface AcceptEmailInput {
   channel: SendChannel;
   /** Identifiant SMTP utilisé, quand l'envoi vient du relais (B6/S4). */
   smtpCredentialId?: string;
+  /** Clé API utilisée, quand l'envoi vient de l'API (B27, portée par domaine). */
+  apiKeyId?: string;
 }
 
 /**

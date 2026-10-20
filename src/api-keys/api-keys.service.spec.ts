@@ -1,7 +1,15 @@
 import { createHash, createHmac } from 'crypto';
 import { Test, TestingModule } from '@nestjs/testing';
-import { ConflictException, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  NotFoundException,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import {
+  CREDENTIAL_DOMAINS_DUPLICATE_MESSAGE,
+  CREDENTIAL_DOMAINS_INVALID_MESSAGE,
+} from '../domains/credential-scope';
 import { PrismaService } from '../prisma/prisma.service';
 import {
   API_KEY_NOT_FOUND_MESSAGE,
@@ -12,7 +20,14 @@ import { ApiKeysService } from './api-keys.service';
 import { SecretHashingService } from './secret-hashing.service';
 
 interface CreateArgs {
-  data: { userId: string; name: string; prefix: string; keyHash: string };
+  data: {
+    userId: string;
+    name: string;
+    prefix: string;
+    keyHash: string;
+    domainScope: 'ALL' | 'SELECTED';
+    domains: { create: { domainId: string }[] };
+  };
 }
 
 interface FindManyArgs {
@@ -42,6 +57,8 @@ const listedKey = {
   createdAt: new Date('2026-01-01T00:00:00.000Z'),
   lastUsedAt: null,
   revokedAt: null,
+  domainScope: 'ALL' as 'ALL' | 'SELECTED',
+  domains: [] as { domain: { id: string; name: string } }[],
 };
 
 describe('ApiKeysService', () => {
@@ -55,6 +72,7 @@ describe('ApiKeysService', () => {
   // demande à la base la ligne { id, userId }. Le double suit donc la même
   // méthode que le code de production.
   const findFirst = jest.fn();
+  const domainCount = jest.fn();
   const findMany = jest.fn((args: FindManyArgs) => {
     capturedFindManyArgs = args;
     return Promise.resolve([listedKey]);
@@ -70,6 +88,10 @@ describe('ApiKeysService', () => {
       name: args.data.name,
       prefix: args.data.prefix,
       createdAt: new Date('2026-01-01T00:00:00.000Z'),
+      domainScope: args.data.domainScope,
+      domains: args.data.domains.create.map((link) => ({
+        domain: { id: link.domainId, name: `${link.domainId}.gn` },
+      })),
     });
   });
   const deleteFn = jest.fn((args: DeleteArgs) => {
@@ -83,6 +105,7 @@ describe('ApiKeysService', () => {
     capturedFindManyArgs = undefined;
     capturedUpdateArgs = undefined;
     capturedDeleteArgs = undefined;
+    domainCount.mockResolvedValue(0);
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -95,6 +118,7 @@ describe('ApiKeysService', () => {
           provide: PrismaService,
           useValue: {
             apiKey: { findFirst, findMany, update, create, delete: deleteFn },
+            domain: { count: domainCount },
           },
         },
       ],
@@ -126,6 +150,86 @@ describe('ApiKeysService', () => {
         prefix: stored.prefix,
         key: result.key,
         createdAt: new Date('2026-01-01T00:00:00.000Z'),
+        domainScope: 'ALL',
+        domains: [],
+      });
+    });
+
+    describe('portée par domaine (B27)', () => {
+      it('crée une clé ALL, sans lien ni lecture de domaine, quand domainIds est absent', async () => {
+        const result = await service.create('user_1', { name: 'Prod' });
+
+        expect(capturedCreateArgs!.data.domainScope).toBe('ALL');
+        expect(capturedCreateArgs!.data.domains).toEqual({ create: [] });
+        expect(domainCount).not.toHaveBeenCalled();
+        expect(result.domainScope).toBe('ALL');
+        expect(result.domains).toEqual([]);
+      });
+
+      it('traite une liste vide comme ALL', async () => {
+        await service.create('user_1', { name: 'Prod', domainIds: [] });
+
+        expect(capturedCreateArgs!.data.domainScope).toBe('ALL');
+        expect(capturedCreateArgs!.data.domains).toEqual({ create: [] });
+      });
+
+      it('crée une clé SELECTED liée aux domaines vérifiés du compte', async () => {
+        domainCount.mockResolvedValue(2);
+
+        const result = await service.create('user_1', {
+          name: 'Prod',
+          domainIds: ['dom_a', 'dom_b'],
+        });
+
+        // Seuls les domaines du compte ET vérifiés comptent.
+        expect(domainCount).toHaveBeenCalledWith({
+          where: {
+            id: { in: ['dom_a', 'dom_b'] },
+            userId: 'user_1',
+            status: 'VERIFIED',
+          },
+        });
+        expect(capturedCreateArgs!.data.domainScope).toBe('SELECTED');
+        expect(capturedCreateArgs!.data.domains).toEqual({
+          create: [{ domainId: 'dom_a' }, { domainId: 'dom_b' }],
+        });
+        expect(result.domainScope).toBe('SELECTED');
+        expect(result.domains).toEqual([
+          { id: 'dom_a', name: 'dom_a.gn' },
+          { id: 'dom_b', name: 'dom_b.gn' },
+        ]);
+      });
+
+      it("refuse en 400 un domaine d'un autre compte, inexistant ou non vérifié", async () => {
+        // La base ne rend que 1 des 2 domaines : l'autre n'appartient pas au
+        // compte, n'existe pas ou n'est pas vérifié.
+        domainCount.mockResolvedValue(1);
+
+        await expect(
+          service.create('user_1', {
+            name: 'Prod',
+            domainIds: ['dom_a', 'dom_autre'],
+          }),
+        ).rejects.toMatchObject(
+          new BadRequestException(CREDENTIAL_DOMAINS_INVALID_MESSAGE),
+        );
+
+        expect(create).not.toHaveBeenCalled();
+      });
+
+      it('refuse en 400 un domaine sélectionné deux fois', async () => {
+        domainCount.mockResolvedValue(1);
+
+        await expect(
+          service.create('user_1', {
+            name: 'Prod',
+            domainIds: ['dom_a', 'dom_a'],
+          }),
+        ).rejects.toMatchObject(
+          new BadRequestException(CREDENTIAL_DOMAINS_DUPLICATE_MESSAGE),
+        );
+
+        expect(create).not.toHaveBeenCalled();
       });
     });
   });
@@ -138,6 +242,21 @@ describe('ApiKeysService', () => {
       expect(capturedFindManyArgs!.where).toEqual({ userId: 'user_1' });
       expect(capturedFindManyArgs!.select).not.toHaveProperty('keyHash');
       expect(result).toEqual([listedKey]);
+    });
+
+    it('expose la portée et les domaines liés (id + nom)', async () => {
+      findMany.mockResolvedValueOnce([
+        {
+          ...listedKey,
+          domainScope: 'SELECTED',
+          domains: [{ domain: { id: 'dom_a', name: 'a.gn' } }],
+        },
+      ]);
+
+      const result = await service.findAllForUser('user_1');
+
+      expect(result[0].domainScope).toBe('SELECTED');
+      expect(result[0].domains).toEqual([{ id: 'dom_a', name: 'a.gn' }]);
     });
   });
 
@@ -309,6 +428,13 @@ describe('ApiKeysService', () => {
       expect(capturedUpdateArgs!.data.keyHash).toBeDefined();
       expect(capturedUpdateArgs!.data.rotatedAt).toBeInstanceOf(Date);
 
+      // La portée par domaine est immuable (B27) : la rotation n'y touche pas.
+      expect(Object.keys(capturedUpdateArgs!.data).sort()).toEqual([
+        'keyHash',
+        'prefix',
+        'rotatedAt',
+      ]);
+
       // Identité, nom et date de création inchangés.
       expect(result.id).toBe('key_1');
       expect(result.name).toBe('Prod');
@@ -340,6 +466,8 @@ describe('ApiKeysService - empreinte poivrée persistée (E3)', () => {
         name: 'Prod',
         prefix: args.data.prefix,
         createdAt: new Date('2026-01-01T00:00:00.000Z'),
+        domainScope: 'ALL',
+        domains: [],
       });
     },
   );
