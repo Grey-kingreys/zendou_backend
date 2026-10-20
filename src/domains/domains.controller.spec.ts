@@ -26,6 +26,7 @@ describe('DomainsController', () => {
     check: jest.fn(),
     dnsCheck: jest.fn(),
     remove: jest.fn(),
+    usage: jest.fn(),
   };
 
   beforeEach(async () => {
@@ -57,8 +58,10 @@ describe('DomainsController', () => {
     await controller.findOne(user, 'dom_1');
     await controller.check(user, 'dom_1');
     await controller.dnsCheck(user, 'dom_1');
+    await controller.usage(user, 'dom_1');
     await controller.remove(user, 'dom_1');
 
+    expect(domainsService.usage).toHaveBeenCalledWith('user_1', 'dom_1');
     expect(domainsService.create).toHaveBeenCalledWith(
       'user_1',
       'boutique-awa.gn',

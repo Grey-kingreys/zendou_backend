@@ -20,7 +20,9 @@ import { checkDomainDns, type DomainDnsCheckResult } from './dns-check';
 import type {
   DomainCheckResult,
   DomainDetail,
+  DomainRemoveResult,
   DomainSummary,
+  DomainUsage,
 } from './domains.types';
 import { buildDkimRecords, buildRecommendedRecords } from './dns-records';
 import {
@@ -173,12 +175,130 @@ export class DomainsService {
     );
   }
 
-  /** Supprime l'identité SES puis le domaine. */
-  async remove(userId: string, id: string): Promise<void> {
+  /**
+   * Aperçu d'impact d'une suppression (B27) : les clés API et identifiants
+   * SMTP actifs liés à ce domaine, avec `willBeRevoked` quand c'est leur
+   * dernier. Lecture pure ; 404 si le domaine n'est pas au compte.
+   */
+  async usage(userId: string, id: string): Promise<DomainUsage> {
+    const domain = await this.requireOwnedDomain(userId, id);
+
+    return this.readUsage(this.prisma, domain.id);
+  }
+
+  /**
+   * Supprime l'identité SES puis le domaine. Dans la MÊME transaction que la
+   * suppression : les liens de portée du domaine sont retirés, et toute clé ou
+   * tout identifiant qui perd ainsi son DERNIER domaine est révoqué - jamais
+   * élargi à tous les domaines (B27). Ceux qui gardent d'autres domaines les
+   * conservent. Rend ce qui a été révoqué.
+   */
+  async remove(userId: string, id: string): Promise<DomainRemoveResult> {
     const domain = await this.requireOwnedDomain(userId, id);
 
     await this.sesDriver.deleteIdentity(domain.name);
-    await this.prisma.domain.delete({ where: { id: domain.id } });
+
+    return this.prisma.$transaction(async (tx) => {
+      const usage = await this.readUsage(tx, domain.id);
+      const revokedApiKeys = usage.apiKeys
+        .filter((apiKey) => apiKey.willBeRevoked)
+        .map(({ id: keyId, name, prefix }) => ({ id: keyId, name, prefix }));
+      const revokedSmtpCredentials = usage.smtpCredentials
+        .filter((credential) => credential.willBeRevoked)
+        .map(({ id: credentialId, name, username, prefix }) => ({
+          id: credentialId,
+          name,
+          username,
+          prefix,
+        }));
+      const revokedAt = new Date();
+
+      if (revokedApiKeys.length > 0) {
+        await tx.apiKey.updateMany({
+          where: { id: { in: revokedApiKeys.map((apiKey) => apiKey.id) } },
+          data: { revokedAt },
+        });
+      }
+
+      if (revokedSmtpCredentials.length > 0) {
+        await tx.smtpCredential.updateMany({
+          where: {
+            id: {
+              in: revokedSmtpCredentials.map((credential) => credential.id),
+            },
+          },
+          data: { revokedAt },
+        });
+      }
+
+      // Tous les liens du domaine, y compris ceux des clés déjà révoquées : la
+      // clé étrangère vers `Domain` est en `Restrict`.
+      await tx.apiKeyDomain.deleteMany({ where: { domainId: domain.id } });
+      await tx.smtpCredentialDomain.deleteMany({
+        where: { domainId: domain.id },
+      });
+      await tx.domain.delete({ where: { id: domain.id } });
+
+      return { revokedApiKeys, revokedSmtpCredentials };
+    });
+  }
+
+  /**
+   * Clés API et identifiants SMTP actifs liés à un domaine. `_count.domains`
+   * vaut 1 quand ce domaine est le seul de la portée : c'est ce qui fait
+   * dire `willBeRevoked`.
+   */
+  private async readUsage(
+    client: PrismaService | Prisma.TransactionClient,
+    domainId: string,
+  ): Promise<DomainUsage> {
+    const [apiKeyLinks, credentialLinks] = await Promise.all([
+      client.apiKeyDomain.findMany({
+        where: { domainId, apiKey: { revokedAt: null } },
+        select: {
+          apiKey: {
+            select: {
+              id: true,
+              name: true,
+              prefix: true,
+              _count: { select: { domains: true } },
+            },
+          },
+        },
+        orderBy: { apiKey: { name: 'asc' } },
+      }),
+      client.smtpCredentialDomain.findMany({
+        where: { domainId, smtpCredential: { revokedAt: null } },
+        select: {
+          smtpCredential: {
+            select: {
+              id: true,
+              name: true,
+              username: true,
+              prefix: true,
+              _count: { select: { domains: true } },
+            },
+          },
+        },
+        orderBy: { smtpCredential: { name: 'asc' } },
+      }),
+    ]);
+
+    return {
+      apiKeys: apiKeyLinks.map(({ apiKey }) => ({
+        id: apiKey.id,
+        name: apiKey.name,
+        prefix: apiKey.prefix,
+        willBeRevoked: apiKey._count.domains === 1,
+      })),
+      smtpCredentials: credentialLinks.map(({ smtpCredential }) => ({
+        id: smtpCredential.id,
+        name: smtpCredential.name,
+        username: smtpCredential.username,
+        prefix: smtpCredential.prefix,
+        willBeRevoked: smtpCredential._count.domains === 1,
+      })),
+    };
   }
 
   /**

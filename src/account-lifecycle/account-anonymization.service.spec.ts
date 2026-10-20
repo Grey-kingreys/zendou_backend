@@ -258,6 +258,26 @@ describe('AccountAnonymizationService', () => {
       expect(rowsOf('email', 'u1')).toEqual([]);
     });
 
+    it('supprime clés et identifiants SMTP avant les domaines (liens de portée en Restrict vers Domain, B27)', async () => {
+      // Une clé ou un identifiant à portée sélectionnée porte des liens vers
+      // `Domain` (clé étrangère `Restrict`) qui partent en cascade avec lui :
+      // supprimer le domaine en premier échouerait en base. L'anonymisation
+      // supprime tout le compte, donc aucune portée ne peut rester ouverte.
+      const order: string[] = [];
+
+      for (const table of ['apiKey', 'smtpCredential', 'domain'] as const) {
+        const original = db[table].deleteMany;
+        db[table].deleteMany = (args) => {
+          order.push(table);
+          return original(args);
+        };
+      }
+
+      await service.anonymize('u1', admin);
+
+      expect(order).toEqual(['apiKey', 'smtpCredential', 'domain']);
+    });
+
     it('conserve à l’identique les mouvements de crédits', async () => {
       const before = db.snapshot();
 

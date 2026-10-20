@@ -60,6 +60,16 @@ describe('E7 - domaines, cloisonnement entre comptes', () => {
     return Promise.resolve({});
   });
   const deleteIdentity = jest.fn(() => Promise.resolve());
+  // Liens de portée (B27) : aucun ici, la suppression ne révoque rien.
+  const apiKeyDomain = {
+    findMany: jest.fn(() => Promise.resolve([])),
+    deleteMany: jest.fn(() => Promise.resolve({ count: 0 })),
+  };
+  const smtpCredentialDomain = {
+    findMany: jest.fn(() => Promise.resolve([])),
+    deleteMany: jest.fn(() => Promise.resolve({ count: 0 })),
+  };
+  const prismaDouble: Record<string, unknown> = {};
 
   const domainFindFirst = jest.fn(
     ({
@@ -104,7 +114,13 @@ describe('E7 - domaines, cloisonnement entre comptes', () => {
         },
         {
           provide: PrismaService,
-          useValue: {
+          useValue: Object.assign(prismaDouble, {
+            $transaction: (run: (tx: unknown) => Promise<unknown>) =>
+              run(prismaDouble),
+            apiKeyDomain,
+            smtpCredentialDomain,
+            apiKey: { updateMany: jest.fn() },
+            smtpCredential: { updateMany: jest.fn() },
             user: {
               findUnique: jest.fn(({ where }: { where: { id: string } }) =>
                 Promise.resolve(
@@ -118,7 +134,7 @@ describe('E7 - domaines, cloisonnement entre comptes', () => {
               update,
               delete: deleteFn,
             },
-          },
+          }),
         },
         {
           provide: SES_IDENTITY_DRIVER,
@@ -196,11 +212,48 @@ describe('E7 - domaines, cloisonnement entre comptes', () => {
     });
   });
 
+  describe("GET /v1/domains/:id/usage (aperçu d'impact, B27)", () => {
+    const getUsage = (id: string, token?: string) =>
+      withCookie(
+        request(app.getHttpServer()).get(`/v1/domains/${id}/usage`),
+        token,
+      );
+
+    it("rend l'aperçu au propriétaire", async () => {
+      const response = await getUsage('dom_a', 'token-a');
+
+      expect(response.status).toBe(200);
+      expect(response.body).toEqual({ apiKeys: [], smtpCredentials: [] });
+    });
+
+    it('rend 401 sans cookie de session', async () => {
+      const response = await getUsage('dom_a');
+
+      expect(response.status).toBe(401);
+      expect(apiKeyDomain.findMany).not.toHaveBeenCalled();
+    });
+
+    it("rend à un autre compte exactement le 404 d'un identifiant inexistant, sans rien lire", async () => {
+      const foreign = await getUsage('dom_a', 'token-b');
+      const missing = await getUsage('dom_inexistant', 'token-a');
+
+      expect(foreign.status).toBe(404);
+      expect(missing.status).toBe(404);
+      expect(foreign.body).toEqual(missing.body);
+      expect(apiKeyDomain.findMany).not.toHaveBeenCalled();
+      expect(smtpCredentialDomain.findMany).not.toHaveBeenCalled();
+    });
+  });
+
   describe('DELETE /v1/domains/:id', () => {
-    it('supprime le domaine de son propriétaire', async () => {
+    it('supprime le domaine de son propriétaire et rend ce qui a été révoqué', async () => {
       const response = await deleteDomain('dom_a', 'token-a');
 
-      expect(response.status).toBe(204);
+      expect(response.status).toBe(200);
+      expect(response.body).toEqual({
+        revokedApiKeys: [],
+        revokedSmtpCredentials: [],
+      });
       expect(deleteFn).toHaveBeenCalledWith({ where: { id: 'dom_a' } });
     });
 

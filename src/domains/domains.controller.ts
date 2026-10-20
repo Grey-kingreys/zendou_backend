@@ -18,7 +18,9 @@ import { DomainsService } from './domains.service';
 import type {
   DomainCheckResult,
   DomainDetail,
+  DomainRemoveResult,
   DomainSummary,
+  DomainUsage,
 } from './domains.types';
 import { CreateDomainDto } from './dto/create-domain.dto';
 
@@ -76,12 +78,25 @@ export class DomainsController {
     return this.domainsService.dnsCheck(user.id, id);
   }
 
+  // Aperçu d'impact avant suppression (B27) : clés API et identifiants SMTP
+  // actifs liés au domaine. Lecture seule, session et propriétaire seulement.
+  @Get(':id/usage')
+  @HttpCode(HttpStatus.OK)
+  usage(
+    @CurrentUser() user: AuthUser,
+    @Param('id') id: string,
+  ): Promise<DomainUsage> {
+    return this.domainsService.usage(user.id, id);
+  }
+
+  // Rend la liste de ce que la suppression a révoqué (B27), d'où le 200 et
+  // non plus un 204.
   @Delete(':id')
-  @HttpCode(HttpStatus.NO_CONTENT)
+  @HttpCode(HttpStatus.OK)
   remove(
     @CurrentUser() user: AuthUser,
     @Param('id') id: string,
-  ): Promise<void> {
+  ): Promise<DomainRemoveResult> {
     return this.domainsService.remove(user.id, id);
   }
 }

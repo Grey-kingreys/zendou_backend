@@ -67,6 +67,13 @@ describe('DomainsService', () => {
     update: jest.fn(),
     delete: jest.fn(),
   };
+  // Liens de portée (B27), lus puis retirés dans la transaction de suppression.
+  const apiKeyDomain = { findMany: jest.fn(), deleteMany: jest.fn() };
+  const smtpCredentialDomain = { findMany: jest.fn(), deleteMany: jest.fn() };
+  const apiKey = { updateMany: jest.fn() };
+  const smtpCredential = { updateMany: jest.fn() };
+  const callOrder: string[] = [];
+  const prismaDouble: Record<string, unknown> = {};
   const sesDriver = {
     createIdentity: jest.fn(),
     getIdentityStatus: jest.fn(),
@@ -100,10 +107,28 @@ describe('DomainsService', () => {
       });
     });
 
+    apiKeyDomain.findMany.mockResolvedValue([]);
+    smtpCredentialDomain.findMany.mockResolvedValue([]);
+    apiKey.updateMany.mockResolvedValue({ count: 0 });
+    smtpCredential.updateMany.mockResolvedValue({ count: 0 });
+    apiKeyDomain.deleteMany.mockResolvedValue({ count: 0 });
+    smtpCredentialDomain.deleteMany.mockResolvedValue({ count: 0 });
+    domain.delete.mockResolvedValue(storedDomain());
+    Object.assign(prismaDouble, {
+      domain,
+      apiKey,
+      smtpCredential,
+      apiKeyDomain,
+      smtpCredentialDomain,
+      $transaction: jest.fn((run: (tx: unknown) => Promise<unknown>) =>
+        run(prismaDouble),
+      ),
+    });
+
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         DomainsService,
-        { provide: PrismaService, useValue: { domain } },
+        { provide: PrismaService, useValue: prismaDouble },
         { provide: SES_IDENTITY_DRIVER, useValue: sesDriver },
         {
           provide: ConfigService,
@@ -407,15 +432,249 @@ describe('DomainsService', () => {
     });
   });
 
+  describe("usage (aperçu d'impact, B27)", () => {
+    it('liste les clés et identifiants actifs liés, avec willBeRevoked pour le dernier domaine', async () => {
+      domain.findFirst.mockResolvedValue(storedDomain());
+      apiKeyDomain.findMany.mockResolvedValue([
+        {
+          apiKey: {
+            id: 'key_1',
+            name: 'Vitrine',
+            prefix: 'zd_live_aaaa',
+            _count: { domains: 1 },
+          },
+        },
+        {
+          apiKey: {
+            id: 'key_2',
+            name: 'Multi',
+            prefix: 'zd_live_bbbb',
+            _count: { domains: 2 },
+          },
+        },
+      ]);
+      smtpCredentialDomain.findMany.mockResolvedValue([
+        {
+          smtpCredential: {
+            id: 'smtp_1',
+            name: 'WordPress',
+            username: 'zdu_aaaa',
+            prefix: 'zd_smtp_aaaa',
+            _count: { domains: 1 },
+          },
+        },
+      ]);
+
+      await expect(service.usage('user_1', 'dom_1')).resolves.toEqual({
+        apiKeys: [
+          {
+            id: 'key_1',
+            name: 'Vitrine',
+            prefix: 'zd_live_aaaa',
+            willBeRevoked: true,
+          },
+          {
+            id: 'key_2',
+            name: 'Multi',
+            prefix: 'zd_live_bbbb',
+            willBeRevoked: false,
+          },
+        ],
+        smtpCredentials: [
+          {
+            id: 'smtp_1',
+            name: 'WordPress',
+            username: 'zdu_aaaa',
+            prefix: 'zd_smtp_aaaa',
+            willBeRevoked: true,
+          },
+        ],
+      });
+
+      // Seuls les liens ACTIFS de CE domaine comptent.
+      expect(apiKeyDomain.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { domainId: 'dom_1', apiKey: { revokedAt: null } },
+        }),
+      );
+      expect(smtpCredentialDomain.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { domainId: 'dom_1', smtpCredential: { revokedAt: null } },
+        }),
+      );
+      // Lecture pure.
+      expect(sesDriver.deleteIdentity).not.toHaveBeenCalled();
+      expect(domain.delete).not.toHaveBeenCalled();
+    });
+
+    it("rend un 404 pour le domaine d'un autre compte, sans lire de lien", async () => {
+      domain.findFirst.mockResolvedValue(null);
+
+      await expect(service.usage('user_2', 'dom_1')).rejects.toMatchObject(
+        new NotFoundException(DOMAIN_NOT_FOUND_MESSAGE),
+      );
+
+      expect(apiKeyDomain.findMany).not.toHaveBeenCalled();
+    });
+  });
+
   describe('remove', () => {
     it('deletes the SES identity then the row', async () => {
       domain.findFirst.mockResolvedValue(storedDomain());
       domain.delete.mockResolvedValue(storedDomain());
 
-      await service.remove('user_1', 'dom_1');
+      const result = await service.remove('user_1', 'dom_1');
 
       expect(sesDriver.deleteIdentity).toHaveBeenCalledWith('boutique-awa.gn');
       expect(domain.delete).toHaveBeenCalledWith({ where: { id: 'dom_1' } });
+      expect(result).toEqual({
+        revokedApiKeys: [],
+        revokedSmtpCredentials: [],
+      });
+      // Rien à révoquer : aucune écriture sur les clés.
+      expect(apiKey.updateMany).not.toHaveBeenCalled();
+      expect(smtpCredential.updateMany).not.toHaveBeenCalled();
+    });
+
+    describe('portée des clés et identifiants (B27)', () => {
+      beforeEach(() => {
+        domain.findFirst.mockResolvedValue(storedDomain());
+        apiKeyDomain.findMany.mockResolvedValue([
+          {
+            apiKey: {
+              id: 'key_seule',
+              name: 'Vitrine',
+              prefix: 'zd_live_aaaa',
+              _count: { domains: 1 },
+            },
+          },
+          {
+            apiKey: {
+              id: 'key_multi',
+              name: 'Multi',
+              prefix: 'zd_live_bbbb',
+              _count: { domains: 2 },
+            },
+          },
+        ]);
+        smtpCredentialDomain.findMany.mockResolvedValue([
+          {
+            smtpCredential: {
+              id: 'smtp_seul',
+              name: 'WordPress',
+              username: 'zdu_aaaa',
+              prefix: 'zd_smtp_aaaa',
+              _count: { domains: 1 },
+            },
+          },
+          {
+            smtpCredential: {
+              id: 'smtp_multi',
+              name: 'ERP',
+              username: 'zdu_bbbb',
+              prefix: 'zd_smtp_bbbb',
+              _count: { domains: 3 },
+            },
+          },
+        ]);
+      });
+
+      it('révoque seulement ceux qui perdent leur DERNIER domaine, et le dit', async () => {
+        const result = await service.remove('user_1', 'dom_1');
+
+        expect(apiKey.updateMany).toHaveBeenCalledTimes(1);
+        expect(apiKey.updateMany).toHaveBeenCalledWith({
+          where: { id: { in: ['key_seule'] } },
+          data: { revokedAt: expect.any(Date) as Date },
+        });
+        expect(smtpCredential.updateMany).toHaveBeenCalledTimes(1);
+        expect(smtpCredential.updateMany).toHaveBeenCalledWith({
+          where: { id: { in: ['smtp_seul'] } },
+          data: { revokedAt: expect.any(Date) as Date },
+        });
+        expect(result).toEqual({
+          revokedApiKeys: [
+            { id: 'key_seule', name: 'Vitrine', prefix: 'zd_live_aaaa' },
+          ],
+          revokedSmtpCredentials: [
+            {
+              id: 'smtp_seul',
+              name: 'WordPress',
+              username: 'zdu_aaaa',
+              prefix: 'zd_smtp_aaaa',
+            },
+          ],
+        });
+      });
+
+      it('retire les liens du domaine avant de le supprimer, dans la même transaction', async () => {
+        callOrder.length = 0;
+        apiKey.updateMany.mockImplementation(() => {
+          callOrder.push('revokeApiKeys');
+          return Promise.resolve({ count: 1 });
+        });
+        smtpCredential.updateMany.mockImplementation(() => {
+          callOrder.push('revokeSmtp');
+          return Promise.resolve({ count: 1 });
+        });
+        apiKeyDomain.deleteMany.mockImplementation(() => {
+          callOrder.push('unlinkApiKeys');
+          return Promise.resolve({ count: 2 });
+        });
+        smtpCredentialDomain.deleteMany.mockImplementation(() => {
+          callOrder.push('unlinkSmtp');
+          return Promise.resolve({ count: 2 });
+        });
+        domain.delete.mockImplementation(() => {
+          callOrder.push('deleteDomain');
+          return Promise.resolve(storedDomain());
+        });
+
+        await service.remove('user_1', 'dom_1');
+
+        expect(prismaDouble.$transaction).toHaveBeenCalledTimes(1);
+        expect(apiKeyDomain.deleteMany).toHaveBeenCalledWith({
+          where: { domainId: 'dom_1' },
+        });
+        expect(smtpCredentialDomain.deleteMany).toHaveBeenCalledWith({
+          where: { domainId: 'dom_1' },
+        });
+        expect(callOrder.indexOf('deleteDomain')).toBe(callOrder.length - 1);
+        expect(callOrder).toEqual(
+          expect.arrayContaining([
+            'revokeApiKeys',
+            'revokeSmtp',
+            'unlinkApiKeys',
+            'unlinkSmtp',
+            'deleteDomain',
+          ]),
+        );
+      });
+
+      it("n'élargit jamais : aucune écriture ne touche à domainScope", async () => {
+        await service.remove('user_1', 'dom_1');
+
+        const calls = [
+          ...(apiKey.updateMany.mock.calls as unknown[]),
+          ...(smtpCredential.updateMany.mock.calls as unknown[]),
+        ] as [{ data: Record<string, unknown> }][];
+
+        for (const call of calls) {
+          expect(Object.keys(call[0].data)).toEqual(['revokedAt']);
+        }
+      });
+
+      it('ne supprime rien (ni lien ni domaine) quand SES échoue, et ne révoque rien', async () => {
+        sesDriver.deleteIdentity.mockRejectedValueOnce(new Error('SES down'));
+
+        await expect(service.remove('user_1', 'dom_1')).rejects.toThrow(
+          'SES down',
+        );
+
+        expect(apiKey.updateMany).not.toHaveBeenCalled();
+        expect(apiKeyDomain.deleteMany).not.toHaveBeenCalled();
+        expect(domain.delete).not.toHaveBeenCalled();
+      });
     });
 
     it("returns a 404 for another user's domain and deletes nothing", async () => {
