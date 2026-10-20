@@ -58,6 +58,12 @@ export interface DomainRemoveResult {
     username: string;
     prefix: string;
   }[];
+  /**
+   * Gestes manuels restants, comme pour l'anonymisation : vide en temps normal,
+   * non vide si l'identité SES n'a pas pu être détruite (le domaine, lui, est
+   * bien supprimé).
+   */
+  remainingActions: string[];
 }
 
 /** Résultat d'une interrogation du statut de vérification. */

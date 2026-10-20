@@ -2,6 +2,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import {
   BadRequestException,
   ConflictException,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -123,6 +124,10 @@ describe('DomainsService', () => {
       $transaction: jest.fn((run: (tx: unknown) => Promise<unknown>) =>
         run(prismaDouble),
       ),
+      $queryRaw: jest.fn(() => {
+        callOrder.push('lock');
+        return Promise.resolve([]);
+      }),
     });
 
     const module: TestingModule = await Test.createTestingModule({
@@ -519,17 +524,29 @@ describe('DomainsService', () => {
   });
 
   describe('remove', () => {
-    it('deletes the SES identity then the row', async () => {
+    it('deletes the row, then the SES identity (after the commit)', async () => {
       domain.findFirst.mockResolvedValue(storedDomain());
-      domain.delete.mockResolvedValue(storedDomain());
+      callOrder.length = 0;
+      domain.delete.mockImplementation(() => {
+        callOrder.push('deleteDomain');
+        return Promise.resolve(storedDomain());
+      });
+      sesDriver.deleteIdentity.mockImplementation(() => {
+        callOrder.push('ses');
+        return Promise.resolve();
+      });
 
       const result = await service.remove('user_1', 'dom_1');
 
       expect(sesDriver.deleteIdentity).toHaveBeenCalledWith('boutique-awa.gn');
       expect(domain.delete).toHaveBeenCalledWith({ where: { id: 'dom_1' } });
+      expect(callOrder.indexOf('ses')).toBeGreaterThan(
+        callOrder.indexOf('deleteDomain'),
+      );
       expect(result).toEqual({
         revokedApiKeys: [],
         revokedSmtpCredentials: [],
+        remainingActions: [],
       });
       // Rien à révoquer : aucune écriture sur les clés.
       expect(apiKey.updateMany).not.toHaveBeenCalled();
@@ -593,6 +610,7 @@ describe('DomainsService', () => {
           data: { revokedAt: expect.any(Date) as Date },
         });
         expect(result).toEqual({
+          remainingActions: [],
           revokedApiKeys: [
             { id: 'key_seule', name: 'Vitrine', prefix: 'zd_live_aaaa' },
           ],
@@ -664,16 +682,55 @@ describe('DomainsService', () => {
         }
       });
 
-      it('ne supprime rien (ni lien ni domaine) quand SES échoue, et ne révoque rien', async () => {
+      it('verrouille les clés et identifiants liés AVANT de compter leurs liens (course entre deux suppressions)', async () => {
+        callOrder.length = 0;
+        apiKeyDomain.findMany.mockImplementation(() => {
+          callOrder.push('readLinks');
+          return Promise.resolve([]);
+        });
+
+        await service.remove('user_1', 'dom_1');
+
+        // Deux verrous (clés puis identifiants), puis seulement la lecture.
+        expect(callOrder.filter((step) => step === 'lock')).toHaveLength(2);
+        expect(callOrder.lastIndexOf('lock')).toBeLessThan(
+          callOrder.indexOf('readLinks'),
+        );
+        const sql = (prismaDouble.$queryRaw as jest.Mock).mock.calls
+          .map((call: unknown[]) => (call[0] as string[]).join('?'))
+          .join('\n');
+        expect(sql).toContain('FOR UPDATE');
+        expect(sql).toContain('"ApiKey"');
+        expect(sql).toContain('"SmtpCredential"');
+      });
+
+      it("ne fait pas échouer la suppression quand SES échoue après le commit : journalise et signale l'action restante", async () => {
         sesDriver.deleteIdentity.mockRejectedValueOnce(new Error('SES down'));
+        const logged = jest
+          .spyOn(Logger.prototype, 'error')
+          .mockImplementation(() => undefined);
+
+        const result = await service.remove('user_1', 'dom_1');
+
+        // La base est déjà à jour : révocations et suppression faites.
+        expect(apiKey.updateMany).toHaveBeenCalledTimes(1);
+        expect(domain.delete).toHaveBeenCalledWith({ where: { id: 'dom_1' } });
+        expect(result.revokedApiKeys).toHaveLength(1);
+        expect(result.remainingActions).toEqual([
+          "Supprimer à la main l'identité SES du domaine boutique-awa.gn (échec de l'appel SES : SES down).",
+        ]);
+        expect(logged).toHaveBeenCalledTimes(1);
+        logged.mockRestore();
+      });
+
+      it('ne touche pas à SES quand la transaction échoue (FK Restrict, clé liée en même temps) : le domaine reste entier', async () => {
+        domain.delete.mockRejectedValueOnce(new Error('P2003'));
 
         await expect(service.remove('user_1', 'dom_1')).rejects.toThrow(
-          'SES down',
+          'P2003',
         );
 
-        expect(apiKey.updateMany).not.toHaveBeenCalled();
-        expect(apiKeyDomain.deleteMany).not.toHaveBeenCalled();
-        expect(domain.delete).not.toHaveBeenCalled();
+        expect(sesDriver.deleteIdentity).not.toHaveBeenCalled();
       });
     });
 

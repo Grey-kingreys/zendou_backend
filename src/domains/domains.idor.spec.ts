@@ -119,6 +119,7 @@ describe('E7 - domaines, cloisonnement entre comptes', () => {
               run(prismaDouble),
             apiKeyDomain,
             smtpCredentialDomain,
+            $queryRaw: jest.fn(() => Promise.resolve([])),
             apiKey: { updateMany: jest.fn() },
             smtpCredential: { updateMany: jest.fn() },
             user: {
@@ -253,6 +254,7 @@ describe('E7 - domaines, cloisonnement entre comptes', () => {
       expect(response.body).toEqual({
         revokedApiKeys: [],
         revokedSmtpCredentials: [],
+        remainingActions: [],
       });
       expect(deleteFn).toHaveBeenCalledWith({ where: { id: 'dom_a' } });
     });

@@ -3,6 +3,7 @@ import {
   ConflictException,
   Inject,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -58,6 +59,8 @@ type DomainRecord = DomainSummary & {
 
 @Injectable()
 export class DomainsService {
+  private readonly logger = new Logger(DomainsService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     @Inject(SES_IDENTITY_DRIVER)
@@ -187,18 +190,30 @@ export class DomainsService {
   }
 
   /**
-   * Supprime l'identité SES puis le domaine. Dans la MÊME transaction que la
-   * suppression : les liens de portée du domaine sont retirés, et toute clé ou
-   * tout identifiant qui perd ainsi son DERNIER domaine est révoqué - jamais
-   * élargi à tous les domaines (B27). Ceux qui gardent d'autres domaines les
+   * Supprime le domaine, puis son identité SES. Dans une seule transaction :
+   * les liens de portée du domaine sont retirés, et toute clé ou tout
+   * identifiant qui perd ainsi son DERNIER domaine est révoqué - jamais élargi
+   * à tous les domaines (B27). Ceux qui gardent d'autres domaines les
    * conservent. Rend ce qui a été révoqué.
+   *
+   * L'identité SES n'est détruite qu'APRÈS le commit, comme le fait
+   * l'anonymisation : si la transaction échoue (clé liée au même instant,
+   * FK `Restrict`), le domaine reste entier, identité SES comprise. Si SES
+   * échoue après le commit, la base est déjà à jour : l'erreur est journalisée
+   * et signalée dans `remainingActions`, la suppression ne rend pas d'erreur.
    */
   async remove(userId: string, id: string): Promise<DomainRemoveResult> {
     const domain = await this.requireOwnedDomain(userId, id);
 
-    await this.sesDriver.deleteIdentity(domain.name);
+    const outcome = await this.prisma.$transaction(async (tx) => {
+      // Verrouille les clés et identifiants liés AVANT de compter leurs liens.
+      // Sans cela, deux suppressions simultanées de deux domaines d'une même
+      // clé lisent chacune deux liens et aucune ne la révoque (READ COMMITTED).
+      // Avec le verrou, la seconde attend la première, puis recompte. Tri par
+      // `id` : ordre de prise de verrou identique partout, donc pas d'interblocage.
+      await tx.$queryRaw`SELECT k."id" FROM "ApiKey" k JOIN "ApiKeyDomain" l ON l."apiKeyId" = k."id" WHERE l."domainId" = ${domain.id} ORDER BY k."id" FOR UPDATE OF k`;
+      await tx.$queryRaw`SELECT c."id" FROM "SmtpCredential" c JOIN "SmtpCredentialDomain" l ON l."smtpCredentialId" = c."id" WHERE l."domainId" = ${domain.id} ORDER BY c."id" FOR UPDATE OF c`;
 
-    return this.prisma.$transaction(async (tx) => {
       const usage = await this.readUsage(tx, domain.id);
       const revokedApiKeys = usage.apiKeys
         .filter((apiKey) => apiKey.willBeRevoked)
@@ -241,6 +256,22 @@ export class DomainsService {
 
       return { revokedApiKeys, revokedSmtpCredentials };
     });
+
+    const remainingActions: string[] = [];
+
+    try {
+      await this.sesDriver.deleteIdentity(domain.name);
+    } catch (error: unknown) {
+      const detail = error instanceof Error ? error.message : String(error);
+      this.logger.error(
+        `Suppression de ${domain.name} : identité SES non supprimée (${detail})`,
+      );
+      remainingActions.push(
+        `Supprimer à la main l'identité SES du domaine ${domain.name} (échec de l'appel SES : ${detail}).`,
+      );
+    }
+
+    return { ...outcome, remainingActions };
   }
 
   /**
