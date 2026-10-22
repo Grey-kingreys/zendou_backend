@@ -301,6 +301,9 @@ model Email {
   system Boolean @default(false)
 
   @@index([userId, queuedAt])
+  /// Lecture par clé API à portée SELECTED (M1) : `domainId IN (...)` dans le
+  /// journal d'un compte, triée par `queuedAt`.
+  @@index([userId, domainId, queuedAt])
   @@index([status])
   /// Sert les fenêtres glissantes (aujourd'hui / 7 j / 30 j) de
   /// `GET /v1/admin/stats/emails`, qui filtrent par `queuedAt`
