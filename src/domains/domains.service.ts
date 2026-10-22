@@ -9,6 +9,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { DomainStatus, Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import { resolveReadScope } from './credential-scope';
 import { isValidDomainName, normalizeDomainName } from './domain-name';
 import {
   DEFAULT_AWS_REGION,
@@ -112,16 +113,30 @@ export class DomainsService {
   }
 
   /** Liste les domaines du client courant, du plus récent au plus ancien. */
-  async list(userId: string): Promise<DomainSummary[]> {
+  async list(userId: string, apiKeyId?: string): Promise<DomainSummary[]> {
+    // Lecture par clé API : seuls les domaines de sa portée (B27).
+    const scope = await resolveReadScope(this.prisma, apiKeyId);
+
     return this.prisma.domain.findMany({
-      where: { userId },
+      where: { userId, ...(scope ? { id: { in: scope } } : {}) },
       orderBy: { createdAt: 'desc' },
       select: DOMAIN_SUMMARY_SELECT,
     });
   }
 
   /** Détail d'un domaine du client courant, avec les enregistrements DNS. */
-  async findOne(userId: string, id: string): Promise<DomainDetail> {
+  async findOne(
+    userId: string,
+    id: string,
+    apiKeyId?: string,
+  ): Promise<DomainDetail> {
+    // Hors de la portée de la clé : 404, comme si le domaine n'existait pas.
+    const scope = await resolveReadScope(this.prisma, apiKeyId);
+
+    if (scope && !scope.includes(id)) {
+      throw new NotFoundException(DOMAIN_NOT_FOUND_MESSAGE);
+    }
+
     return this.toDetail(await this.requireOwnedDomain(userId, id));
   }
 

@@ -132,6 +132,22 @@ describe('Facturation - solde lisible par clé API (câblage réel)', () => {
     expect(firstCall.where.userId).toBe('user_1');
   });
 
+  it('répond 200 pour une clé sans permission de lecture : le solde reste lisible par toute clé active', async () => {
+    prisma.apiKey.findUnique.mockResolvedValue({
+      id: 'key_1',
+      revokedAt: null,
+      canRead: false,
+      user: userRecord,
+    });
+
+    const response = await request(app.getHttpServer())
+      .get('/v1/billing/balance')
+      .set('Authorization', `Bearer ${KEY}`);
+
+    expect(response.status).toBe(200);
+    expect(response.body).toMatchObject({ balance: 120 });
+  });
+
   it('répond 401 pour une clé inconnue', async () => {
     const response = await request(app.getHttpServer())
       .get('/v1/billing/balance')

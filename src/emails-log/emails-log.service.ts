@@ -4,6 +4,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { EmailChannel, EmailStatus, Prisma } from '@prisma/client';
+import { resolveReadScope } from '../domains/credential-scope';
 import { PrismaService } from '../prisma/prisma.service';
 import type {
   EmailDetail,
@@ -47,6 +48,7 @@ export class EmailsLogService {
   async list(
     userId: string,
     query: RawEmailsListQuery,
+    apiKeyId?: string,
   ): Promise<PaginatedEmails> {
     const status = this.parseStatus(query.status);
     const channel = this.parseChannel(query.channel);
@@ -63,6 +65,15 @@ export class EmailsLogService {
     // emails que Zendou lui adresse (confirmation d'adresse) portent son
     // `userId` parce qu'ils le concernent, pas parce qu'il les a émis.
     const where: Prisma.EmailWhereInput = { userId, system: false };
+
+    // Lecture par clé API : portée par domaine (B27). `domainId` dans la
+    // portée ; un envoi sans domaine (bac à sable) n'y est jamais, donc une
+    // clé `SELECTED` ne le voit pas. `total` en découle : rien ne fuit.
+    const scope = await resolveReadScope(this.prisma, apiKeyId);
+
+    if (scope) {
+      where.domainId = { in: scope };
+    }
 
     if (status) {
       where.status = status;
@@ -109,15 +120,26 @@ export class EmailsLogService {
     };
   }
 
-  async detail(userId: string, publicId: string): Promise<EmailDetail> {
+  async detail(
+    userId: string,
+    publicId: string,
+    apiKeyId?: string,
+  ): Promise<EmailDetail> {
+    const scope = await resolveReadScope(this.prisma, apiKeyId);
+
     const email = await this.prisma.email.findFirst({
-      where: { publicId, userId, system: false },
+      where: {
+        publicId,
+        userId,
+        system: false,
+        ...(scope ? { domainId: { in: scope } } : {}),
+      },
       select: EMAIL_DETAIL_SELECT,
     });
 
     if (!email) {
-      // Pas d'oracle : même 404 que l'email n'existe pas ou appartienne à
-      // un autre utilisateur.
+      // Pas d'oracle : même 404 que l'email n'existe pas, appartienne à un
+      // autre utilisateur ou sorte de la portée de la clé.
       throw new NotFoundException('Email introuvable');
     }
 

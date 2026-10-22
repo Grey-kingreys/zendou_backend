@@ -11,7 +11,10 @@ import {
 import { CurrentUser } from '../auth';
 import type { AuthUser } from '../auth';
 import { BillingService } from './billing.service';
-import { AllowApiKey, SessionOrApiKeyGuard } from './session-or-api-key.guard';
+import {
+  AllowApiKey,
+  SessionOrApiKeyGuard,
+} from '../common/session-or-api-key.guard';
 import { CreateTopUpRequestDto } from './dto/create-topup-request.dto';
 import type { CreditPack } from './packs';
 import type {

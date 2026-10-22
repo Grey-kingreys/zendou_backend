@@ -89,3 +89,31 @@ export function toScopeDomains(
 ): ScopeDomain[] {
   return links.map((link) => ({ id: link.domain.id, name: link.domain.name }));
 }
+
+/**
+ * Domaines qu'une clé API peut LIRE (journal des envois, domaines), selon sa
+ * portée B27. `null` : aucune restriction (session, ou clé `ALL`). Sinon la
+ * liste des identifiants de domaines autorisés, vide comprise : une portée
+ * `SELECTED` sans domaine ne voit rien, et une clé introuvable non plus
+ * (fail-closed). Comme à l'envoi, la portée se lit sur la colonne
+ * `domainScope`, jamais sur la présence de lignes de jointure.
+ */
+export async function resolveReadScope(
+  prisma: PrismaService,
+  apiKeyId: string | undefined,
+): Promise<string[] | null> {
+  if (apiKeyId === undefined) {
+    return null;
+  }
+
+  const found = await prisma.apiKey.findUnique({
+    where: { id: apiKeyId },
+    select: { domainScope: true, domains: { select: { domainId: true } } },
+  });
+
+  if (found?.domainScope === CredentialDomainScope.ALL) {
+    return null;
+  }
+
+  return found?.domains.map((link) => link.domainId) ?? [];
+}

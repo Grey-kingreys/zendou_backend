@@ -5,8 +5,9 @@ import {
   UserRole,
   UserStatus,
 } from '@prisma/client';
-import { SessionAuthGuard } from '../auth';
+import type { ApiKeyAuthenticatedRequest } from '../api-keys';
 import type { AuthUser } from '../auth';
+import { SessionOrApiKeyGuard } from '../common/session-or-api-key.guard';
 import { EmailsLogController } from './emails-log.controller';
 import { EmailsLogService } from './emails-log.service';
 import type { EmailDetail, PaginatedEmails } from './emails-log.types';
@@ -22,6 +23,9 @@ const authUser: AuthUser = {
   createdAt: new Date('2026-01-01T00:00:00.000Z'),
 };
 
+/** Requête d'une session : aucune clé API. */
+const noKey = {} as ApiKeyAuthenticatedRequest;
+
 describe('EmailsLogController', () => {
   let controller: EmailsLogController;
 
@@ -35,7 +39,7 @@ describe('EmailsLogController', () => {
       providers: [{ provide: EmailsLogService, useValue: emailsLogService }],
     })
       // Le guard est couvert par session-auth.guard.spec.ts.
-      .overrideGuard(SessionAuthGuard)
+      .overrideGuard(SessionOrApiKeyGuard)
       .useValue({ canActivate: () => true })
       .compile();
 
@@ -55,11 +59,14 @@ describe('EmailsLogController', () => {
     const result = await controller.list(
       { status: EmailStatus.SENT },
       authUser,
+      noKey,
     );
 
-    expect(emailsLogService.list).toHaveBeenCalledWith('user_1', {
-      status: EmailStatus.SENT,
-    });
+    expect(emailsLogService.list).toHaveBeenCalledWith(
+      'user_1',
+      { status: EmailStatus.SENT },
+      undefined,
+    );
     expect(result).toEqual(paginated);
   });
 
@@ -81,9 +88,13 @@ describe('EmailsLogController', () => {
     };
     emailsLogService.detail.mockResolvedValue(detail);
 
-    const result = await controller.detail('pub_1', authUser);
+    const result = await controller.detail('pub_1', authUser, noKey);
 
-    expect(emailsLogService.detail).toHaveBeenCalledWith('user_1', 'pub_1');
+    expect(emailsLogService.detail).toHaveBeenCalledWith(
+      'user_1',
+      'pub_1',
+      undefined,
+    );
     expect(result).toEqual(detail);
   });
 });

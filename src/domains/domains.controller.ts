@@ -7,10 +7,16 @@ import {
   HttpStatus,
   Param,
   Post,
+  Req,
   UseGuards,
 } from '@nestjs/common';
-import { CurrentUser, SessionAuthGuard } from '../auth';
+import type { ApiKeyAuthenticatedRequest } from '../api-keys';
+import { CurrentUser } from '../auth';
 import type { AuthUser } from '../auth';
+import {
+  AllowApiKeyRead,
+  SessionOrApiKeyGuard,
+} from '../common/session-or-api-key.guard';
 import { RATE_LIMIT_POLICY } from '../rate-limit/rate-limit.constants';
 import { RateLimit } from '../rate-limit/rate-limit.decorator';
 import type { DomainDnsCheckResult } from './dns-check';
@@ -24,8 +30,13 @@ import type {
 } from './domains.types';
 import { CreateDomainDto } from './dto/create-domain.dto';
 
+/**
+ * Domaines du compte. Session seulement, sauf `GET /` et `GET /:id` qui
+ * acceptent aussi une clé API avec la permission de lecture
+ * (`AllowApiKeyRead`), dans la portée par domaine de la clé.
+ */
 @Controller('domains')
-@UseGuards(SessionAuthGuard)
+@UseGuards(SessionOrApiKeyGuard)
 export class DomainsController {
   constructor(private readonly domainsService: DomainsService) {}
 
@@ -39,18 +50,24 @@ export class DomainsController {
   }
 
   @Get()
+  @AllowApiKeyRead()
   @HttpCode(HttpStatus.OK)
-  list(@CurrentUser() user: AuthUser): Promise<DomainSummary[]> {
-    return this.domainsService.list(user.id);
+  list(
+    @CurrentUser() user: AuthUser,
+    @Req() request: ApiKeyAuthenticatedRequest,
+  ): Promise<DomainSummary[]> {
+    return this.domainsService.list(user.id, request.apiKeyId);
   }
 
   @Get(':id')
+  @AllowApiKeyRead()
   @HttpCode(HttpStatus.OK)
   findOne(
     @CurrentUser() user: AuthUser,
     @Param('id') id: string,
+    @Req() request: ApiKeyAuthenticatedRequest,
   ): Promise<DomainDetail> {
-    return this.domainsService.findOne(user.id, id);
+    return this.domainsService.findOne(user.id, id, request.apiKeyId);
   }
 
   // Chaque appel tape l'API AWS : plafond serré, et compté par utilisateur

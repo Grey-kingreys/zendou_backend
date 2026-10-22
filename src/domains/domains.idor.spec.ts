@@ -5,7 +5,9 @@ import { DomainStatus, UserRole, UserStatus } from '@prisma/client';
 import cookieParser from 'cookie-parser';
 import request from 'supertest';
 import type { App } from 'supertest/types';
+import { ApiKeyAuthGuard } from '../api-keys';
 import { SessionAuthGuard, SessionService } from '../auth';
+import { SessionOrApiKeyGuard } from '../common/session-or-api-key.guard';
 import { SESSION_COOKIE_NAME } from '../auth/auth.constants';
 import { AllExceptionsFilter } from '../common/http-exception.filter';
 import { PrismaService } from '../prisma/prisma.service';
@@ -103,6 +105,9 @@ describe('E7 - domaines, cloisonnement entre comptes', () => {
       providers: [
         DomainsService,
         SessionAuthGuard,
+        SessionOrApiKeyGuard,
+        // Ces specs ne présentent jamais de clé API : le garde de clé est un stub.
+        { provide: ApiKeyAuthGuard, useValue: { canActivate: jest.fn() } },
         {
           provide: SessionService,
           useValue: {
