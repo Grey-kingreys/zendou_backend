@@ -67,6 +67,7 @@ export class ApiKeysService {
           prefix: generated.prefix,
           keyHash: this.secretHashing.hashForStorage(generated.key),
           domainScope: scope.domainScope,
+          canRead: dto.canRead ?? false,
           domains: {
             create: scope.domainIds.map((domainId) => ({ domainId })),
           },
@@ -75,6 +76,7 @@ export class ApiKeysService {
           id: true,
           name: true,
           prefix: true,
+          canRead: true,
           createdAt: true,
           ...SCOPE_SELECT,
         },
@@ -96,6 +98,7 @@ export class ApiKeysService {
         id: true,
         name: true,
         prefix: true,
+        canRead: true,
         createdAt: true,
         lastUsedAt: true,
         revokedAt: true,

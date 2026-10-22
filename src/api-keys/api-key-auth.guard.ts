@@ -40,6 +40,7 @@ import { SecretHashingService } from './secret-hashing.service';
 interface AuthenticatedApiKey {
   id: string;
   revokedAt: Date | null;
+  canRead: boolean;
   user: AuthUserRecord;
 }
 
@@ -48,7 +49,8 @@ interface AuthenticatedApiKey {
  * - 401 si le header est absent/mal formé ou si la clé est inconnue/révoquée
  * - 403 si le user propriétaire de la clé est suspendu
  * - 429 quand une même IP a dépassé son budget d'échecs (lot C, voir plus bas)
- * En cas de succès, `request.user` et `request.apiKeyId` sont renseignés.
+ * En cas de succès, `request.user`, `request.apiKeyId` et `request.apiKeyCanRead`
+ * sont renseignés.
  * `lastUsedAt` est mis à jour en tâche de fond, sans bloquer la requête.
  */
 @Injectable()
@@ -103,6 +105,7 @@ export class ApiKeyAuthGuard implements CanActivate {
         select: {
           id: true,
           revokedAt: true,
+          canRead: true,
           user: { select: AUTH_USER_RECORD_SELECT },
         },
       });
@@ -145,6 +148,7 @@ export class ApiKeyAuthGuard implements CanActivate {
       resolveTestSenderAddress(this.configService),
     );
     request.apiKeyId = apiKey.id;
+    request.apiKeyCanRead = apiKey.canRead;
 
     // Fire-and-forget : ne doit jamais ralentir/bloquer la requête entrante.
     void this.prisma.apiKey

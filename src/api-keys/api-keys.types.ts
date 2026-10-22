@@ -6,6 +6,8 @@ export interface CreateApiKeyResponse extends CredentialScopeView {
   id: string;
   name: string;
   prefix: string;
+  /** Autorisation de lecture (journal des envois, domaines), immuable. */
+  canRead: boolean;
   key: string;
   createdAt: Date;
 }
@@ -15,6 +17,7 @@ export interface ApiKeySummary extends CredentialScopeView {
   id: string;
   name: string;
   prefix: string;
+  canRead: boolean;
   createdAt: Date;
   lastUsedAt: Date | null;
   revokedAt: Date | null;
@@ -37,4 +40,6 @@ export interface RotateApiKeyResponse {
 /** Requête Express enrichie par `ApiKeyAuthGuard`. */
 export interface ApiKeyAuthenticatedRequest extends AuthenticatedRequest {
   apiKeyId?: string;
+  /** Autorisation de lecture de la clé authentifiée (`ApiKey.canRead`). */
+  apiKeyCanRead?: boolean;
 }

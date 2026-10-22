@@ -32,3 +32,7 @@ export const API_KEY_FAILURE_WINDOW_MS = 60_000;
 
 /** Préfixe des clés Redis du compteur d'échecs par IP. */
 export const API_KEY_FAILURE_KEY_PREFIX = 'apikey-fail:';
+
+/** 403 d'une clé API sans `canRead` sur une route de lecture (journal, domaines). */
+export const API_KEY_READ_FORBIDDEN_MESSAGE =
+  "Cette clé API n'a pas l'autorisation de lecture : créez une clé avec la lecture autorisée.";

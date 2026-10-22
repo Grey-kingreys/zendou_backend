@@ -163,6 +163,10 @@ model ApiKey {
   domainScope CredentialDomainScope @default(ALL)
   domains     ApiKeyDomain[]
 
+  /// Autorisation de lecture (journal des envois, domaines), immuable après
+  /// création et conservée par la rotation. `false` pour toute clé existante.
+  canRead Boolean @default(false)
+
   @@index([userId])
 }
 

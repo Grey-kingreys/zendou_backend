@@ -200,6 +200,31 @@ describe('ApiKeyAuthGuard', () => {
     expect(request.apiKeyId).toBe('key_1');
   });
 
+  it.each([true, false])(
+    'reports canRead=%s from the key row on the request',
+    async (canRead) => {
+      findUnique.mockResolvedValue({
+        id: 'key_1',
+        revokedAt: null,
+        canRead,
+        user: activeUser,
+      });
+
+      const request: Partial<ApiKeyAuthenticatedRequest> = {
+        headers: { authorization: `Bearer ${validKey}` },
+      };
+
+      await guard.canActivate(contextFor(request));
+
+      expect(request.apiKeyCanRead).toBe(canRead);
+      expect(findUnique).toHaveBeenCalledWith(
+        expect.objectContaining({
+          select: expect.objectContaining({ canRead: true }) as unknown,
+        }),
+      );
+    },
+  );
+
   it('reports the sandbox sender address when TEST_EMAIL_FROM is configured', async () => {
     configGet.mockReturnValue('Zendou Test <test@mail.kingreys.fr>');
     findUnique.mockResolvedValue({

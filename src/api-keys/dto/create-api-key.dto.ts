@@ -1,6 +1,7 @@
 import {
   ArrayMaxSize,
   IsArray,
+  IsBoolean,
   IsOptional,
   IsString,
   MaxLength,
@@ -27,4 +28,12 @@ export class CreateApiKeyDto {
   })
   @IsString({ each: true, message: 'Chaque domaine doit être un identifiant' })
   domainIds?: string[];
+
+  /**
+   * Autorise la lecture du journal des envois et des domaines (serveur MCP).
+   * Absent : `false`. Immuable après création, comme la portée.
+   */
+  @IsOptional()
+  @IsBoolean({ message: 'La permission de lecture doit être un booléen' })
+  canRead?: boolean;
 }

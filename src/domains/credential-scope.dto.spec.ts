@@ -44,3 +44,26 @@ describe.each([
     );
   });
 });
+
+describe('CreateApiKeyDto - canRead', () => {
+  const check = (body: unknown) =>
+    validate(plainToInstance(CreateApiKeyDto, body as object));
+
+  it('est facultatif et accepte un booléen', async () => {
+    expect(await check({ name: 'Prod' })).toHaveLength(0);
+    expect(await check({ name: 'Prod', canRead: true })).toHaveLength(0);
+    expect(await check({ name: 'Prod', canRead: false })).toHaveLength(0);
+  });
+
+  it.each(['true', 1, 0, 'oui', [], {}])(
+    'refuse %p, en français',
+    async (value) => {
+      const errors = await check({ name: 'Prod', canRead: value });
+
+      expect(errors).toHaveLength(1);
+      expect(Object.values(errors[0].constraints ?? {})).toEqual([
+        'La permission de lecture doit être un booléen',
+      ]);
+    },
+  );
+});

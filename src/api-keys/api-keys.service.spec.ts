@@ -27,6 +27,7 @@ interface CreateArgs {
     prefix: string;
     keyHash: string;
     domainScope: 'ALL' | 'SELECTED';
+    canRead: boolean;
     domains: { create: { domainId: string }[] };
   };
 }
@@ -59,6 +60,7 @@ const listedKey = {
   lastUsedAt: null,
   revokedAt: null,
   domainScope: 'ALL' as 'ALL' | 'SELECTED',
+  canRead: false,
   domains: [] as { domain: { id: string; name: string } }[],
 };
 
@@ -90,6 +92,7 @@ describe('ApiKeysService', () => {
       prefix: args.data.prefix,
       createdAt: new Date('2026-01-01T00:00:00.000Z'),
       domainScope: args.data.domainScope,
+      canRead: args.data.canRead,
       domains: args.data.domains.create.map((link) => ({
         domain: { id: link.domainId, name: `${link.domainId}.gn` },
       })),
@@ -152,7 +155,33 @@ describe('ApiKeysService', () => {
         key: result.key,
         createdAt: new Date('2026-01-01T00:00:00.000Z'),
         domainScope: 'ALL',
+        canRead: false,
         domains: [],
+      });
+    });
+
+    describe('permission de lecture', () => {
+      it('crée une clé sans lecture quand canRead est absent', async () => {
+        const result = await service.create('user_1', { name: 'Prod' });
+
+        expect(capturedCreateArgs!.data.canRead).toBe(false);
+        expect(result.canRead).toBe(false);
+      });
+
+      it('crée une clé sans lecture quand canRead est false', async () => {
+        await service.create('user_1', { name: 'Prod', canRead: false });
+
+        expect(capturedCreateArgs!.data.canRead).toBe(false);
+      });
+
+      it('crée une clé avec lecture quand canRead est true', async () => {
+        const result = await service.create('user_1', {
+          name: 'Prod',
+          canRead: true,
+        });
+
+        expect(capturedCreateArgs!.data.canRead).toBe(true);
+        expect(result.canRead).toBe(true);
       });
     });
 
@@ -266,7 +295,19 @@ describe('ApiKeysService', () => {
       expect(capturedFindManyArgs).toBeDefined();
       expect(capturedFindManyArgs!.where).toEqual({ userId: 'user_1' });
       expect(capturedFindManyArgs!.select).not.toHaveProperty('keyHash');
+      expect(capturedFindManyArgs!.select).toHaveProperty('canRead', true);
       expect(result).toEqual([listedKey]);
+    });
+
+    it('expose la permission de lecture de chaque clé', async () => {
+      findMany.mockResolvedValueOnce([
+        { ...listedKey, canRead: true },
+        { ...listedKey, id: 'key_2', canRead: false },
+      ]);
+
+      const result = await service.findAllForUser('user_1');
+
+      expect(result.map((key) => key.canRead)).toEqual([true, false]);
     });
 
     it('expose la portée et les domaines liés (id + nom)', async () => {
@@ -453,7 +494,8 @@ describe('ApiKeysService', () => {
       expect(capturedUpdateArgs!.data.keyHash).toBeDefined();
       expect(capturedUpdateArgs!.data.rotatedAt).toBeInstanceOf(Date);
 
-      // La portée par domaine est immuable (B27) : la rotation n'y touche pas.
+      // La portée par domaine (B27) et la permission de lecture sont
+      // immuables : la rotation n'y touche pas.
       expect(Object.keys(capturedUpdateArgs!.data).sort()).toEqual([
         'keyHash',
         'prefix',

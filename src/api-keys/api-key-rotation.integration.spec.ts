@@ -24,6 +24,7 @@ interface Row {
   rotatedAt: Date | null;
   createdAt: Date;
   domainScope: 'ALL' | 'SELECTED';
+  canRead: boolean;
 }
 
 const owner: AuthUser = {
@@ -62,7 +63,13 @@ class FakeApiKeyStore {
       data,
       select,
     }: {
-      data: { userId: string; name: string; prefix: string; keyHash: string };
+      data: {
+        userId: string;
+        name: string;
+        prefix: string;
+        keyHash: string;
+        canRead?: boolean;
+      };
       select: Record<string, boolean>;
     }) => {
       const row: Row = {
@@ -76,6 +83,7 @@ class FakeApiKeyStore {
         rotatedAt: null,
         createdAt: new Date('2026-01-01T00:00:00.000Z'),
         domainScope: 'ALL',
+        canRead: data.canRead ?? false,
       };
       this.rows.set(row.id, row);
       return Promise.resolve(this.project(row, select));
@@ -254,6 +262,31 @@ describe('Rotation de clé API — chemin d’authentification réel', () => {
     expect(rotated.createdAt).toEqual(created.createdAt);
     expect(rotated.prefix).not.toBe(created.prefix);
     expect(rotated.rotatedAt).toBeInstanceOf(Date);
+  });
+
+  it("conserve la permission de lecture à travers la rotation, y compris à l'authentification", async () => {
+    const withRead = await service.create('user_1', {
+      name: 'Lecture',
+      canRead: true,
+    });
+    const withoutRead = await service.create('user_1', { name: 'Envoi' });
+    expect(withRead.canRead).toBe(true);
+    expect(withoutRead.canRead).toBe(false);
+
+    const rotatedWithRead = await service.rotate('user_1', withRead.id);
+    const rotatedWithoutRead = await service.rotate('user_1', withoutRead.id);
+
+    // Le garde lit la colonne en base : la clé régénérée garde sa permission.
+    expect(
+      (await authenticate(rotatedWithRead.key)).request.apiKeyCanRead,
+    ).toBe(true);
+    expect(
+      (await authenticate(rotatedWithoutRead.key)).request.apiKeyCanRead,
+    ).toBe(false);
+
+    const list = await service.findAllForUser('user_1');
+    expect(list.find((key) => key.id === withRead.id)?.canRead).toBe(true);
+    expect(list.find((key) => key.id === withoutRead.id)?.canRead).toBe(false);
   });
 
   it('ne renvoie jamais le secret en clair via la liste, ni à la création ni après rotation', async () => {
