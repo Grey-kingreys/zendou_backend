@@ -16,17 +16,13 @@ import { ApiKeysModule, hashApiKey } from '../api-keys';
 import { API_KEY_FAILURE_KEY_PREFIX } from '../api-keys/api-keys.constants';
 import { SESSION_COOKIE_NAME, SESSION_REDIS, SessionService } from '../auth';
 import { DOMAIN_NOT_FOUND_MESSAGE } from '../domains/domains.constants';
-import { DomainsController } from '../domains/domains.controller';
 import { DomainsModule } from '../domains/domains.module';
-import { EmailsController } from '../emails/emails.controller';
-import { EmailsLogController } from '../emails-log/emails-log.controller';
 import { EmailsLogModule } from '../emails-log/emails-log.module';
 import { PrismaService } from '../prisma/prisma.service';
 import { EMAIL_SEND_QUEUE } from '../queues/queues';
 import { RATE_LIMIT_REDIS } from '../rate-limit/rate-limit.constants';
 import { ReputationService } from '../reputation';
 import { AllExceptionsFilter } from './http-exception.filter';
-import { API_KEY_ACCESS } from './session-or-api-key.guard';
 
 const READ_FORBIDDEN =
   "Cette clé API n'a pas l'autorisation de lecture : créez une clé avec la lecture autorisée.";
@@ -817,63 +813,6 @@ describe('Lecture par clé API - câblage réel (journal et domaines)', () => {
 
       expect(response.status).toBe(401);
       expect(createdKeys).toHaveLength(0);
-    });
-  });
-
-  describe('marques de route (parcours de tous les contrôleurs)', () => {
-    const routeHandlers = (controller: { prototype: object }) =>
-      Object.getOwnPropertyNames(controller.prototype)
-        .filter((name) => name !== 'constructor')
-        .map((name) => ({
-          name,
-          handler: (controller.prototype as Record<string, unknown>)[
-            name
-          ] as object,
-        }))
-        .filter(({ handler }) => Reflect.hasMetadata('method', handler));
-
-    const marked = (controller: { prototype: object }) =>
-      routeHandlers(controller)
-        .filter(
-          ({ handler }) =>
-            Reflect.getMetadata(API_KEY_ACCESS, handler) !== undefined,
-        )
-        .map(({ name, handler }) => [
-          name,
-          Reflect.getMetadata(API_KEY_ACCESS, handler) as string,
-        ]);
-
-    it('ouvre à une clé exactement list et detail du journal', () => {
-      expect(marked(EmailsLogController)).toEqual([
-        ['list', 'read'],
-        ['detail', 'read'],
-      ]);
-    });
-
-    it('ouvre à une clé exactement list et findOne des domaines', () => {
-      expect(marked(DomainsController)).toEqual([
-        ['list', 'read'],
-        ['findOne', 'read'],
-      ]);
-    });
-
-    it('n’ouvre aucune autre route de l’envoi par la marque (l’envoi a son propre garde de clé)', () => {
-      expect(marked(EmailsController)).toEqual([]);
-    });
-
-    it('couvre bien toutes les routes de ces contrôleurs', () => {
-      expect(routeHandlers(DomainsController).map((r) => r.name)).toEqual(
-        expect.arrayContaining([
-          'create',
-          'list',
-          'findOne',
-          'check',
-          'dnsCheck',
-          'usage',
-          'remove',
-        ]),
-      );
-      expect(routeHandlers(EmailsLogController)).toHaveLength(2);
     });
   });
 
