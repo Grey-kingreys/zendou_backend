@@ -430,7 +430,9 @@ const prisma = {
 
 const sessionService = {
   resolve: jest.fn((token: string) =>
-    Promise.resolve(token === 'session-1' ? 'user_1' : null),
+    Promise.resolve(
+      { 'session-1': 'user_1', 'session-2': 'user_2' }[token] ?? null,
+    ),
   ),
   destroy: jest.fn(),
 };
@@ -759,6 +761,66 @@ describe('Lecture par clé API - câblage réel (journal et domaines)', () => {
       expect(JSON.stringify([body(list), body(detail)])).not.toMatch(
         /arn:aws|sesIdentityArn|dkimTokens/,
       );
+    });
+  });
+
+  describe('cookie de session ET en-tête Bearer ensemble', () => {
+    it('la clé gagne : le propriétaire est celui de la clé, jamais celui de la session', async () => {
+      prisma.email.findMany.mockClear();
+      prisma.email.count.mockClear();
+
+      // Session du compte 2 (qui a un envoi, em_other) + clé du compte 1.
+      const response = await request(app.getHttpServer())
+        .get('/v1/emails')
+        .set('Cookie', `${SESSION_COOKIE_NAME}=session-2`)
+        .set('Authorization', `Bearer ${KEYS.all}`);
+
+      expect(response.status).toBe(200);
+      expect(publicIds(response)).toEqual([
+        'em_sandbox',
+        'em_b1',
+        'em_a2',
+        'em_a1',
+      ]);
+      expect(publicIds(response)).not.toContain('em_other');
+      const calls = [
+        ...prisma.email.findMany.mock.calls,
+        ...prisma.email.count.mock.calls,
+      ] as unknown as [{ where: { userId: string } }][];
+      expect(calls.length).toBeGreaterThan(0);
+      expect(calls.every(([args]) => args.where.userId === 'user_1')).toBe(
+        true,
+      );
+      // La session n'a même pas été consultée : aucun mélange des deux identités.
+      expect(sessionService.resolve).not.toHaveBeenCalledWith('session-2');
+    });
+
+    it('la clé garde sa portée même avec un cookie d’un autre compte', async () => {
+      const response = await request(app.getHttpServer())
+        .get('/v1/emails')
+        .set('Cookie', `${SESSION_COOKIE_NAME}=session-1`)
+        .set('Authorization', `Bearer ${KEYS.selected}`);
+
+      expect(publicIds(response)).toEqual(['em_a2', 'em_a1']);
+    });
+
+    it('une clé sans lecture reste refusée en 403 malgré un cookie valide', async () => {
+      const response = await request(app.getHttpServer())
+        .get('/v1/domains')
+        .set('Cookie', `${SESSION_COOKIE_NAME}=session-1`)
+        .set('Authorization', `Bearer ${KEYS.noRead}`);
+
+      expect(response.status).toBe(403);
+    });
+
+    it('Bearer invalide avec cookie valide : 401, la session ne prend pas le relais (comportement actuel)', async () => {
+      const response = await request(app.getHttpServer())
+        .get('/v1/emails')
+        .set('Cookie', `${SESSION_COOKIE_NAME}=session-1`)
+        .set('Authorization', `Bearer ${KEYS.unknown}`);
+
+      expect(response.status).toBe(401);
+      expect(body(response).message).toBe('Clé API invalide ou révoquée');
     });
   });
 
